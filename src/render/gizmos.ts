@@ -6,6 +6,7 @@
  * replaces resource patches with real art, and start locations never render
  * during a match at all.
  */
+import '@babylonjs/core/Meshes/thinInstanceMesh';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';

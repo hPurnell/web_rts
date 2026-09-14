@@ -7,7 +7,7 @@ import type { Scene } from '@babylonjs/core/scene';
 import { createTestMap } from './sim/fixtures/testmap.ts';
 import { toFloat } from './sim/fixed.ts';
 import type { World } from './sim/world.ts';
-import { MAX_TIER, hashWorld } from './sim/world.ts';
+import { MAX_TIER, hashWorld, worldFromCell } from './sim/world.ts';
 import { createMatchFromWorld } from './sim/matchinit.ts';
 import type { Driver } from './driver.ts';
 import { createDriver } from './driver.ts';
@@ -18,6 +18,7 @@ import { TIER_HEIGHT, createTerrain } from './render/terrain.ts';
 import { describeFlags, pickCell, screenRay } from './render/pick.ts';
 import { FLAG_LAYERS, createFlagOverlay } from './render/flagoverlay.ts';
 import { createGizmos } from './render/gizmos.ts';
+import { createUnitRenderer } from './render/units.ts';
 import { createTerrainMaterial } from './render/terrainMaterial.ts';
 import { createDevOverlay } from './ui/devoverlay.ts';
 import { MODE_KEY, createModeController, modeFromLocation } from './mode.ts';
@@ -68,6 +69,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   flagOverlay.rebuild(ramps);
   const gizmos = createGizmos(renderer.scene, () => world);
   gizmos.rebuild(ramps);
+  const unitRenderer = createUnitRenderer(renderer.scene);
 
   /** Swap in a different map: rebuild the scene and re-bound the camera. */
   function loadWorld(next: World): void {
@@ -98,6 +100,15 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     driver = createDriver(
       createMatchFromWorld({ world, seed, playerCount: Math.max(1, world.startLocations.length) }),
     );
+    unitRenderer.captureTick(driver.match);
+    unitRenderer.update(driver.match, world, ramps, 1);
+
+    // Open on the local player's base, the way an RTS does.
+    const start = world.startLocations[0];
+    if (start) {
+      const centre = worldFromCell(world, start.cell);
+      camera.moveTo(toFloat(centre.x), toFloat(centre.z));
+    }
     if (hashWorld(world) !== before) {
       // Invariant 4: match setup reads world state and must not write it.
       console.error('[match] starting a match modified world state');
@@ -109,6 +120,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   function stopMatch(): void {
     driver = null;
     mode.editor()?.refresh();
+    unitRenderer.clear();
     overlay.remove('tick');
     overlay.remove('units');
     overlay.set('match', 'stopped');
@@ -120,7 +132,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     camera.update(input, dt, renderer.engine.getRenderWidth(), renderer.engine.getRenderHeight());
 
     if (driver) {
-      driver.advance(dt);
+      // Capture before stepping, so interpolation has both endpoints.
+      const running = driver;
+      running.advance(dt, undefined, () => unitRenderer.captureTick(running.match));
+      unitRenderer.update(running.match, world, ramps, running.alpha());
       overlay.set('tick', String(driver.tick()));
       overlay.set('units', String(driver.match.units.alive));
     }
@@ -275,6 +290,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       overlay.dispose();
       flagOverlay.dispose();
       gizmos.dispose();
+      unitRenderer.dispose();
       terrain.dispose();
       terrainMaterial.dispose();
       input.dispose();

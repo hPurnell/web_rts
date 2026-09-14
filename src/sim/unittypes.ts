@@ -32,6 +32,8 @@ export interface UnitType {
   readonly buildTicks: number;
   readonly mineralCost: number;
   readonly gasCost: number;
+  /** True when the weapon rotates independently of the hull. */
+  readonly hasTurret: boolean;
 }
 
 interface RawUnitType {
@@ -47,6 +49,7 @@ interface RawUnitType {
   buildTicks: number;
   mineralCost: number;
   gasCost: number;
+  hasTurret: boolean;
 }
 
 function build(raw: RawUnitType, typeId: number): UnitType {
@@ -65,6 +68,7 @@ function build(raw: RawUnitType, typeId: number): UnitType {
     buildTicks: raw.buildTicks | 0,
     mineralCost: raw.mineralCost | 0,
     gasCost: raw.gasCost | 0,
+    hasTurret: raw.hasTurret === true,
   };
 }
 

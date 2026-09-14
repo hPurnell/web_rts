@@ -44,9 +44,15 @@ export interface Driver {
   alpha(): number;
   /**
    * Advance by `seconds` of wall time. Returns how many ticks ran.
-   * `commandsFor` supplies the commands scheduled for each tick.
+   * `commandsFor` supplies the commands scheduled for each tick, and
+   * `beforeTick` runs immediately before each step — the renderer uses it to
+   * snapshot the positions it will interpolate away from.
    */
-  advance(seconds: number, commandsFor?: (tick: number) => readonly SimCommand[]): number;
+  advance(
+    seconds: number,
+    commandsFor?: (tick: number) => readonly SimCommand[],
+    beforeTick?: () => void,
+  ): number;
   /** Drop any accumulated time, e.g. after a pause. */
   resync(): void;
   /** Ticks dropped to the catch-up cap since the match began. */
@@ -63,12 +69,13 @@ export function createDriver(match: Match): Driver {
     alpha: () => accumulatorMicros / MICROS_PER_TICK,
     droppedTicks: () => dropped,
 
-    advance(seconds, commandsFor) {
+    advance(seconds, commandsFor, beforeTick) {
       if (!Number.isFinite(seconds) || seconds <= 0) return 0;
       accumulatorMicros += Math.round(seconds * MICROS_PER_SECOND);
 
       let stepped = 0;
       while (accumulatorMicros >= MICROS_PER_TICK && stepped < MAX_CATCHUP_TICKS) {
+        beforeTick?.();
         stepMatch(match, commandsFor?.(match.tick) ?? []);
         accumulatorMicros -= MICROS_PER_TICK;
         stepped++;

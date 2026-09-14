@@ -1,5 +1,5 @@
 {
-  "note": "Unit type table. Every value is an integer in the unit named by its suffix, so loading never parses a float (invariant 2).",
+  "note": "Unit type table. Every value is an integer in the unit named by its suffix, so loading never parses a float (invariant 2). hasTurret marks types whose weapon rotates independently of the hull; the renderer gives those a second instance buffer.",
   "types": [
     {
       "id": "worker",
@@ -13,7 +13,8 @@
       "radiusMilliCells": 375,
       "buildTicks": 240,
       "mineralCost": 50,
-      "gasCost": 0
+      "gasCost": 0,
+      "hasTurret": false
     },
     {
       "id": "soldier",
@@ -27,7 +28,8 @@
       "radiusMilliCells": 375,
       "buildTicks": 300,
       "mineralCost": 50,
-      "gasCost": 0
+      "gasCost": 0,
+      "hasTurret": false
     },
     {
       "id": "raider",
@@ -41,7 +43,8 @@
       "radiusMilliCells": 500,
       "buildTicks": 420,
       "mineralCost": 100,
-      "gasCost": 25
+      "gasCost": 25,
+      "hasTurret": true
     },
     {
       "id": "siege",
@@ -55,7 +58,8 @@
       "radiusMilliCells": 750,
       "buildTicks": 640,
       "mineralCost": 150,
-      "gasCost": 125
+      "gasCost": 125,
+      "hasTurret": true
     }
   ]
 }
