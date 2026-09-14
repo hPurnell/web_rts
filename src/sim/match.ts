@@ -16,6 +16,8 @@ import { createFieldCache } from './navcache.ts';
 import type { SpatialHash } from './spatialhash.ts';
 import { createSpatialHash } from './spatialhash.ts';
 import type { CostGrid } from '../nav/grid.ts';
+import type { FogGrids } from './fog.ts';
+import { createFogGrids, fogHashableArrays } from './fog.ts';
 
 export const MAX_PLAYERS = 8;
 
@@ -45,6 +47,7 @@ export interface Match {
   spatialHash: SpatialHash;
   /** Navigation grid; null until a match is built from a world. */
   costGrid: CostGrid | null;
+  readonly fog: FogGrids;
 }
 
 export function createMatch(init: MatchInit): Match {
@@ -62,6 +65,7 @@ export function createMatch(init: MatchInit): Match {
     fields: createFieldCache(),
     spatialHash: createSpatialHash(init.worldWidth ?? 64, init.worldHeight ?? 64),
     costGrid: init.costGrid ?? null,
+    fog: createFogGrids(init.worldWidth ?? 64, init.worldHeight ?? 64),
   };
 }
 
@@ -78,6 +82,7 @@ export function hashableArrays(match: Match): { name: string; data: ArrayBufferV
     { name: 'minerals', data: match.minerals },
     { name: 'gas', data: match.gas },
     ...unitHashableArrays(match.units),
+    ...fogHashableArrays(match.fog, match.playerCount),
   ];
 }
 

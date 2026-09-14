@@ -10,6 +10,7 @@ import type { Match } from './match.ts';
 import { ensureField } from './navcache.ts';
 import { stepMovement } from './movement.ts';
 import { stepOrders } from './orders.ts';
+import { FOG_INTERVAL_TICKS, updateFog } from './fog.ts';
 import type { World } from './world.ts';
 
 export { TICKS_PER_SECOND } from './ticks.ts';
@@ -49,6 +50,10 @@ export function stepMatch(
       hash: match.spatialHash,
       field: (goalCell) => ensureField(match.fields, grid, goalCell),
     });
+
+    // Vision last: it reports where units ended up this tick, and combat and
+    // ability range read it next tick.
+    if (match.tick % FOG_INTERVAL_TICKS === 0) updateFog(match, context.world);
   }
 
   match.tick = (match.tick + 1) | 0;
