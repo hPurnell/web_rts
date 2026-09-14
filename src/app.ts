@@ -11,7 +11,8 @@ import { MAX_TIER } from './sim/world.ts';
 import { createRenderer } from './render/engine.ts';
 import { RtsCamera } from './render/camera.ts';
 import { attachInput } from './render/input.ts';
-import { TIER_HEIGHT, createTerrain } from './render/terrain.ts';
+import { TIER_HEIGHT, createTerrain, solveRamps } from './render/terrain.ts';
+import { describeFlags, pickCell, screenRay } from './render/pick.ts';
 import { createTerrainMaterial } from './render/terrainMaterial.ts';
 import { createDevOverlay } from './ui/devoverlay.ts';
 
@@ -44,6 +45,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     lightDirection: renderer.sun.direction,
   });
   const terrain = createTerrain(renderer.scene, world, terrainMaterial);
+  const ramps = solveRamps(world);
 
   let smoothedFps = 60;
   renderer.engine.runRenderLoop(() => {
@@ -59,6 +61,18 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     overlay.set('camera', `${camera.focusX.toFixed(1)}, ${camera.focusZ.toFixed(1)}`);
     overlay.set('height', camera.currentHeight.toFixed(1));
     overlay.set('draws', String(renderer.scene.getActiveMeshes().length));
+
+    if (input.pointer.inside) {
+      const ray = screenRay(renderer.scene, camera.camera, input.pointer.x, input.pointer.y);
+      const hit = pickCell(world, ramps, ray);
+      overlay.set('cell', hit ? `${hit.cell} (${hit.cx},${hit.cy})` : '-');
+      overlay.set('tier', hit ? String(hit.tier) : '-');
+      overlay.set('flags', hit ? describeFlags(hit.flags) : '-');
+    } else {
+      overlay.set('cell', '-');
+      overlay.set('tier', '-');
+      overlay.set('flags', '-');
+    }
 
     renderer.scene.render();
   });

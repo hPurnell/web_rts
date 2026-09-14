@@ -97,6 +97,12 @@ async function main(): Promise<void> {
     failures.push(`terrain draw calls out of budget: ${draws}`);
   }
 
+  // M7: hovering must report a real cell, not a dash.
+  const cell = await readOverlay('cell');
+  const tier = Number(await readOverlay('tier'));
+  if (!/^\d+ \(\d+,\d+\)$/.test(cell.trim())) failures.push(`cell picking reported "${cell}"`);
+  if (!Number.isInteger(tier) || tier < 0 || tier > 3) failures.push(`picked tier out of range: ${tier}`);
+
   const fps = Number(await readOverlay('fps'));
   if (!Number.isFinite(fps) || fps < 30) {
     // Headless software rendering is slower than a real GPU; 30 is a floor

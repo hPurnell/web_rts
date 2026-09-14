@@ -36,7 +36,9 @@ async function main(): Promise<void> {
   const waitMs = Number(arg('wait', '1500'));
   const keys = arg('keys', '').split(',').filter(Boolean);
   const wheel = Number(arg('wheel', '0'));
+  const [mouseX, mouseY] = arg('mouse', '640,360').split(',').map(Number) as [number, number];
 
+  const pageErrors: string[] = [];
   const server = await createServer({ server: { port: 5199, strictPort: true }, logLevel: 'warn' });
   await server.listen();
 
@@ -46,13 +48,17 @@ async function main(): Promise<void> {
     args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
   });
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-  page.on('pageerror', (e) => console.error('pageerror:', String(e)));
+  const record = (text: string): void => {
+    pageErrors.push(text);
+    console.error(`page error: ${text}`);
+  };
+  page.on('pageerror', (e) => record(String(e)));
   page.on('console', (m) => {
-    if (m.type() === 'error') console.error('console error:', m.text());
+    if (m.type() === 'error') record(m.text());
   });
 
   await page.goto('http://localhost:5199/web_rts/', { waitUntil: 'networkidle' });
-  await page.mouse.move(640, 360);
+  await page.mouse.move(mouseX, mouseY);
   await page.waitForTimeout(waitMs);
 
   if (wheel !== 0) {
@@ -68,6 +74,12 @@ async function main(): Promise<void> {
     await page.waitForTimeout(200);
   }
 
+  // A second move right before capture: some headless setups deliver the very
+  // first pointer event before the page's listeners are attached.
+  await page.mouse.move(mouseX - 1, mouseY - 1);
+  await page.mouse.move(mouseX, mouseY);
+  await page.waitForTimeout(150);
+
   await page.screenshot({ path: out });
   const overlay = await page.textContent('.dev-overlay');
   console.log(`wrote ${out}`);
@@ -75,6 +87,13 @@ async function main(): Promise<void> {
 
   await browser.close();
   await server.close();
+
+  // A screenshot of a broken page still looks like a screenshot, so say so
+  // loudly and fail rather than letting a silent exception pass for success.
+  if (pageErrors.length > 0) {
+    console.error(`FAILED: ${pageErrors.length} page error(s) while capturing`);
+    process.exit(1);
+  }
 }
 
 void main();

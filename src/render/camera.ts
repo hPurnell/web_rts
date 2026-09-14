@@ -1,6 +1,11 @@
 /**
  * The RTS camera: fixed pitch, pans over the map, zooms by changing height.
  *
+ * Orientation convention for everything downstream: the camera sits south of
+ * its focus and looks along +Z, so world +Z (increasing cell row) goes *up* the
+ * screen and world +X goes right. The minimap in M27 therefore flips V when it
+ * draws the grid.
+ *
  * The camera is defined by a focus point on the ground plane plus a height.
  * Everything else is derived, which is what keeps zoom from fighting pan — the
  * ground point under the screen centre does not move when you zoom.

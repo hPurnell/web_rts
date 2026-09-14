@@ -21,8 +21,10 @@
   "devDependencies": {
     "@babylonjs/inspector": "^9.26.0",
     "@eslint/js": "^9.13.0",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^26.5.1",
     "eslint": "^9.13.0",
+    "jsdom": "^30.0.1",
     "playwright": "^1.63.0",
     "rollup-plugin-visualizer": "^5.12.0",
     "tsx": "^4.23.13",
