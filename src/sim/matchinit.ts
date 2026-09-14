@@ -8,6 +8,7 @@
 import type { Match, MatchInit } from './match.ts';
 import { MAX_PLAYERS, createMatch } from './match.ts';
 import { createCostGrid } from '../nav/grid.ts';
+import { createNodeState } from './economy.ts';
 import type { World } from './world.ts';
 import { cellFromWorld, worldFromCell } from './world.ts';
 import { spawnUnit } from './units.ts';
@@ -25,6 +26,8 @@ export interface MatchSetup extends MatchInit {
   readonly world: World;
   /** Workers each player begins with. */
   readonly startingWorkers?: number;
+  /** Drop-off structures each player begins with. Zero for a bare match. */
+  readonly startingDepots?: number;
   readonly startingMinerals?: number;
 }
 
@@ -49,7 +52,9 @@ export function createMatchFromWorld(setup: MatchSetup): Match {
     worldHeight: world.height,
     costGrid: setup.costGrid ?? createCostGrid(world),
   });
+  match.nodes = createNodeState(world);
   const workers = setup.startingWorkers ?? STARTING_WORKERS;
+  const depots = setup.startingDepots ?? 1;
   const minerals = setup.startingMinerals ?? STARTING_MINERALS;
   const workerType = unitTypeById('worker');
   const radius = mul(fromInt(2), world.cellSize);
@@ -61,6 +66,18 @@ export function createMatchFromWorld(setup: MatchSetup): Match {
     const start = world.startLocations[player];
     if (!start) continue;
     const centre = worldFromCell(world, start.cell);
+
+    // A drop-off at the start location, so the opening economy has somewhere
+    // to deliver to. M26 lets players build more.
+    for (let d = 0; d < depots; d++) {
+      spawnUnit(match.units, {
+        type: unitTypeById('depot'),
+        ownerId: player,
+        x: centre.x,
+        z: centre.z,
+        facing: 0,
+      });
+    }
 
     for (let i = 0; i < workers; i++) {
       const offset = ringOffset(i, workers, radius);

@@ -20,6 +20,8 @@ import type { FogGrids } from './fog.ts';
 import { createFogGrids, fogHashableArrays } from './fog.ts';
 import type { ProjectileStore } from './projectiles.ts';
 import { createProjectileStore, projectileHashableArrays } from './projectiles.ts';
+import type { NodeState } from './economy.ts';
+import { nodeHashableArrays } from './economy.ts';
 
 export const MAX_PLAYERS = 8;
 
@@ -51,6 +53,8 @@ export interface Match {
   costGrid: CostGrid | null;
   readonly fog: FogGrids;
   readonly projectiles: ProjectileStore;
+  /** Per-match resource node state; the map's own amounts are never touched. */
+  nodes: NodeState;
 }
 
 export function createMatch(init: MatchInit): Match {
@@ -70,6 +74,12 @@ export function createMatch(init: MatchInit): Match {
     costGrid: init.costGrid ?? null,
     fog: createFogGrids(init.worldWidth ?? 64, init.worldHeight ?? 64),
     projectiles: createProjectileStore(),
+    nodes: {
+      amount: new Int32Array(0),
+      harvesters: new Int32Array(0),
+      cell: new Int32Array(0),
+      type: new Uint8Array(0),
+    },
   };
 }
 
@@ -88,6 +98,7 @@ export function hashableArrays(match: Match): { name: string; data: ArrayBufferV
     ...unitHashableArrays(match.units),
     ...fogHashableArrays(match.fog, match.playerCount),
     ...projectileHashableArrays(match.projectiles),
+    ...nodeHashableArrays(match.nodes),
   ];
 }
 

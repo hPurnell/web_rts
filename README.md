@@ -12,7 +12,8 @@ See [PLAN.md](PLAN.md) for the architecture invariants and milestone plan.
 |---|---|
 | `pnpm dev` | Vite dev server |
 | `pnpm build` | Typecheck + production build into `dist/` |
-| `pnpm test` | Vitest |
+| `pnpm test` | Vitest, then the serial performance budgets |
+| `pnpm test:perf` | The performance budgets alone (see vitest.perf.config.ts) |
 | `pnpm test:determinism` | The determinism harness alone |
 | `pnpm lint` | ESLint, including the invariant rules |
 | `pnpm typecheck` | `tsc --noEmit` |

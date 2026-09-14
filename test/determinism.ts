@@ -215,6 +215,7 @@ export function runScript(options: RunOptions = {}): Match {
     // The script spawns everything itself, so the opening position does not
     // silently shift the hash when starting forces change.
     startingWorkers: 0,
+    startingDepots: 0,
   });
   const context = { world };
   const schedule = byTick(options.script ?? SCRIPT);

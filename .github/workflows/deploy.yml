@@ -31,6 +31,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm test:determinism
+      - run: pnpm test:perf
       - run: pnpm build
       - run: pnpm check:bundle
       - run: pnpm exec playwright install --with-deps chromium-headless-shell

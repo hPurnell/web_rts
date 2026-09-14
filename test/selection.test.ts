@@ -187,20 +187,6 @@ describe('picking units', () => {
     expect(found.sort()).toEqual(soldiers.sort());
   });
 
-  it('box-selects 500 units in well under a millisecond', () => {
-    const m = match();
-    for (let i = 0; i < 500; i++) spawn(m, 'soldier', 0, 10 + (i % 50), 10 + ((i / 50) | 0));
-    const rect = { left: 0, top: 0, right: WIDTH, bottom: HEIGHT };
-    const options = { ownerId: 0, width: WIDTH, height: HEIGHT };
-
-    // Warm up, then measure: this runs on pointer-up, inside a frame budget.
-    for (let i = 0; i < 20; i++) unitsInRect(m.units, TOP_DOWN, rect, options);
-    const start = performance.now();
-    const runs = 200;
-    for (let i = 0; i < runs; i++) unitsInRect(m.units, TOP_DOWN, rect, options);
-    const per = (performance.now() - start) / runs;
-    expect(per).toBeLessThan(1);
-  });
 });
 
 describe('control groups', () => {

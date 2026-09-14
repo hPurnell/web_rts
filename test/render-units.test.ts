@@ -100,26 +100,6 @@ describe('instanced unit rendering', () => {
     renderer.dispose();
   });
 
-  it('writes 2,000 instances fast enough to do it every frame', () => {
-    const renderer = createUnitRenderer(scene);
-    const match = createMatch({ seed: 1, playerCount: 2 });
-    const per = Math.floor(2000 / (UNIT_TYPES.length * 2));
-    for (const type of UNIT_TYPES) {
-      spawnMany(match, type.id, 0, per);
-      spawnMany(match, type.id, 1, per);
-    }
-    renderer.captureTick(match);
-
-    const start = performance.now();
-    const frames = 60;
-    for (let i = 0; i < frames; i++) renderer.update(match, world, ramps, i / frames);
-    const perFrame = (performance.now() - start) / frames;
-    // A 60fps frame has 16ms for everything; instance writing must be a small
-    // slice of that.
-    expect(perFrame).toBeLessThan(6);
-    renderer.dispose();
-  });
-
   it('interpolates between ticks instead of snapping', () => {
     const renderer = createUnitRenderer(scene);
     const match = createMatch({ seed: 1, playerCount: 2 });

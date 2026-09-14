@@ -30,6 +30,7 @@ function setup(world = createTestMap()) {
     seed: 1,
     playerCount: 2,
     startingWorkers: 0,
+    startingDepots: 0,
     costGrid: createCostGrid(world),
   });
   return { world, match, context: { world } };

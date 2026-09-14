@@ -66,12 +66,16 @@ function begin(store: UnitStore, index: number, order: ReturnType<typeof headOrd
 
   switch (order.kind) {
     case OrderKind.Move:
-    case OrderKind.AttackMove:
-    case OrderKind.Gather: {
-      // Gather and attack-move walk to the target for now; M24 and M25 give
-      // them what to do once they arrive.
+    case OrderKind.AttackMove: {
       store.goalCell[index] = order.cell;
       store.state[index] = order.cell >= 0 ? UnitState.Moving : UnitState.Idle;
+      return;
+    }
+    case OrderKind.Gather: {
+      // The economy owns where a gatherer walks: it alternates between the
+      // patch and the drop-off, and setting a goal here would fight it.
+      store.state[index] = UnitState.Gathering;
+      store.goalCell[index] = -1;
       return;
     }
     case OrderKind.Attack: {
@@ -102,10 +106,13 @@ function isFinished(
 ): boolean {
   switch (order.kind) {
     case OrderKind.Move:
-    case OrderKind.Gather:
     case OrderKind.AttackMove:
       // Movement clears the goal when it arrives or gives up.
       return store.state[index] === UnitState.Idle;
+    case OrderKind.Gather:
+      // The gather loop has no end: the economy pops the order itself when
+      // there is nothing left to mine.
+      return false;
     case OrderKind.Attack: {
       const target = resolve(store, order.target);
       if (target < 0) return true; // the target is dead: the order is done

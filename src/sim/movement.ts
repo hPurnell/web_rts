@@ -89,7 +89,6 @@ export function stepMovement(match: Match, context: MovementContext): SpatialHas
   const crowd = new Map<number, number>();
   for (let i = 0; i < store.count; i++) {
     if (store.isAlive[i] !== 1) continue;
-    if (store.state[i] !== UnitState.Moving) continue;
     const goal = store.goalCell[i] as number;
     if (goal < 0) continue;
     crowd.set(goal, (crowd.get(goal) ?? 0) + 1);
@@ -97,7 +96,9 @@ export function stepMovement(match: Match, context: MovementContext): SpatialHas
 
   for (let i = 0; i < store.count; i++) {
     if (store.isAlive[i] !== 1) continue;
-    if (store.state[i] !== UnitState.Moving) continue;
+    // Anything with a goal walks, whatever it thinks it is doing: a worker on
+    // its way to a patch is Gathering, not Moving, and still has to get there.
+    if ((store.goalCell[i] as number) < 0) continue;
 
     const goalCell = store.goalCell[i] as number;
     if (goalCell < 0) {
@@ -258,13 +259,20 @@ function commit(
   if (velX !== 0 || velZ !== 0) store.facing[index] = atan2(velZ, velX);
 }
 
+/**
+ * Stop walking.
+ *
+ * The state only drops to Idle for a unit that was plainly moving. A worker
+ * arriving at a patch is still gathering, and the economy decides what it does
+ * next; clearing its state here would restart its whole loop every trip.
+ */
 function stop(store: Match['units'], index: number): void {
   store.velX[index] = 0;
   store.velZ[index] = 0;
-  store.state[index] = UnitState.Idle;
   store.goalCell[index] = -1;
   store.stuckTicks[index] = 0;
   store.bestProgress[index] = NO_PROGRESS;
+  if (store.state[index] === UnitState.Moving) store.state[index] = UnitState.Idle;
 }
 
 /** Arrival radius for a goal shared by `count` units of radius `unitRadius`. */

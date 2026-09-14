@@ -90,6 +90,16 @@ export interface UnitStore {
   /** 1 once the head order has been handed to a system to execute. */
   readonly orderStarted: Uint8Array;
 
+  // --- gathering ---------------------------------------------------------
+  /** Resource units currently carried. */
+  readonly carryAmount: Int32Array;
+  /** Which resource is carried, when carryAmount is non-zero. */
+  readonly carryType: Uint8Array;
+  /** Index into the match's node list, or -1. */
+  readonly gatherNode: Int32Array;
+  /** Ticks left in the current harvest, or 0. */
+  readonly harvestTicks: Int32Array;
+
   /** Generation of each slot; odd bookkeeping kept out of the hashed set. */
   readonly generation: Uint16Array;
   readonly isAlive: Uint8Array;
@@ -123,6 +133,10 @@ export function createUnitStore(): UnitStore {
     orderHead: new Uint8Array(MAX_UNITS),
     orderCount: new Uint8Array(MAX_UNITS),
     orderStarted: new Uint8Array(MAX_UNITS),
+    carryAmount: new Int32Array(MAX_UNITS),
+    carryType: new Uint8Array(MAX_UNITS),
+    gatherNode: new Int32Array(MAX_UNITS).fill(-1),
+    harvestTicks: new Int32Array(MAX_UNITS),
     generation: new Uint16Array(MAX_UNITS),
     isAlive: new Uint8Array(MAX_UNITS),
     nextFree: new Int32Array(MAX_UNITS),
@@ -199,6 +213,10 @@ export function spawnUnit(store: UnitStore, request: SpawnRequest): UnitHandle {
   store.goalCell[index] = -1;
   store.stuckTicks[index] = 0;
   store.bestProgress[index] = 0x7fffffff;
+  store.carryAmount[index] = 0;
+  store.carryType[index] = 0;
+  store.gatherNode[index] = -1;
+  store.harvestTicks[index] = 0;
   clearOrders(store, index);
   store.isAlive[index] = 1;
   store.alive++;
@@ -219,6 +237,8 @@ export function despawnUnit(store: UnitStore, handle: UnitHandle): boolean {
   store.state[index] = UnitState.Dead;
   store.hp[index] = 0;
   store.goalCell[index] = -1;
+  store.gatherNode[index] = -1;
+  store.harvestTicks[index] = 0;
   clearOrders(store, index);
   store.alive--;
 
@@ -256,6 +276,10 @@ export function resetUnitStore(store: UnitStore): void {
   store.orderHead.fill(0);
   store.orderCount.fill(0);
   store.orderStarted.fill(0);
+  store.carryAmount.fill(0);
+  store.carryType.fill(0);
+  store.gatherNode.fill(-1);
+  store.harvestTicks.fill(0);
   store.generation.fill(1);
   store.isAlive.fill(0);
   store.nextFree.fill(-1);
@@ -289,6 +313,10 @@ export function unitHashableArrays(store: UnitStore): { name: string; data: Arra
     { name: 'unit.orderHead', data: store.orderHead.subarray(0, n) },
     { name: 'unit.orderCount', data: store.orderCount.subarray(0, n) },
     { name: 'unit.orderStarted', data: store.orderStarted.subarray(0, n) },
+    { name: 'unit.carryAmount', data: store.carryAmount.subarray(0, n) },
+    { name: 'unit.carryType', data: store.carryType.subarray(0, n) },
+    { name: 'unit.gatherNode', data: store.gatherNode.subarray(0, n) },
+    { name: 'unit.harvestTicks', data: store.harvestTicks.subarray(0, n) },
     { name: 'unit.orderKind', data: store.orderKind.subarray(0, n * MAX_QUEUED_ORDERS) },
     { name: 'unit.orderCell', data: store.orderCell.subarray(0, n * MAX_QUEUED_ORDERS) },
     { name: 'unit.orderTarget', data: store.orderTarget.subarray(0, n * MAX_QUEUED_ORDERS) },

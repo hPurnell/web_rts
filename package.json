@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vitest.perf.config.ts",
     "test:watch": "vitest",
     "test:determinism": "vitest run test/determinism.test.ts",
     "lint": "eslint .",
@@ -17,7 +17,8 @@
     "check:browser": "pnpm build && tsx tools/browser-check.ts",
     "gen:golden-sim": "tsx tools/gen-sim-golden.ts",
     "shot": "tsx tools/screenshot.ts",
-    "check:bundle": "tsx tools/check-bundle.ts"
+    "check:bundle": "tsx tools/check-bundle.ts",
+    "test:perf": "vitest run --config vitest.perf.config.ts"
   },
   "devDependencies": {
     "@babylonjs/inspector": "^9.26.0",

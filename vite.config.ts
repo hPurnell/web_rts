@@ -25,6 +25,9 @@ export default defineConfig({
   worker: { format: 'es' },
   test: {
     include: ['test/**/*.test.ts'],
+    // Performance budgets run serially, under their own config: see
+    // vitest.perf.config.ts.
+    exclude: ['test/**/*.perf.test.ts', '**/node_modules/**'],
     environment: 'node',
   },
 });

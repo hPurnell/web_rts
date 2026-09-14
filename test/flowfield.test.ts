@@ -158,30 +158,6 @@ describe('determinism and speed', () => {
     expect(hash(a)).toBe(hash(b));
   });
 
-  it('solves a 256x256 map in well under a frame', () => {
-    const world = w.createWorld({ width: 256, height: 256 });
-    // Scatter obstacles so the flood has to work, not just expand a square.
-    for (let i = 0; i < 4000; i++) {
-      const cell = (i * 2654435761) % (256 * 256);
-      w.setFlags(world, cell, 0);
-    }
-    const grid = createCostGrid(world);
-    const goal = w.cellIndex(world, 128, 128);
-
-    // Warm up properly: the first few solves measure the JIT, not the
-    // algorithm, and a five-run average taken cold reads three times high.
-    // Then take the best run, since test files share the machine.
-    for (let i = 0; i < 5; i++) computeFlowField(grid, goal);
-    let best = Infinity;
-    for (let i = 0; i < 10; i++) {
-      const start = performance.now();
-      computeFlowField(grid, goal);
-      best = Math.min(best, performance.now() - start);
-    }
-    // PLAN.md's budget is 15ms, and it runs off the main thread anyway.
-    expect(best).toBeLessThan(15);
-  });
-
   it('records the grid version it was solved against', () => {
     const world = createTestMap();
     const grid = createCostGrid(world);

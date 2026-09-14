@@ -22,6 +22,7 @@ function setup(world = createTestMap()) {
     seed: 1,
     playerCount: 2,
     startingWorkers: 0,
+    startingDepots: 0,
     costGrid,
   });
   return { world, costGrid, match, context: { world } };
@@ -76,18 +77,6 @@ describe('spatial hash', () => {
     expect(placed.size).toBe(50);
   });
 
-  it('is rebuilt cheaply enough to run every tick', () => {
-    const match = createMatch({ seed: 1, playerCount: 2 });
-    for (let i = 0; i < 2000; i++) spawnAt(match, 'soldier', 0, i % 200, (i / 200) | 0);
-    let hash = createSpatialHash(256, 256);
-    hash = rebuildSpatialHash(hash, match.units);
-
-    const start = performance.now();
-    const runs = 50;
-    for (let i = 0; i < runs; i++) hash = rebuildSpatialHash(hash, match.units);
-    const per = (performance.now() - start) / runs;
-    expect(per).toBeLessThan(2); // a 50ms tick has room, but not much
-  });
 });
 
 describe('movement', () => {

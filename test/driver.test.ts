@@ -137,14 +137,15 @@ describe('match initialisation from world state', () => {
     const world = createTestMap();
     const match = createMatchFromWorld({ world, seed: 5, playerCount: 2 });
 
-    expect(match.units.alive).toBe(STARTING_WORKERS * 2);
+    // Workers plus one drop-off structure each.
+    expect(match.units.alive).toBe((STARTING_WORKERS + 1) * 2);
     expect(match.minerals[0]).toBe(STARTING_MINERALS);
     expect(match.minerals[1]).toBe(STARTING_MINERALS);
 
     const workerType = unitTypeById('worker');
     const byOwner = [0, 0];
     forEachUnit(match.units, (i) => {
-      expect(match.units.typeId[i]).toBe(workerType.typeId);
+      if (match.units.typeId[i] !== workerType.typeId) return;
       byOwner[match.units.ownerId[i] as number]!++;
     });
     expect(byOwner).toEqual([STARTING_WORKERS, STARTING_WORKERS]);

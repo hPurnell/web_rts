@@ -12,6 +12,7 @@ import { stepMovement } from './movement.ts';
 import { stepOrders } from './orders.ts';
 import { FOG_INTERVAL_TICKS, updateFog } from './fog.ts';
 import { stepCombat } from './combat.ts';
+import { stepEconomy } from './economy.ts';
 import type { World } from './world.ts';
 
 export { TICKS_PER_SECOND } from './ticks.ts';
@@ -45,6 +46,7 @@ export function stepMatch(
   if (context && match.costGrid) {
     const grid = match.costGrid;
     stepOrders(match, context);
+    stepEconomy(match, context);
     match.spatialHash = stepMovement(match, {
       world: context.world,
       grid,
