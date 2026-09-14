@@ -18,6 +18,7 @@ See [PLAN.md](PLAN.md) for the architecture invariants and milestone plan.
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm check:browser` | Builds, then loads the page in headless Chromium and fails on any console error |
 | `pnpm gen:trig` | Regenerates the committed trig lookup tables |
+| `pnpm gen:golden-sim` | Regenerates the determinism harness golden hash (deliberate act only) |
 
 ## Deployment
 
@@ -36,3 +37,14 @@ it with the `VITE_BASE` environment variable when serving from elsewhere.
   globals.
 
 `test/invariants.test.ts` asserts both rules still fire.
+
+## The determinism harness
+
+`test/determinism.ts` builds a match from a fixed seed, applies a scripted
+command list, steps 600 ticks and hashes the result against
+`test/golden/sim.json`.
+
+Every simulation milestone **extends** `SCRIPT` and regenerates the golden hash
+with `pnpm gen:golden-sim`, and says so in the commit. A golden hash that
+changes without a matching script change is a desync introduced by that commit,
+not a test that needs updating.

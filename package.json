@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "gen:trig": "tsx tools/gen-trig.ts",
     "gen:golden": "tsx tools/gen-trig-golden.ts",
-    "check:browser": "pnpm build && tsx tools/browser-check.ts"
+    "check:browser": "pnpm build && tsx tools/browser-check.ts",
+    "gen:golden-sim": "tsx tools/gen-sim-golden.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",
