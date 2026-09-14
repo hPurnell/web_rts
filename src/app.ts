@@ -9,6 +9,7 @@ import { toFloat } from './sim/fixed.ts';
 import type { World } from './sim/world.ts';
 import { MAX_TIER, hashWorld, worldFromCell } from './sim/world.ts';
 import { createMatchFromWorld } from './sim/matchinit.ts';
+import { setAiPlayer } from './sim/ai.ts';
 import type { Driver } from './driver.ts';
 import { createDriver } from './driver.ts';
 import type { Replay, ReplayRecorder } from './sim/replay.ts';
@@ -257,10 +258,14 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       playerCount,
       mapHash: before,
     });
-    driver = createDriver(
-      createMatchFromWorld({ world, seed, playerCount, costGrid }),
-      { world },
-    );
+    const match = createMatchFromWorld({ world, seed, playerCount, costGrid });
+    // Every player but the local one is a bot, so a test match is a game
+    // rather than a diorama. The bot is part of the simulation, so replays
+    // re-derive it rather than recording what it did.
+    for (let player = 0; player < playerCount; player++) {
+      if (player !== LOCAL_PLAYER) setAiPlayer(match, player, true);
+    }
+    driver = createDriver(match, { world });
     unitRenderer.captureTick(driver.match);
     unitRenderer.update(driver.match, world, ramps, 1, LOCAL_PLAYER);
     setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);

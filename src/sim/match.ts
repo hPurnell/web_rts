@@ -22,6 +22,8 @@ import type { ProjectileStore } from './projectiles.ts';
 import { createProjectileStore, projectileHashableArrays } from './projectiles.ts';
 import type { NodeState } from './economy.ts';
 import { nodeHashableArrays } from './economy.ts';
+import type { AiState } from './ai.ts';
+import { aiHashableArrays, createAiState } from './ai.ts';
 
 export const MAX_PLAYERS = 8;
 
@@ -55,6 +57,8 @@ export interface Match {
   readonly projectiles: ProjectileStore;
   /** Per-match resource node state; the map's own amounts are never touched. */
   nodes: NodeState;
+  /** Which players the skirmish bot controls, and what it is doing. */
+  readonly ai: AiState;
 }
 
 export function createMatch(init: MatchInit): Match {
@@ -74,6 +78,7 @@ export function createMatch(init: MatchInit): Match {
     costGrid: init.costGrid ?? null,
     fog: createFogGrids(init.worldWidth ?? 64, init.worldHeight ?? 64),
     projectiles: createProjectileStore(),
+    ai: createAiState(),
     nodes: {
       amount: new Int32Array(0),
       harvesters: new Int32Array(0),
@@ -99,6 +104,7 @@ export function hashableArrays(match: Match): { name: string; data: ArrayBufferV
     ...fogHashableArrays(match.fog, match.playerCount),
     ...projectileHashableArrays(match.projectiles),
     ...nodeHashableArrays(match.nodes),
+    ...aiHashableArrays(match.ai),
   ];
 }
 

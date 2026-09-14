@@ -14,6 +14,7 @@ import { FOG_INTERVAL_TICKS, updateFog } from './fog.ts';
 import { stepCombat } from './combat.ts';
 import { stepEconomy } from './economy.ts';
 import { stepBuildings } from './building.ts';
+import { stepAi } from './ai.ts';
 import type { World } from './world.ts';
 
 export { TICKS_PER_SECOND } from './ticks.ts';
@@ -46,6 +47,9 @@ export function stepMatch(
   // orders -> movement -> combat -> gathering -> production -> fog.
   if (context && match.costGrid) {
     const grid = match.costGrid;
+    // The bot decides first, so its commands take effect this tick like a
+    // player's would.
+    stepAi(match, context);
     stepOrders(match, context);
     stepBuildings(match, context);
     stepEconomy(match, context);

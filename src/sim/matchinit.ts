@@ -11,10 +11,10 @@ import { createCostGrid } from '../nav/grid.ts';
 import { createNodeState } from './economy.ts';
 import type { World } from './world.ts';
 import { cellFromWorld, worldFromCell } from './world.ts';
-import { spawnUnit } from './units.ts';
+import { NULL_HANDLE, OrderKind, resolve, setOrder, spawnUnit } from './units.ts';
 import { unitTypeById } from './unittypes.ts';
 import type { Fixed } from './fixed.ts';
-import { add, fromInt, fromRatio, mul } from './fixed.ts';
+import { add, fromInt, fromRatio, mul, sub } from './fixed.ts';
 import { sinCos } from './trig.ts';
 import { TAU } from './fixed.ts';
 
@@ -42,6 +42,23 @@ function ringOffset(index: number, count: number, radius: Fixed): { x: Fixed; z:
   const angle = mul(fromRatio(index, Math.max(1, count)), TAU);
   const { s, c } = sinCos(angle);
   return { x: mul(c, radius), z: mul(s, radius) };
+}
+
+/** The resource patch nearest a point, or -1 when the map has none. */
+function nearestNode(world: World, x: Fixed, z: Fixed): number {
+  let best = -1;
+  let bestDistance = 0x7fffffff;
+  for (const node of world.resourceNodes) {
+    if (node.amount <= 0) continue;
+    const centre = worldFromCell(world, node.cell);
+    const dx = sub(x, centre.x);
+    const dz = sub(z, centre.z);
+    const distance = add(mul(dx, dx), mul(dz, dz));
+    if (distance >= bestDistance) continue;
+    bestDistance = distance;
+    best = node.cell;
+  }
+  return best;
 }
 
 export function createMatchFromWorld(setup: MatchSetup): Match {
@@ -87,13 +104,26 @@ export function createMatchFromWorld(setup: MatchSetup): Match {
       // otherwise fling part of the ring outside it.
       const cell = cellFromWorld(world, x, z);
       const placed = cell >= 0 ? { x, z } : centre;
-      spawnUnit(match.units, {
+      const handle = spawnUnit(match.units, {
         type: workerType,
         ownerId: player,
         x: placed.x,
         z: placed.z,
         facing: mul(fromRatio(i, Math.max(1, workers)), TAU),
       });
+
+      // Starting workers mine straight away, the way every RTS opens. Without
+      // it a match begins with six units standing still waiting to be told
+      // something everybody was always going to tell them.
+      const patch = nearestNode(world, placed.x, placed.z);
+      const index = resolve(match.units, handle);
+      if (patch >= 0 && index >= 0) {
+        setOrder(match.units, index, {
+          kind: OrderKind.Gather,
+          cell: patch,
+          target: NULL_HANDLE,
+        });
+      }
     }
   }
 

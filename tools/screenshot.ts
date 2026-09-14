@@ -117,6 +117,9 @@ async function main(): Promise<void> {
     await page.waitForTimeout(250);
   }
 
+  /** --after <ms> waits before capturing, e.g. to let a match play out. */
+  await page.waitForTimeout(Number(arg('after', '0')));
+
   // A second move right before capture: some headless setups deliver the very
   // first pointer event before the page's listeners are attached.
   await page.mouse.move(mouseX - 1, mouseY - 1);
