@@ -8,8 +8,7 @@ import type { SimCommand } from './commands.ts';
 import { applyCommand } from './commands.ts';
 import type { Match } from './match.ts';
 
-/** Simulation rate. Every duration in the simulation is counted in ticks. */
-export const TICKS_PER_SECOND = 20;
+export { TICKS_PER_SECOND } from './ticks.ts';
 
 /**
  * Advance the match by one tick.

@@ -9,6 +9,8 @@
  */
 import type { RandState } from './rand.ts';
 import { makeRand } from './rand.ts';
+import type { UnitStore } from './units.ts';
+import { createUnitStore, unitHashableArrays } from './units.ts';
 
 export const MAX_PLAYERS = 8;
 
@@ -26,6 +28,7 @@ export interface Match {
   /** Per-player mineral and gas totals, indexed by player id. */
   readonly minerals: Int32Array;
   readonly gas: Int32Array;
+  readonly units: UnitStore;
 }
 
 export function createMatch(init: MatchInit): Match {
@@ -39,6 +42,7 @@ export function createMatch(init: MatchInit): Match {
     rand: makeRand(init.seed),
     minerals: new Int32Array(MAX_PLAYERS),
     gas: new Int32Array(MAX_PLAYERS),
+    units: createUnitStore(),
   };
 }
 
@@ -54,6 +58,7 @@ export function hashableArrays(match: Match): { name: string; data: ArrayBufferV
     { name: 'rand', data: match.rand },
     { name: 'minerals', data: match.minerals },
     { name: 'gas', data: match.gas },
+    ...unitHashableArrays(match.units),
   ];
 }
 
@@ -63,5 +68,8 @@ export function hashableScalars(match: Match): { name: string; value: number }[]
     { name: 'tick', value: match.tick },
     { name: 'seed', value: match.seed },
     { name: 'playerCount', value: match.playerCount },
+    { name: 'units.count', value: match.units.count },
+    { name: 'units.alive', value: match.units.alive },
+    { name: 'units.freeHead', value: match.units.freeHead },
   ];
 }

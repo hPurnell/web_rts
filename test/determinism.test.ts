@@ -51,6 +51,24 @@ describe('determinism harness', () => {
     expect(runScriptHash({ script: moved })).not.toBe(golden.finalHash);
   });
 
+  it('carries the unit store', () => {
+    const match = runScript();
+    expect(match.units.alive).toBeGreaterThan(20);
+    expect(match.units.count).toBeGreaterThan(0);
+    // Two slots were freed and then reused, so the count is below the number
+    // of successful spawns.
+    expect(match.units.count).toBeGreaterThanOrEqual(match.units.alive);
+  });
+
+  it('notices a single unit position differing by one ULP', () => {
+    const a = runScript();
+    const b = runScript();
+    expect(hashMatch(a)).toBe(hashMatch(b));
+    b.units.posX[3] = (b.units.posX[3] as number) + 1;
+    expect(hashMatch(b)).not.toBe(hashMatch(a));
+    expect(diffComponents(a, b)).toEqual(['unit.posX']);
+  });
+
   it('reports which component diverged', () => {
     const a = runScript();
     const b = runScript();

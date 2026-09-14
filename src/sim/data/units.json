@@ -1,0 +1,61 @@
+{
+  "note": "Unit type table. Every value is an integer in the unit named by its suffix, so loading never parses a float (invariant 2).",
+  "types": [
+    {
+      "id": "worker",
+      "name": "Worker",
+      "hp": 45,
+      "speedMilliCellsPerSecond": 2800,
+      "sightRadiusMilliCells": 8000,
+      "attackRangeMilliCells": 500,
+      "damage": 5,
+      "cooldownTicks": 15,
+      "radiusMilliCells": 375,
+      "buildTicks": 240,
+      "mineralCost": 50,
+      "gasCost": 0
+    },
+    {
+      "id": "soldier",
+      "name": "Soldier",
+      "hp": 55,
+      "speedMilliCellsPerSecond": 2250,
+      "sightRadiusMilliCells": 9000,
+      "attackRangeMilliCells": 5000,
+      "damage": 6,
+      "cooldownTicks": 12,
+      "radiusMilliCells": 375,
+      "buildTicks": 300,
+      "mineralCost": 50,
+      "gasCost": 0
+    },
+    {
+      "id": "raider",
+      "name": "Raider",
+      "hp": 90,
+      "speedMilliCellsPerSecond": 4130,
+      "sightRadiusMilliCells": 10000,
+      "attackRangeMilliCells": 1000,
+      "damage": 14,
+      "cooldownTicks": 22,
+      "radiusMilliCells": 500,
+      "buildTicks": 420,
+      "mineralCost": 100,
+      "gasCost": 25
+    },
+    {
+      "id": "siege",
+      "name": "Siege tank",
+      "hp": 160,
+      "speedMilliCellsPerSecond": 2250,
+      "sightRadiusMilliCells": 11000,
+      "attackRangeMilliCells": 7000,
+      "damage": 35,
+      "cooldownTicks": 40,
+      "radiusMilliCells": 750,
+      "buildTicks": 640,
+      "mineralCost": 150,
+      "gasCost": 125
+    }
+  ]
+}
