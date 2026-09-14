@@ -30,3 +30,67 @@ html, body { margin: 0; height: 100%; background: #0d1014; color: #e8ecf1;
   font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
   pointer-events: none; user-select: none;
 }
+
+/* --- editor ------------------------------------------------------------- */
+.editor-root { position: absolute; inset: 0; pointer-events: none; }
+.editor-panel {
+  position: absolute; pointer-events: auto;
+  background: rgba(13, 17, 22, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.editor-panel h2 {
+  margin: 0; padding: 9px 12px 7px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase;
+  color: #8497a9; border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.editor-palette { top: 12px; right: 12px; width: 196px; padding-bottom: 6px; }
+.editor-tool {
+  display: flex; align-items: center; gap: 9px; width: calc(100% - 12px);
+  margin: 4px 6px 0; padding: 7px 9px;
+  background: transparent; border: 1px solid transparent; border-radius: 5px;
+  color: #cbd6e2; font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.editor-tool:hover { background: rgba(255, 255, 255, 0.06); }
+.editor-tool.is-active {
+  background: rgba(96, 165, 250, 0.16);
+  border-color: rgba(96, 165, 250, 0.5);
+  color: #eaf2ff;
+}
+.editor-key {
+  display: inline-grid; place-items: center; width: 18px; height: 18px;
+  border-radius: 4px; background: rgba(255, 255, 255, 0.1);
+  font: 11px/1 ui-monospace, Menlo, monospace; color: #9fb0c2;
+}
+.editor-tool.is-active .editor-key { background: rgba(96, 165, 250, 0.32); color: #eaf2ff; }
+.editor-properties { top: 12px; right: 220px; width: 208px; padding-bottom: 8px; }
+.editor-rows { padding: 6px 12px 0; }
+.editor-row {
+  display: flex; justify-content: space-between; gap: 12px; padding: 2px 0;
+  font: 12px/1.5 ui-monospace, Menlo, monospace; color: #cbd6e2;
+}
+.editor-row span:first-child { color: #7d8ea0; }
+.editor-hint { margin: 8px 12px 0; font-size: 12px; color: #8497a9; }
+.editor-status {
+  left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 18px;
+  padding: 8px 12px;
+}
+.editor-status-item {
+  display: flex; gap: 7px;
+  font: 12px/1.5 ui-monospace, Menlo, monospace; color: #e2e8f0;
+}
+.editor-status-key { color: #7d8ea0; }
+.editor-exit {
+  margin-left: auto; padding: 5px 11px;
+  background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px; color: #cbd6e2; font: inherit; font-size: 12px; cursor: pointer;
+}
+.editor-exit:hover { background: rgba(255, 255, 255, 0.12); }
+.mode-badge {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  padding: 4px 12px; border-radius: 999px;
+  background: rgba(96, 165, 250, 0.18); border: 1px solid rgba(96, 165, 250, 0.4);
+  font: 11px/1.5 ui-monospace, Menlo, monospace; letter-spacing: 0.08em;
+  text-transform: uppercase; color: #bfd9ff; pointer-events: none;
+}

@@ -32,6 +32,7 @@ jobs:
       - run: pnpm test
       - run: pnpm test:determinism
       - run: pnpm build
+      - run: pnpm check:bundle
       - run: pnpm exec playwright install --with-deps chromium-headless-shell
       - run: pnpm exec tsx tools/browser-check.ts
       - uses: actions/upload-pages-artifact@v3

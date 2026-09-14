@@ -15,12 +15,14 @@ import { TIER_HEIGHT, createTerrain, solveRamps } from './render/terrain.ts';
 import { describeFlags, pickCell, screenRay } from './render/pick.ts';
 import { createTerrainMaterial } from './render/terrainMaterial.ts';
 import { createDevOverlay } from './ui/devoverlay.ts';
+import { MODE_KEY, createModeController, modeFromLocation } from './mode.ts';
 
 /** Dev-only keybind for Babylon's Inspector. */
 const INSPECTOR_KEY = 'F9';
 
 export interface App {
   readonly world: World;
+  readonly mode: ReturnType<typeof createModeController>;
   dispose(): void;
 }
 
@@ -77,18 +79,31 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     renderer.scene.render();
   });
 
+  const mode = createModeController({
+    world,
+    overlay: overlayRoot,
+    onChange: (next) => overlay.set('mode', next),
+  });
+  overlay.set('mode', 'game');
+  if (modeFromLocation(window.location.search) === 'editor') void mode.set('editor');
+
   const onKey = (e: KeyboardEvent): void => {
     if (e.code === INSPECTOR_KEY) {
       e.preventDefault();
       void toggleInspector(renderer.scene);
+    } else if (e.code === MODE_KEY) {
+      e.preventDefault();
+      void mode.toggle();
     }
   };
   window.addEventListener('keydown', onKey);
 
   return {
     world,
+    mode,
     dispose() {
       window.removeEventListener('keydown', onKey);
+      mode.dispose();
       renderer.engine.stopRenderLoop();
       overlay.dispose();
       terrain.dispose();
