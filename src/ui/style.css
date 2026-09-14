@@ -120,3 +120,9 @@ html, body { margin: 0; height: 100%; background: #0d1014; color: #e8ecf1;
 
 .editor-test { background: rgba(110, 231, 168, 0.16); border-color: rgba(110, 231, 168, 0.4); }
 .editor-test.is-running { background: rgba(248, 113, 113, 0.18); border-color: rgba(248, 113, 113, 0.45); }
+
+.drag-box {
+  position: absolute; pointer-events: none;
+  border: 1px solid rgba(110, 231, 168, 0.9);
+  background: rgba(110, 231, 168, 0.12);
+}

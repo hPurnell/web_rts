@@ -249,7 +249,7 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
         const sin = Math.sin(facing);
         const cos = Math.cos(facing);
 
-        const y = groundHeight(world, ramps, x, z);
+        const y = groundHeightAt(world, ramps, x, z);
         const offset = group.count * FLOATS_PER_MATRIX;
         const radius = toFloat(UNIT_TYPES[units.typeId[i] as number]?.radius ?? 0);
         writeMatrix(group.hullData, offset, x, y + hullShape(radius).lift, z, sin, cos);
@@ -304,7 +304,7 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
 }
 
 /** Terrain height under a world-space point, following ramp slopes. */
-function groundHeight(world: World, ramps: RampSlopes, x: number, z: number): number {
+export function groundHeightAt(world: World, ramps: RampSlopes, x: number, z: number): number {
   const cellSize = toFloat(world.cellSize);
   const cell = cellFromWorld(world, Math.round(x * 65536), Math.round(z * 65536));
   if (cell < 0) return 0;

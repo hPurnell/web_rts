@@ -19,6 +19,9 @@ import { describeFlags, pickCell, screenRay } from './render/pick.ts';
 import { FLAG_LAYERS, createFlagOverlay } from './render/flagoverlay.ts';
 import { createGizmos } from './render/gizmos.ts';
 import { createUnitRenderer } from './render/units.ts';
+import { createSelectionRings } from './render/selectionrings.ts';
+import { SelectionController } from './game/selectioncontroller.ts';
+import { MOUSE_LEFT } from './render/input.ts';
 import { createTerrainMaterial } from './render/terrainMaterial.ts';
 import { createDevOverlay } from './ui/devoverlay.ts';
 import { MODE_KEY, createModeController, modeFromLocation } from './mode.ts';
@@ -70,6 +73,23 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   const gizmos = createGizmos(renderer.scene, () => world);
   gizmos.rebuild(ramps);
   const unitRenderer = createUnitRenderer(renderer.scene);
+  const selectionRings = createSelectionRings(renderer.scene);
+
+  /** The player this client controls. Multiplayer decides this at M31. */
+  const LOCAL_PLAYER = 0;
+  const selection = new SelectionController(LOCAL_PLAYER);
+
+  const dragBoxElement = document.createElement('div');
+  dragBoxElement.className = 'drag-box';
+  dragBoxElement.hidden = true;
+  overlayRoot.appendChild(dragBoxElement);
+
+  /** View data the selection code needs, read fresh each time it is used. */
+  const viewInfo = () => ({
+    viewProjection: renderer.scene.getTransformMatrix().m,
+    width: renderer.engine.getRenderWidth(),
+    height: renderer.engine.getRenderHeight(),
+  });
 
   /** Swap in a different map: rebuild the scene and re-bound the camera. */
   function loadWorld(next: World): void {
@@ -121,6 +141,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     driver = null;
     mode.editor()?.refresh();
     unitRenderer.clear();
+    selection.selection.clear();
+    selection.cancelDrag();
+    selectionRings.clear();
+    dragBoxElement.hidden = true;
+    overlay.remove('selected');
     overlay.remove('tick');
     overlay.remove('units');
     overlay.set('match', 'stopped');
@@ -136,8 +161,24 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       const running = driver;
       running.advance(dt, undefined, () => unitRenderer.captureTick(running.match));
       unitRenderer.update(running.match, world, ramps, running.alpha());
+
+      selection.prune(running.match.units);
+      selectionRings.update(selection.selection.list(), running.match.units, world, ramps);
+
+      const box = selection.dragBox();
+      if (box) {
+        dragBoxElement.hidden = false;
+        dragBoxElement.style.left = `${box.left}px`;
+        dragBoxElement.style.top = `${box.top}px`;
+        dragBoxElement.style.width = `${box.right - box.left}px`;
+        dragBoxElement.style.height = `${box.bottom - box.top}px`;
+      } else {
+        dragBoxElement.hidden = true;
+      }
+
       overlay.set('tick', String(driver.tick()));
       overlay.set('units', String(driver.match.units.alive));
+      overlay.set('selected', String(selection.selection.count));
     }
 
     // getFps() is NaN on the very first frames; without this guard the
@@ -219,34 +260,57 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
 
   // Editor pointer routing. The camera keeps middle-drag; the brush uses left
   // and right, and only while the editor is open.
-  const editorPointer = (handler: (session: NonNullable<ReturnType<typeof mode.session>>, e: PointerEvent) => void) => {
-    return (e: PointerEvent): void => {
-      const session = mode.session();
-      if (!session || mode.current() !== 'editor') return;
-      handler(session, e);
-    };
-  };
+  const modifiersOf = (e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => ({
+    shift: e.shiftKey,
+    ctrl: e.ctrlKey || e.metaKey,
+  });
   const canvasPoint = (e: PointerEvent): [number, number] => {
     const rect = canvas.getBoundingClientRect();
     return [e.clientX - rect.left, e.clientY - rect.top];
   };
 
-  const onPointerDown = editorPointer((session, e) => {
-    if (e.button !== 0 && e.button !== 2) return;
+  const onPointerDown = (e: PointerEvent): void => {
     const [x, y] = canvasPoint(e);
-    session.pointerDown(x, y, e.button);
-  });
-  const onPointerMove = editorPointer((session, e) => {
+    const session = mode.session();
+    if (session && mode.current() === 'editor') {
+      if (e.button === 0 || e.button === 2) session.pointerDown(x, y, e.button);
+      return;
+    }
+    // In game mode, left-drag selects.
+    if (driver && e.button === 0) selection.beginDrag(x, y);
+  };
+
+  const onPointerMove = (e: PointerEvent): void => {
     const [x, y] = canvasPoint(e);
-    session.pointerMove(x, y);
-  });
-  const onPointerUp = editorPointer((session) => session.pointerUp());
+    const session = mode.session();
+    if (session && mode.current() === 'editor') {
+      session.pointerMove(x, y);
+      return;
+    }
+    if (driver && (e.buttons & MOUSE_LEFT) !== 0) selection.updateDrag(x, y);
+  };
+
+  const onPointerUp = (e: PointerEvent): void => {
+    const session = mode.session();
+    if (session && mode.current() === 'editor') {
+      session.pointerUp();
+      return;
+    }
+    if (!driver) return;
+    const [x, y] = canvasPoint(e);
+    selection.endDrag(x, y, driver.match.units, viewInfo(), modifiersOf(e), e.timeStamp);
+  };
+
+  const onPointerLost = (): void => {
+    mode.session()?.pointerUp();
+    selection.cancelDrag();
+  };
 
   canvas.addEventListener('pointerdown', onPointerDown);
   canvas.addEventListener('pointermove', onPointerMove);
   canvas.addEventListener('pointerup', onPointerUp);
-  canvas.addEventListener('pointercancel', onPointerUp);
-  window.addEventListener('blur', onPointerUp as EventListener);
+  canvas.addEventListener('pointercancel', onPointerLost);
+  window.addEventListener('blur', onPointerLost);
 
   const onKey = (e: KeyboardEvent): void => {
     if (e.code === INSPECTOR_KEY) {
@@ -255,6 +319,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     } else if (e.code === MODE_KEY) {
       e.preventDefault();
       void mode.toggle();
+    } else if (driver && mode.current() === 'game' && /^Digit[0-9]$/.test(e.code)) {
+      const digit = Number(e.code.slice(5));
+      if (selection.handleDigit(digit, driver.match.units, modifiersOf(e))) e.preventDefault();
     } else if (e.code === TEST_MATCH_KEY) {
       e.preventDefault();
       if (driver) stopMatch();
@@ -283,8 +350,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       canvas.removeEventListener('pointerdown', onPointerDown);
       canvas.removeEventListener('pointermove', onPointerMove);
       canvas.removeEventListener('pointerup', onPointerUp);
-      canvas.removeEventListener('pointercancel', onPointerUp);
-      window.removeEventListener('blur', onPointerUp as EventListener);
+      canvas.removeEventListener('pointercancel', onPointerLost);
+      window.removeEventListener('blur', onPointerLost);
+      dragBoxElement.remove();
+      selectionRings.dispose();
       mode.dispose();
       renderer.engine.stopRenderLoop();
       overlay.dispose();
