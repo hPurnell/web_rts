@@ -11,7 +11,7 @@ import { MAX_TIER } from './sim/world.ts';
 import { createRenderer } from './render/engine.ts';
 import { RtsCamera } from './render/camera.ts';
 import { attachInput } from './render/input.ts';
-import { TIER_HEIGHT, createTerrain, solveRamps } from './render/terrain.ts';
+import { TIER_HEIGHT, createTerrain } from './render/terrain.ts';
 import { describeFlags, pickCell, screenRay } from './render/pick.ts';
 import { createTerrainMaterial } from './render/terrainMaterial.ts';
 import { createDevOverlay } from './ui/devoverlay.ts';
@@ -47,7 +47,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     lightDirection: renderer.sun.direction,
   });
   const terrain = createTerrain(renderer.scene, world, terrainMaterial);
-  const ramps = solveRamps(world);
+  let ramps = terrain.ramps();
 
   let smoothedFps = 60;
   renderer.engine.runRenderLoop(() => {
@@ -82,10 +82,65 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   const mode = createModeController({
     world,
     overlay: overlayRoot,
+    sessionHooks: {
+      pick: (screenX, screenY) => {
+        const ray = screenRay(renderer.scene, camera.camera, screenX, screenY);
+        return pickCell(world, ramps, ray)?.cell ?? -1;
+      },
+      rebuildCells: (cells) => {
+        if (cells.length === 0) return;
+        // One rebuild per affected chunk, however many cells the stroke moved.
+        let x0 = Infinity;
+        let y0 = Infinity;
+        let x1 = -Infinity;
+        let y1 = -Infinity;
+        for (const cell of cells) {
+          const cx = cell % world.width;
+          const cy = (cell / world.width) | 0;
+          if (cx < x0) x0 = cx;
+          if (cy < y0) y0 = cy;
+          if (cx > x1) x1 = cx;
+          if (cy > y1) y1 = cy;
+        }
+        terrain.rebuildChunks(terrain.chunksForRect(x0, y0, x1, y1));
+        ramps = terrain.ramps();
+      },
+    },
     onChange: (next) => overlay.set('mode', next),
   });
   overlay.set('mode', 'game');
   if (modeFromLocation(window.location.search) === 'editor') void mode.set('editor');
+
+  // Editor pointer routing. The camera keeps middle-drag; the brush uses left
+  // and right, and only while the editor is open.
+  const editorPointer = (handler: (session: NonNullable<ReturnType<typeof mode.session>>, e: PointerEvent) => void) => {
+    return (e: PointerEvent): void => {
+      const session = mode.session();
+      if (!session || mode.current() !== 'editor') return;
+      handler(session, e);
+    };
+  };
+  const canvasPoint = (e: PointerEvent): [number, number] => {
+    const rect = canvas.getBoundingClientRect();
+    return [e.clientX - rect.left, e.clientY - rect.top];
+  };
+
+  const onPointerDown = editorPointer((session, e) => {
+    if (e.button !== 0 && e.button !== 2) return;
+    const [x, y] = canvasPoint(e);
+    session.pointerDown(x, y, e.button);
+  });
+  const onPointerMove = editorPointer((session, e) => {
+    const [x, y] = canvasPoint(e);
+    session.pointerMove(x, y);
+  });
+  const onPointerUp = editorPointer((session) => session.pointerUp());
+
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerUp);
+  window.addEventListener('blur', onPointerUp as EventListener);
 
   const onKey = (e: KeyboardEvent): void => {
     if (e.code === INSPECTOR_KEY) {
@@ -103,6 +158,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     mode,
     dispose() {
       window.removeEventListener('keydown', onKey);
+      canvas.removeEventListener('pointerdown', onPointerDown);
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerup', onPointerUp);
+      canvas.removeEventListener('pointercancel', onPointerUp);
+      window.removeEventListener('blur', onPointerUp as EventListener);
       mode.dispose();
       renderer.engine.stopRenderLoop();
       overlay.dispose();

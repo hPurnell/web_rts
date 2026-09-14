@@ -8,7 +8,7 @@
  * The mode is also in the URL (?mode=editor) so a reload keeps you where you
  * were and the editor is linkable.
  */
-import type { EditorHandle } from './editor/index.ts';
+import type { EditorHandle, EditorSession, SessionHooks } from './editor/index.ts';
 import type { World } from './sim/world.ts';
 
 export type Mode = 'game' | 'editor';
@@ -18,6 +18,9 @@ export const MODE_KEY = 'F2';
 export interface ModeContext {
   readonly world: World;
   readonly overlay: HTMLElement;
+  /** Hooks the editing session needs to reach the scene. Omit for a UI-only
+   * editor, as the DOM tests do. */
+  readonly sessionHooks?: SessionHooks;
   /** Called after every completed switch, with the new mode. */
   onChange?(mode: Mode): void;
 }
@@ -25,6 +28,7 @@ export interface ModeContext {
 export interface ModeController {
   current(): Mode;
   editor(): EditorHandle | null;
+  session(): EditorSession | null;
   set(mode: Mode): Promise<void>;
   toggle(): Promise<void>;
   dispose(): void;
@@ -37,6 +41,7 @@ export function modeFromLocation(search: string): Mode {
 export function createModeController(context: ModeContext): ModeController {
   let mode: Mode = 'game';
   let editor: EditorHandle | null = null;
+  let session: EditorSession | null = null;
   let badge: HTMLElement | null = null;
   let switching: Promise<void> = Promise.resolve();
 
@@ -50,10 +55,13 @@ export function createModeController(context: ModeContext): ModeController {
   const enter = async (): Promise<void> => {
     if (editor) return;
     // The one dynamic import that keeps src/editor out of the game bundle.
-    const { mountEditor } = await import('./editor/index.ts');
+    const { mountEditor, createSession } = await import('./editor/index.ts');
+    const hooks = context.sessionHooks;
+    session = hooks ? createSession(context.world, { ...hooks, onChange: () => editor?.refresh() }) : null;
     editor = mountEditor({
       world: context.world,
       overlay: context.overlay,
+      ...(session ? { session } : {}),
       onExit: () => {
         void controller.set('game');
       },
@@ -67,6 +75,8 @@ export function createModeController(context: ModeContext): ModeController {
   const leave = (): void => {
     editor?.dispose();
     editor = null;
+    session?.dispose();
+    session = null;
     badge?.remove();
     badge = null;
   };
@@ -94,6 +104,7 @@ export function createModeController(context: ModeContext): ModeController {
   const controller: ModeController = {
     current: () => mode,
     editor: () => editor,
+    session: () => session,
     set: (next) => enqueue(() => next),
     toggle: () => enqueue(() => (mode === 'game' ? 'editor' : 'game')),
     dispose() {

@@ -37,6 +37,11 @@ async function main(): Promise<void> {
   const keys = arg('keys', '').split(',').filter(Boolean);
   const wheel = Number(arg('wheel', '0'));
   const [mouseX, mouseY] = arg('mouse', '640,360').split(',').map(Number) as [number, number];
+  /** --drag "x1,y1 x2,y2 ..." presses the left button and paints along a path. */
+  const drag = arg('drag', '')
+    .split(' ')
+    .filter(Boolean)
+    .map((p) => p.split(',').map(Number) as [number, number]);
 
   const pageErrors: string[] = [];
   const server = await createServer({ server: { port: 5199, strictPort: true }, logLevel: 'warn' });
@@ -72,6 +77,23 @@ async function main(): Promise<void> {
     await page.waitForTimeout(Number(arg('hold', '600')));
     for (const key of keys) await page.keyboard.up(key);
     await page.waitForTimeout(200);
+  }
+
+  if (drag.length > 0) {
+    const [first, ...rest] = drag;
+    await page.mouse.move(first![0], first![1]);
+    await page.mouse.down();
+    for (const [x, y] of rest) {
+      await page.mouse.move(x, y, { steps: 8 });
+    }
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+  }
+
+  /** --press "Control+z,Control+z" sends chord presses after everything else. */
+  for (const chord of arg('press', '').split(',').filter(Boolean)) {
+    await page.keyboard.press(chord);
+    await page.waitForTimeout(250);
   }
 
   // A second move right before capture: some headless setups deliver the very

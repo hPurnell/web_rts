@@ -7,6 +7,7 @@
  */
 import { Disposer } from '../ui/disposer.ts';
 import type { World } from '../sim/world.ts';
+import type { EditorSession } from './session.ts';
 
 export interface EditorTool {
   readonly id: string;
@@ -20,6 +21,8 @@ export interface EditorContext {
   readonly world: World;
   /** Where the editor's DOM goes. */
   readonly overlay: HTMLElement;
+  /** The editing session, when the editor is driving a live scene. */
+  readonly session?: EditorSession;
   /** Called when the user picks a different tool. */
   onToolChange?(tool: EditorTool): void;
   /** Called when the user asks to leave the editor. */
@@ -32,6 +35,8 @@ export interface EditorHandle {
   activeTool(): EditorTool;
   selectTool(id: string): void;
   setStatus(key: string, value: string): void;
+  /** Re-read the session into the status bar. */
+  refresh(): void;
   /** Outstanding teardowns; zero after dispose. Used by the leak test. */
   pendingTeardowns(): number;
   dispose(): void;
@@ -130,11 +135,43 @@ export function mountEditor(context: EditorContext): EditorHandle {
     }
     hint.textContent = tool.hint;
     setStatus('tool', tool.label);
+    if (context.session) context.session.tool = tool;
     context.onToolChange?.(tool);
   }
 
+  const session = context.session;
+
+  const refresh = (): void => {
+    if (!session) return;
+    setStatus('brush', `r${session.radius}`);
+    setStatus('undo', `${session.history.depth} step${session.history.depth === 1 ? '' : 's'}`);
+  };
+
   disposer.listen(window, 'keydown', (event) => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.altKey) return;
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+      event.preventDefault();
+      if (event.shiftKey) session?.redo();
+      else session?.undo();
+      refresh();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+      event.preventDefault();
+      session?.redo();
+      refresh();
+      return;
+    }
+    if (event.ctrlKey || event.metaKey) return;
+
+    if (event.key === '[' || event.key === ']') {
+      event.preventDefault();
+      session?.adjustRadius(event.key === '[' ? -1 : 1);
+      refresh();
+      return;
+    }
+
     const tool = EDITOR_TOOLS.find((t) => t.hotkey === event.key);
     if (tool) {
       event.preventDefault();
@@ -144,6 +181,7 @@ export function mountEditor(context: EditorContext): EditorHandle {
 
   selectTool(active.id);
   setStatus('map', `${world.width} x ${world.height}`);
+  refresh();
 
   return {
     root,
@@ -151,6 +189,7 @@ export function mountEditor(context: EditorContext): EditorHandle {
     activeTool: () => active,
     selectTool,
     setStatus,
+    refresh,
     pendingTeardowns: () => disposer.pending,
     dispose: () => {
       statusRows.clear();

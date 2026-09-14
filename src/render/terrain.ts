@@ -48,6 +48,10 @@ export interface Terrain {
   readonly material: Material;
   /** Rebuild one chunk's mesh in place. */
   rebuildChunk(index: number): void;
+  /** Rebuild several chunks, solving ramps once for the whole batch. */
+  rebuildChunks(indices: readonly number[], options?: { resolveRamps?: boolean }): void;
+  /** The ramp slopes the current meshes were built from. */
+  ramps(): RampSlopes;
   /** Chunk indices touched by a cell rectangle, including seam neighbours. */
   chunksForRect(x0: number, y0: number, x1: number, y1: number): number[];
   /** Total triangles across all chunks — used by tests and the dev overlay. */
@@ -456,12 +460,18 @@ export function createTerrain(scene: Scene, world: World, material: Material): T
     chunksY,
     material,
     rebuildChunk(index) {
-      const chunk = chunks[index];
-      if (!chunk) return;
-      // Ramp shapes are global to a ramp group, which can straddle chunks.
-      ramps = solveRamps(world);
-      build(chunk);
+      this.rebuildChunks([index]);
     },
+    rebuildChunks(indices, options) {
+      // Ramp shapes are global to a ramp group, which can straddle chunks, so
+      // they are solved once per batch rather than once per chunk.
+      if (options?.resolveRamps !== false) ramps = solveRamps(world);
+      for (const index of indices) {
+        const chunk = chunks[index];
+        if (chunk) build(chunk);
+      }
+    },
+    ramps: () => ramps,
     chunksForRect(x0, y0, x1, y1) {
       // Include one chunk of margin: an edit at a seam changes the walls the
       // neighbouring chunk owns.
