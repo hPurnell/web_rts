@@ -6,15 +6,19 @@
  * of the two tiers and flagged RAMP, which is exactly the shape
  * `tiersConnect` accepts and `solveRamps` slopes.
  *
- * A ramp bridges one tier. That is not an arbitrary limit: `tiersConnect` only
- * joins cells one tier apart, so a ramp spanning two tiers would render as a
- * slope that units cannot actually walk.
+ * A ramp spans one or two tiers. The limit comes from `tiersConnect`, which
+ * only joins cells one tier apart: a one-tier ramp sits at the lower tier, and
+ * a two-tier ramp sits at the tier between its ends, so each end is one step
+ * from the ramp and the whole thing is walkable. Three tiers has no such
+ * middle, so it would render as a slope units cannot use.
  */
 import type { World } from '../sim/world.ts';
-import { MAX_TIER, RAMP, WALKABLE, cellIndex } from '../sim/world.ts';
+import { BUILDABLE, MAX_TIER, RAMP, WALKABLE, cellIndex } from '../sim/world.ts';
 import type { TerrainEditCommand } from './commands.ts';
 
 export const DEFAULT_RAMP_WIDTH = 3;
+/** Tiers a single ramp may span. */
+export const MAX_RAMP_SPAN = 2;
 export const MIN_RAMP_LENGTH = 2;
 export const MAX_RAMP_LENGTH = 12;
 
@@ -25,6 +29,8 @@ export interface RampPlan {
   readonly cells: readonly number[];
   readonly highTier: number;
   readonly lowTier: number;
+  /** Tier the ramp cells themselves take. */
+  readonly rampTier: number;
 }
 
 const REJECT = (reason: string): RampPlan => ({
@@ -33,6 +39,7 @@ const REJECT = (reason: string): RampPlan => ({
   cells: [],
   highTier: 0,
   lowTier: 0,
+  rampTier: 0,
 });
 
 /**
@@ -61,7 +68,9 @@ export function planRamp(
   const highTier = world.tier[high] as number;
   const lowTier = world.tier[low] as number;
   if (highTier === lowTier) return REJECT('a ramp must join two different tiers');
-  if (highTier - lowTier !== 1) return REJECT('a ramp joins tiers one step apart');
+  if (highTier - lowTier > MAX_RAMP_SPAN) {
+    return REJECT(`a ramp spans at most ${MAX_RAMP_SPAN} tiers`);
+  }
 
   if (((world.flags[high] as number) & WALKABLE) === 0) return REJECT('the high end is not walkable');
   if (((world.flags[low] as number) & WALKABLE) === 0) return REJECT('the low end is not walkable');
@@ -97,21 +106,26 @@ export function planRamp(
     }
   }
 
-  return { ok: true, reason: null, cells, highTier, lowTier };
+  // A two-tier ramp sits on the tier between its ends; a one-tier ramp sits at
+  // the lower end, cut into the cliff it descends.
+  const rampTier = lowTier + (highTier - lowTier === 2 ? 1 : 0);
+  return { ok: true, reason: null, cells, highTier, lowTier, rampTier };
 }
 
 /**
  * Stage a planned ramp into a command.
  *
  * Ramp cells take the lower tier and become walkable, which is what makes the
- * connectivity rule in `tiersConnect` accept them from both sides.
+ * connectivity rule in `tiersConnect` accept them from both sides, and they
+ * lose BUILDABLE: a building on a ramp would wall off the only route between
+ * two tiers.
  */
 export function stageRamp(world: World, command: TerrainEditCommand, plan: RampPlan): number {
   if (!plan.ok) return 0;
-  const tier = Math.max(0, Math.min(MAX_TIER, plan.lowTier));
+  const tier = Math.max(0, Math.min(MAX_TIER, plan.rampTier));
   let changed = 0;
   for (const cell of plan.cells) {
-    const flags = ((world.flags[cell] as number) | WALKABLE | RAMP) & 0xff;
+    const flags = (((world.flags[cell] as number) | WALKABLE | RAMP) & ~BUILDABLE) & 0xff;
     if (world.tier[cell] === tier && world.flags[cell] === flags) continue;
     command.record(world, cell, tier, flags);
     changed++;

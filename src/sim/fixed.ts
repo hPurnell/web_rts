@@ -182,6 +182,20 @@ export function sqrt(a: Fixed): Fixed {
   return root | 0;
 }
 
+/**
+ * Integer square root, truncated. Takes a plain non-negative integer rather
+ * than a Fixed, for distances in cells where Q16.16 would overflow.
+ */
+export function isqrt(n: number): number {
+  if (n <= 0) return 0;
+  let root = 0;
+  for (let bit = 1 << 15; bit !== 0; bit >>= 1) {
+    const trial = root + bit;
+    if (trial * trial <= n) root = trial;
+  }
+  return root;
+}
+
 /** Linear interpolation. `t` is Fixed in [0, ONE]. */
 export function lerp(a: Fixed, b: Fixed, t: Fixed): Fixed {
   return (a + mul(sub(b, a), t)) | 0;

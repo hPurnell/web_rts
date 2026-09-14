@@ -7,9 +7,23 @@
  * callback — so the whole editing loop can be driven from a test.
  */
 import type { World } from '../sim/world.ts';
-import { BUILDABLE, VISION_BLOCKER } from '../sim/world.ts';
+import { BUILDABLE, ResourceType, VISION_BLOCKER } from '../sim/world.ts';
 import { EditorHistory } from './history.ts';
-import { TerrainEditCommand } from './commands.ts';
+import {
+  CompositeCommand,
+  ResourceNodeCommand,
+  StartLocationCommand,
+  TerrainEditCommand,
+} from './commands.ts';
+import {
+  clearedResourceCellFlags,
+  placeResourceNode,
+  placeStartLocation,
+  removeResourceNode,
+  removeStartLocation,
+  resourceCellFlags,
+  whatIsAt,
+} from './placement.ts';
 import { brushCells, stageFlagEdit, stageTierEdit, MAX_BRUSH_RADIUS, MIN_BRUSH_RADIUS } from './brush.ts';
 import { planRamp, stageRamp, stageRampErase } from './ramp.ts';
 import type { EditorTool } from './shell.ts';
@@ -33,6 +47,10 @@ export interface EditorSession {
   readonly lastError: string | null;
   /** Cell a ramp drag started on, or -1 when no ramp drag is in progress. */
   readonly rampAnchor: number;
+  /** Which resource the resource tool places. */
+  resourceType: ResourceType;
+  /** Cycle the resource tool between minerals and gas. */
+  toggleResourceType(): void;
   pointerDown(screenX: number, screenY: number, button: number): void;
   pointerMove(screenX: number, screenY: number): void;
   pointerUp(): void;
@@ -63,6 +81,12 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
     radius: 2,
     tool: null,
     hoverCell: -1,
+    resourceType: ResourceType.Minerals,
+    toggleResourceType() {
+      session.resourceType =
+        session.resourceType === ResourceType.Minerals ? ResourceType.Gas : ResourceType.Minerals;
+      hooks.onChange?.();
+    },
     get lastError() {
       return lastError;
     },
@@ -81,6 +105,18 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
       // can decide anything, unlike a brush which acts on every sample.
       if (session.tool?.id === 'ramp' && !inverted) {
         rampAnchor = cell;
+        hooks.onChange?.();
+        return;
+      }
+
+      // Placements are single clicks, not strokes.
+      if (session.tool?.id === 'resource') {
+        placeOrRemoveNode(cell, inverted);
+        hooks.onChange?.();
+        return;
+      }
+      if (session.tool?.id === 'start') {
+        placeOrRemoveStart(cell, inverted);
         hooks.onChange?.();
         return;
       }
@@ -120,16 +156,12 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
     },
 
     undo() {
-      const command = history.undo();
-      if (command instanceof TerrainEditCommand) hooks.rebuildCells(command.touchedCells());
-      else if (command) hooks.rebuildCells([]);
+      rebuildFor(history.undo());
       hooks.onChange?.();
     },
 
     redo() {
-      const command = history.redo();
-      if (command instanceof TerrainEditCommand) hooks.rebuildCells(command.touchedCells());
-      else if (command) hooks.rebuildCells([]);
+      rebuildFor(history.redo());
       hooks.onChange?.();
     },
 
@@ -138,6 +170,50 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
       history.clear();
     },
   };
+
+  /** Rebuild whatever terrain an undone or redone command moved. */
+  function rebuildFor(command: ReturnType<EditorHistory['undo']>): void {
+    if (!command) return;
+    hooks.rebuildCells(command.touchedCells?.() ?? []);
+  }
+
+  function placeOrRemoveNode(cell: number, remove: boolean): void {
+    const removing = remove || whatIsAt(world, cell) === 'node';
+    const result = removing
+      ? removeResourceNode(world, cell)
+      : placeResourceNode(world, cell, session.resourceType);
+    if (!result.ok || !result.nodes) {
+      lastError = result.reason;
+      return;
+    }
+
+    // The cells under a patch stop being buildable and start blocking sight,
+    // so the flag edit travels with the list edit as one undo step.
+    const flagCommand = new TerrainEditCommand(null);
+    for (const flagCell of result.flagCells ?? []) {
+      const current = world.flags[flagCell] as number;
+      const next = removing ? clearedResourceCellFlags(current) : resourceCellFlags(current);
+      if (next !== current) flagCommand.record(world, flagCell, world.tier[flagCell] as number, next);
+    }
+
+    const touched = flagCommand.touchedCells();
+    history.push(
+      flagCommand.isEmpty()
+        ? new ResourceNodeCommand(result.nodes)
+        : new CompositeCommand([new ResourceNodeCommand(result.nodes), flagCommand]),
+    );
+    if (touched.length > 0) hooks.rebuildCells(touched);
+  }
+
+  function placeOrRemoveStart(cell: number, remove: boolean): void {
+    const removing = remove || whatIsAt(world, cell) === 'start';
+    const result = removing ? removeStartLocation(world, cell) : placeStartLocation(world, cell);
+    if (!result.ok || !result.starts) {
+      lastError = result.reason;
+      return;
+    }
+    history.push(new StartLocationCommand(result.starts));
+  }
 
   function placeRamp(from: number, to: number): void {
     const plan = planRamp(world, from, to);

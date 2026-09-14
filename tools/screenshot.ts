@@ -34,7 +34,18 @@ function arg(name: string, fallback: string): string {
 async function main(): Promise<void> {
   const out = process.argv[2]?.startsWith('--') ? 'shot.png' : (process.argv[2] ?? 'shot.png');
   const waitMs = Number(arg('wait', '1500'));
-  const keys = arg('keys', '').split(',').filter(Boolean);
+  /**
+   * --keys takes phases: "F2:200,KeyA+KeyS:1500" presses F2 for 200ms, then
+   * holds A and S together for 1500ms. Camera panning is time-based, so a tap
+   * moves nothing.
+   */
+  const keyPhases = arg('keys', '')
+    .split(',')
+    .filter(Boolean)
+    .map((phase) => {
+      const [combo, ms] = phase.split(':');
+      return { keys: (combo ?? '').split('+').filter(Boolean), ms: Number(ms ?? arg('hold', '600')) };
+    });
   const wheel = Number(arg('wheel', '0'));
   const [mouseX, mouseY] = arg('mouse', '640,360').split(',').map(Number) as [number, number];
   /** --drag "x1,y1 x2,y2 ..." presses the left button and paints along a path. */
@@ -70,13 +81,11 @@ async function main(): Promise<void> {
     await page.mouse.wheel(0, wheel);
     await page.waitForTimeout(600);
   }
-  for (const key of keys) {
-    await page.keyboard.down(key);
-  }
-  if (keys.length > 0) {
-    await page.waitForTimeout(Number(arg('hold', '600')));
-    for (const key of keys) await page.keyboard.up(key);
-    await page.waitForTimeout(200);
+  for (const phase of keyPhases) {
+    for (const key of phase.keys) await page.keyboard.down(key);
+    await page.waitForTimeout(phase.ms);
+    for (const key of phase.keys) await page.keyboard.up(key);
+    await page.waitForTimeout(150);
   }
 
   if (drag.length > 0) {

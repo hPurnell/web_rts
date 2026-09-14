@@ -14,6 +14,7 @@ import { attachInput } from './render/input.ts';
 import { TIER_HEIGHT, createTerrain } from './render/terrain.ts';
 import { describeFlags, pickCell, screenRay } from './render/pick.ts';
 import { FLAG_LAYERS, createFlagOverlay } from './render/flagoverlay.ts';
+import { createGizmos } from './render/gizmos.ts';
 import { createTerrainMaterial } from './render/terrainMaterial.ts';
 import { createDevOverlay } from './ui/devoverlay.ts';
 import { MODE_KEY, createModeController, modeFromLocation } from './mode.ts';
@@ -56,6 +57,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   let ramps = terrain.ramps();
   let flagOverlay = createFlagOverlay(renderer.scene, world);
   flagOverlay.rebuild(ramps);
+  const gizmos = createGizmos(renderer.scene, () => world);
+  gizmos.rebuild(ramps);
 
   /** Swap in a different map: rebuild the scene and re-bound the camera. */
   function loadWorld(next: World): void {
@@ -68,6 +71,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     flagOverlay = createFlagOverlay(renderer.scene, world);
     flagOverlay.rebuild(ramps);
     flagOverlay.show(layer);
+    gizmos.rebuild(ramps);
     const cell = toFloat(world.cellSize);
     camera.setBounds(
       { minX: 0, maxX: world.width * cell, minZ: 0, maxZ: world.height * cell },
@@ -132,9 +136,17 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
         terrain.rebuildChunks(terrain.chunksForRect(x0, y0, x1, y1));
         ramps = terrain.ramps();
         flagOverlay.rebuild(ramps);
+        gizmos.rebuild(ramps);
       },
+      // Any session change can move a marker: a placed patch, an undo, a load.
+      onChange: () => gizmos.rebuild(ramps),
     },
-    onChange: (next) => overlay.set('mode', next),
+    onChange: (next) => {
+      overlay.set('mode', next);
+      // Node and start markers are an authoring aid, not part of the game.
+      gizmos.setVisible(next === 'editor');
+      gizmos.rebuild(ramps);
+    },
     onLoad: (next) => {
       loadWorld(next);
       // The editor holds a reference to the World it mounted with, so it has
@@ -208,6 +220,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       renderer.engine.stopRenderLoop();
       overlay.dispose();
       flagOverlay.dispose();
+      gizmos.dispose();
       terrain.dispose();
       terrainMaterial.dispose();
       input.dispose();

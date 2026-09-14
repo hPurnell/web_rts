@@ -19,6 +19,8 @@ export interface EditorCommand {
   merge(next: EditorCommand): boolean;
   /** True when the command would change nothing; such commands are dropped. */
   isEmpty(): boolean;
+  /** Terrain cells this command moved, so the right chunks get rebuilt. */
+  touchedCells?(): number[];
   /** For status readouts and tests. */
   describe(): string;
 }
@@ -103,6 +105,44 @@ export class TerrainEditCommand implements EditorCommand {
 
   describe(): string {
     return `terrain (${this.changes.size} cells)`;
+  }
+}
+
+/**
+ * Several commands as one undo step.
+ *
+ * Placing a resource patch is two edits — the node list and the flags of the
+ * cell under it — and undoing half of that would leave the map inconsistent.
+ */
+export class CompositeCommand implements EditorCommand {
+  readonly kind = 'composite';
+  readonly coalesceKey = null;
+
+  constructor(private readonly parts: readonly EditorCommand[]) {}
+
+  apply(world: World): void {
+    for (const part of this.parts) part.apply(world);
+  }
+
+  invert(world: World): void {
+    // Reverse order: later parts may depend on what earlier ones did.
+    for (let i = this.parts.length - 1; i >= 0; i--) this.parts[i]?.invert(world);
+  }
+
+  merge(): boolean {
+    return false;
+  }
+
+  isEmpty(): boolean {
+    return this.parts.every((part) => part.isEmpty());
+  }
+
+  describe(): string {
+    return this.parts.map((part) => part.describe()).join(' + ');
+  }
+
+  touchedCells(): number[] {
+    return this.parts.flatMap((part) => part.touchedCells?.() ?? []);
   }
 }
 

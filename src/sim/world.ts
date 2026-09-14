@@ -7,11 +7,17 @@
  * the only thing that turns a tier into a Y coordinate.
  */
 import type { Fixed } from './fixed.ts';
-import { ONE, div, fromInt, mul, toInt } from './fixed.ts';
+import { ONE, div, fromInt, isqrt, mul, toInt } from './fixed.ts';
 import { fnv1a32, hashArray, hashU32 } from './hash.ts';
 
 export const MAX_TIER = 3;
 export const MAX_DIMENSION = 512;
+/**
+ * Minimum cell distance between two start locations. Closer than this and the
+ * opening of a match is decided by whoever attacks first, which is a map bug
+ * rather than a design choice.
+ */
+export const MIN_START_SEPARATION = 16;
 
 /** Cell flag bits. */
 export const WALKABLE = 1 << 0;
@@ -191,6 +197,26 @@ export function validate(world: World): ValidationIssue[] {
         code: 'start-unreachable',
         message: `start location ${i} is not reachable from start location 0`,
         cell: world.startLocations[i]?.cell ?? -1,
+      });
+    }
+  }
+
+  for (let i = 0; i < world.startLocations.length; i++) {
+    for (let j = i + 1; j < world.startLocations.length; j++) {
+      const a = world.startLocations[i]?.cell ?? -1;
+      const b = world.startLocations[j]?.cell ?? -1;
+      if (a < 0 || b < 0) continue;
+      const dx = (a % world.width) - (b % world.width);
+      const dy = ((a / world.width) | 0) - ((b / world.width) | 0);
+      // Compare squared distances: exact integers, no square root needed for
+      // the decision. The message rounds down to whole cells.
+      const distanceSq = dx * dx + dy * dy;
+      if (distanceSq >= MIN_START_SEPARATION * MIN_START_SEPARATION) continue;
+      issues.push({
+        severity: 'warning',
+        code: 'starts-too-close',
+        message: `start locations ${i} and ${j} are ${isqrt(distanceSq)} cells apart, under the ${MIN_START_SEPARATION} cell minimum`,
+        cell: b,
       });
     }
   }

@@ -1,8 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
+import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { Scene } from '@babylonjs/core/scene';
 
-import { MAX_RAMP_LENGTH, planRamp, stageRamp, stageRampErase } from '../src/editor/ramp.ts';
+import {
+  MAX_RAMP_LENGTH,
+  MAX_RAMP_SPAN,
+  planRamp,
+  stageRamp,
+  stageRampErase,
+} from '../src/editor/ramp.ts';
 import { TerrainEditCommand } from '../src/editor/commands.ts';
 import { createSession } from '../src/editor/session.ts';
 import { EDITOR_TOOLS } from '../src/editor/shell.ts';
@@ -44,16 +51,38 @@ describe('ramp planning', () => {
     expect(uphill.highTier).toBe(2);
   });
 
-  it('refuses tiers that are equal or two apart', () => {
+  it('refuses flat ground and spans of more than two tiers', () => {
     const world = twoTierWorld();
     const flat = planRamp(world, w.cellIndex(world, 2, 4), w.cellIndex(world, 8, 4));
     expect(flat.ok).toBe(false);
     expect(flat.reason).toMatch(/different tiers/);
 
-    for (let y = 0; y < 8; y++) world.tier[w.cellIndex(world, 0, y)] = 3;
+    // Tier 3 beside tier 0 is a three-tier span: no single middle tier exists.
+    for (let y = 0; y < 8; y++) {
+      world.tier[w.cellIndex(world, 0, y)] = 3;
+      for (let x = 1; x < 12; x++) world.tier[w.cellIndex(world, x, y)] = 0;
+    }
     const steep = planRamp(world, w.cellIndex(world, 0, 4), w.cellIndex(world, 5, 4));
     expect(steep.ok).toBe(false);
-    expect(steep.reason).toMatch(/one step apart/);
+    expect(steep.reason).toMatch(new RegExp(`at most ${MAX_RAMP_SPAN} tiers`));
+  });
+
+  it('puts a two-tier ramp on the tier between its ends', () => {
+    const world = twoTierWorld();
+    // Make the left half tier 0, so the drag spans tiers 2 down to 0.
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 12; x++) world.tier[w.cellIndex(world, x, y)] = 0;
+    }
+    const plan = planRamp(world, w.cellIndex(world, 14, 4), w.cellIndex(world, 9, 4));
+    expect(plan.ok).toBe(true);
+    expect(plan.highTier).toBe(2);
+    expect(plan.lowTier).toBe(0);
+    expect(plan.rampTier).toBe(1); // each end is one step from the ramp
+
+    const command = new TerrainEditCommand();
+    stageRamp(world, command, plan);
+    command.apply(world);
+    expect(w.labelRegions(world).count).toBe(1);
   });
 
   it('refuses ends that are not walkable', () => {
@@ -250,5 +279,63 @@ describe('flag debug overlay', () => {
     const mesh = scene.meshes.find((m) => m.name === 'flagOverlay');
     expect(mesh?.getTotalVertices()).toBe(4); // exactly the one unwalkable cell
     overlay.dispose();
+  });
+});
+
+describe('editor gizmos', () => {
+  it('places one instance per node and start, at its cell centre', async () => {
+    const { createGizmos } = await import('../src/render/gizmos.ts');
+    const scene = new Scene(new NullEngine());
+    const world = w.createWorld({ width: 16, height: 16 });
+    world.tier[w.cellIndex(world, 3, 4)] = 2;
+    world.resourceNodes.push({ cell: w.cellIndex(world, 3, 4), type: w.ResourceType.Minerals, amount: 1 });
+    world.resourceNodes.push({ cell: w.cellIndex(world, 6, 7), type: w.ResourceType.Gas, amount: 1 });
+    world.startLocations.push({ cell: w.cellIndex(world, 9, 9) });
+
+    const gizmos = createGizmos(scene, () => world);
+    gizmos.rebuild(solveRamps(world));
+    gizmos.setVisible(true);
+    expect(gizmos.visible()).toBe(true);
+
+    const mesh = (name: string): Mesh | undefined =>
+      scene.meshes.find((m) => m.name === name) as Mesh | undefined;
+    expect(mesh('gizmoMinerals')?.thinInstanceCount).toBe(1);
+    expect(mesh('gizmoGas')?.thinInstanceCount).toBe(1);
+    expect(mesh('gizmoStart')?.thinInstanceCount).toBe(1);
+
+    // The mineral marker sits above the middle of its cell, on the tier 2 top.
+    const { gizmoPlacements } = await import('../src/render/gizmos.ts');
+    const placements = gizmoPlacements(world, solveRamps(world));
+    expect(placements.minerals).toHaveLength(1);
+    const [x, y, z] = placements.minerals[0] as [number, number, number];
+    expect(x).toBeCloseTo(3.5, 5);
+    expect(z).toBeCloseTo(4.5, 5);
+    expect(y).toBeGreaterThan(4); // above the tier 2 surface
+    expect(placements.gas[0]?.[0]).toBeCloseTo(6.5, 5);
+    expect(placements.starts[0]?.[2]).toBeCloseTo(9.5, 5);
+
+    gizmos.setVisible(false);
+    expect(mesh('gizmoStart')?.isEnabled()).toBe(false);
+    gizmos.dispose();
+  });
+
+  it('follows the world when nodes are added and removed', async () => {
+    const { createGizmos } = await import('../src/render/gizmos.ts');
+    const scene = new Scene(new NullEngine());
+    const world = w.createWorld({ width: 16, height: 16 });
+    const gizmos = createGizmos(scene, () => world);
+    gizmos.setVisible(true);
+    gizmos.rebuild(solveRamps(world));
+    expect(scene.meshes.find((m) => m.name === 'gizmoMinerals')?.isEnabled()).toBe(false);
+
+    world.resourceNodes.push({ cell: 20, type: w.ResourceType.Minerals, amount: 1 });
+    gizmos.rebuild(solveRamps(world));
+    const minerals = scene.meshes.find((m) => m.name === 'gizmoMinerals') as Mesh | undefined;
+    expect(minerals?.thinInstanceCount).toBe(1);
+
+    world.resourceNodes = [];
+    gizmos.rebuild(solveRamps(world));
+    expect(scene.meshes.find((m) => m.name === 'gizmoMinerals')?.isEnabled()).toBe(false);
+    gizmos.dispose();
   });
 });

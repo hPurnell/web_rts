@@ -92,12 +92,14 @@ export function createTestMap(): World {
   fillTier(world, SE_PLATEAU, 2);
   fillTier(world, SW_SHELF, 1);
 
-  // Two ramps from each plateau down to the basin, via the neighbouring shelf
-  // tier where the drop is two tiers.
-  fillRamp(world, NW_RAMP, 1); // tier 2 plateau -> tier 1 apron -> basin
-  fillRamp(world, NE_RAMP, 1);
+  // One ramp out of each raised region. The plateau ramps drop two tiers, so
+  // they sit on the tier between their ends; the shelf ramps drop one, so they
+  // are cut into the cliff at the basin's tier. Both are exactly what the
+  // editor's ramp tool produces from a drag (see planRamp).
+  fillRamp(world, NW_RAMP, 1); // tier 2 plateau -> basin
+  fillRamp(world, NE_RAMP, 0); // tier 1 shelf -> basin
   fillRamp(world, SE_RAMP, 1);
-  fillRamp(world, SW_RAMP, 1);
+  fillRamp(world, SW_RAMP, 0);
 
   // The apron cells directly below each plateau ramp sit at tier 1 so the ramp
   // never bridges two tiers at once.

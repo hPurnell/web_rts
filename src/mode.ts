@@ -67,7 +67,17 @@ export function createModeController(context: ModeContext): ModeController {
     const { mountEditor, createSession } = await import('./editor/index.ts');
     const hooks = context.sessionHooks;
     const world = context.world();
-    session = hooks ? createSession(world, { ...hooks, onChange: () => editor?.refresh() }) : null;
+    session = hooks
+      ? createSession(world, {
+          ...hooks,
+          onChange: () => {
+            // The app's own hook keeps the scene in step; the editor's keeps
+            // the panels in step. Both need to run.
+            hooks.onChange?.();
+            editor?.refresh();
+          },
+        })
+      : null;
     editor = mountEditor({
       world,
       overlay: context.overlay,

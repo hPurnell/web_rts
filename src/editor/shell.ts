@@ -7,6 +7,7 @@
  */
 import { Disposer } from '../ui/disposer.ts';
 import type { World } from '../sim/world.ts';
+import { ResourceType, validate } from '../sim/world.ts';
 import type { EditorSession } from './session.ts';
 import { MAP_EXTENSION, MapFormatError, decodeMap } from './mapfile.ts';
 import {
@@ -104,11 +105,45 @@ export function mountEditor(context: EditorContext): EditorHandle {
 
   const mapInfo = document.createElement('div');
   mapInfo.className = 'editor-rows';
-  mapInfo.innerHTML =
-    `<div class="editor-row"><span>size</span><span>${world.width} x ${world.height}</span></div>` +
-    `<div class="editor-row"><span>resource nodes</span><span>${world.resourceNodes.length}</span></div>` +
-    `<div class="editor-row"><span>start locations</span><span>${world.startLocations.length}</span></div>`;
   properties.appendChild(mapInfo);
+
+  const updateCounts = (): void => {
+    mapInfo.innerHTML =
+      `<div class="editor-row"><span>size</span><span>${world.width} x ${world.height}</span></div>` +
+      `<div class="editor-row"><span>resource nodes</span><span>${world.resourceNodes.length}</span></div>` +
+      `<div class="editor-row"><span>start locations</span><span>${world.startLocations.length}</span></div>`;
+  };
+  updateCounts();
+
+  // Live validation: a map with unreachable or crowded starts should say so
+  // while it is being authored, not when someone tries to play it.
+  const issueList = document.createElement('ul');
+  issueList.className = 'editor-issues';
+  properties.appendChild(issueList);
+
+  const updateIssues = (): void => {
+    const issues = validate(world);
+    issueList.innerHTML = '';
+    if (issues.length === 0) {
+      const ok = document.createElement('li');
+      ok.className = 'editor-issue is-ok';
+      ok.textContent = 'validates clean';
+      issueList.appendChild(ok);
+      return;
+    }
+    for (const issue of issues.slice(0, 6)) {
+      const item = document.createElement('li');
+      item.className = `editor-issue is-${issue.severity}`;
+      item.textContent = issue.message;
+      issueList.appendChild(item);
+    }
+    if (issues.length > 6) {
+      const more = document.createElement('li');
+      more.className = 'editor-issue';
+      more.textContent = `and ${issues.length - 6} more`;
+      issueList.appendChild(more);
+    }
+  };
 
   const hint = document.createElement('p');
   hint.className = 'editor-hint';
@@ -235,6 +270,10 @@ export function mountEditor(context: EditorContext): EditorHandle {
   function selectTool(id: string): void {
     const tool = EDITOR_TOOLS.find((t) => t.id === id);
     if (!tool) return;
+    // Pressing the resource tool's key again switches what it places.
+    if (tool.id === 'resource' && active.id === 'resource' && context.session) {
+      context.session.toggleResourceType();
+    }
     active = tool;
     for (const [toolId, button] of buttons) {
       button.classList.toggle('is-active', toolId === id);
@@ -251,6 +290,14 @@ export function mountEditor(context: EditorContext): EditorHandle {
     if (!session) return;
     setStatus('brush', `r${session.radius}`);
     setStatus('undo', `${session.history.depth} step${session.history.depth === 1 ? '' : 's'}`);
+    if (active.id === 'resource') {
+      setStatus('patch', session.resourceType === ResourceType.Gas ? 'gas' : 'minerals');
+    } else {
+      statusRows.get('patch')?.remove();
+      statusRows.delete('patch');
+    }
+    updateCounts();
+    updateIssues();
     // A refused action needs to say why, or the tool just looks broken.
     root.classList.toggle('has-error', session.lastError !== null);
     setStatus('note', session.lastError ?? '');
@@ -300,6 +347,7 @@ export function mountEditor(context: EditorContext): EditorHandle {
 
   selectTool(active.id);
   setStatus('map', `${world.width} x ${world.height}`);
+  updateIssues();
   refresh();
 
   return {
