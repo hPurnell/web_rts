@@ -108,7 +108,7 @@ describe('mode switching', () => {
 
   it('mounts and unmounts the editor on toggle, and tracks the URL', async () => {
     const onChange = vi.fn();
-    const mode = createModeController({ world: createTestMap(), overlay, onChange });
+    const mode = createModeController({ world: () => createTestMap(), overlay, onChange });
     expect(mode.current()).toBe('game');
 
     await mode.toggle();
@@ -128,7 +128,7 @@ describe('mode switching', () => {
 
   it('survives a double toggle without orphaning an editor', async () => {
     // The editor import is async: two fast presses must not mount twice.
-    const mode = createModeController({ world: createTestMap(), overlay });
+    const mode = createModeController({ world: () => createTestMap(), overlay });
     const first = mode.toggle();
     const second = mode.toggle();
     await Promise.all([first, second]);
@@ -138,7 +138,7 @@ describe('mode switching', () => {
   });
 
   it('exits the editor from its own exit button', async () => {
-    const mode = createModeController({ world: createTestMap(), overlay });
+    const mode = createModeController({ world: () => createTestMap(), overlay });
     await mode.set('editor');
     overlay.querySelector<HTMLButtonElement>('.editor-exit')?.click();
     await mode.set('game'); // flushes the queued switch the click started
@@ -148,7 +148,7 @@ describe('mode switching', () => {
   });
 
   it('cleans up when disposed while the editor is open', async () => {
-    const mode = createModeController({ world: createTestMap(), overlay });
+    const mode = createModeController({ world: () => createTestMap(), overlay });
     await mode.set('editor');
     mode.dispose();
     expect(overlay.querySelector('.editor-root')).toBeNull();

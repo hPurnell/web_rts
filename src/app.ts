@@ -24,13 +24,16 @@ const INSPECTOR_KEY = 'F9';
 const FLAG_OVERLAY_KEY = 'F3';
 
 export interface App {
+  /** The map currently loaded. Replaced when the editor opens a file. */
   readonly world: World;
   readonly mode: ReturnType<typeof createModeController>;
   dispose(): void;
 }
 
 export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): App {
-  const world = createTestMap();
+  // `world` is replaced wholesale when the editor loads a map, so everything
+  // built from it is rebuilt at the same time by loadWorld().
+  let world = createTestMap();
   const renderer = createRenderer(canvas);
   const input = attachInput(canvas);
   const overlay = createDevOverlay(overlayRoot);
@@ -49,10 +52,29 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     maxTier: MAX_TIER,
     lightDirection: renderer.sun.direction,
   });
-  const terrain = createTerrain(renderer.scene, world, terrainMaterial);
+  let terrain = createTerrain(renderer.scene, world, terrainMaterial);
   let ramps = terrain.ramps();
-  const flagOverlay = createFlagOverlay(renderer.scene, world);
+  let flagOverlay = createFlagOverlay(renderer.scene, world);
   flagOverlay.rebuild(ramps);
+
+  /** Swap in a different map: rebuild the scene and re-bound the camera. */
+  function loadWorld(next: World): void {
+    const layer = flagOverlay.current();
+    flagOverlay.dispose();
+    terrain.dispose();
+    world = next;
+    terrain = createTerrain(renderer.scene, world, terrainMaterial);
+    ramps = terrain.ramps();
+    flagOverlay = createFlagOverlay(renderer.scene, world);
+    flagOverlay.rebuild(ramps);
+    flagOverlay.show(layer);
+    const cell = toFloat(world.cellSize);
+    camera.setBounds(
+      { minX: 0, maxX: world.width * cell, minZ: 0, maxZ: world.height * cell },
+      true,
+    );
+    overlay.set('map', `${world.width}x${world.height}`);
+  }
 
   let smoothedFps = 60;
   renderer.engine.runRenderLoop(() => {
@@ -85,7 +107,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   });
 
   const mode = createModeController({
-    world,
+    world: () => world,
     overlay: overlayRoot,
     sessionHooks: {
       pick: (screenX, screenY) => {
@@ -113,6 +135,12 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       },
     },
     onChange: (next) => overlay.set('mode', next),
+    onLoad: (next) => {
+      loadWorld(next);
+      // The editor holds a reference to the World it mounted with, so it has
+      // to be rebound after a load.
+      void mode.remount();
+    },
   });
   overlay.set('mode', 'game');
   if (modeFromLocation(window.location.search) === 'editor') void mode.set('editor');
@@ -165,7 +193,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   window.addEventListener('keydown', onKey);
 
   return {
-    world,
+    get world() {
+      return world;
+    },
     mode,
     dispose() {
       window.removeEventListener('keydown', onKey);

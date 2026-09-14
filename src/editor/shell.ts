@@ -8,6 +8,15 @@
 import { Disposer } from '../ui/disposer.ts';
 import type { World } from '../sim/world.ts';
 import type { EditorSession } from './session.ts';
+import { MAP_EXTENSION, MapFormatError, decodeMap } from './mapfile.ts';
+import {
+  AUTOSAVE_INTERVAL_MS,
+  clearAutosave,
+  createMapStorage,
+  hasFileSystemAccess,
+  readAutosave,
+  startAutosave,
+} from './storage.ts';
 
 export interface EditorTool {
   readonly id: string;
@@ -27,6 +36,11 @@ export interface EditorContext {
   onToolChange?(tool: EditorTool): void;
   /** Called when the user asks to leave the editor. */
   onExit?(): void;
+  /**
+   * Replace the world being edited. The app owns the World object, so loading
+   * a map hands the new one back rather than mutating in place.
+   */
+  onLoad?(world: World): void;
 }
 
 export interface EditorHandle {
@@ -119,6 +133,98 @@ export function mountEditor(context: EditorContext): EditorHandle {
     if (target && target.textContent !== value) target.textContent = value;
   };
 
+  // --- file actions -------------------------------------------------------
+  const storage = createMapStorage();
+  const fileRow = document.createElement('div');
+  fileRow.className = 'editor-files';
+  properties.appendChild(fileRow);
+
+  const fileButton = (label: string, title: string, onClick: () => void): HTMLButtonElement => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'editor-file-button';
+    button.textContent = label;
+    button.title = title;
+    disposer.listen(button, 'click', onClick);
+    fileRow.appendChild(button);
+    return button;
+  };
+
+  const note = (message: string, isError = false): void => {
+    setStatus('file', message);
+    status.classList.toggle('file-error', isError);
+  };
+
+  const doSave = async (saveAs: boolean): Promise<void> => {
+    try {
+      const result = await storage.save(world, { saveAs });
+      if (!result.saved) return note('save cancelled');
+      note(
+        result.via === 'download'
+          ? `downloaded ${result.name}`
+          : `saved ${result.name}`,
+      );
+    } catch (error) {
+      note(error instanceof Error ? error.message : 'save failed', true);
+    }
+  };
+
+  const doOpen = async (): Promise<void> => {
+    try {
+      const loaded = await storage.open();
+      if (!loaded) return note('open cancelled');
+      context.onLoad?.(loaded);
+      note(`opened ${storage.currentName() ?? 'map'}`);
+    } catch (error) {
+      // A version mismatch or a corrupt file must say what is wrong, not just
+      // fail: MapFormatError messages are written for the person editing.
+      const message =
+        error instanceof MapFormatError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : 'could not open that file';
+      note(message, true);
+    }
+  };
+
+  fileButton('Save', `Save the map (Ctrl+S)`, () => void doSave(false));
+  fileButton('Save as', 'Save to a new file', () => void doSave(true));
+  fileButton('Open', `Open a ${MAP_EXTENSION} file (Ctrl+O)`, () => void doOpen());
+  if (!hasFileSystemAccess()) {
+    const fallbackNote = document.createElement('p');
+    fallbackNote.className = 'editor-hint';
+    fallbackNote.textContent = 'This browser has no file picker; Save downloads a file instead.';
+    properties.appendChild(fallbackNote);
+  }
+
+  // Autosave every 30 seconds, and offer the previous one on arrival.
+  disposer.add(startAutosave(() => world, () => storage.currentName(), AUTOSAVE_INTERVAL_MS));
+  void readAutosave()
+    .then((record) => {
+      if (!record) return;
+      const age = Math.round((Date.now() - record.savedAt) / 60_000);
+      const restore = document.createElement('button');
+      restore.type = 'button';
+      restore.className = 'editor-file-button editor-restore';
+      restore.textContent = `Restore autosave (${age}m ago)`;
+      disposer.listen(restore, 'click', () => {
+        try {
+          context.onLoad?.(decodeMap(record.bytes));
+          note('restored from autosave');
+        } catch (error) {
+          note(error instanceof MapFormatError ? error.message : 'autosave is unreadable', true);
+        }
+        restore.remove();
+        void clearAutosave();
+      });
+      disposer.mount(fileRow, restore);
+    })
+    .catch(() => {
+      // No IndexedDB (private mode, or a browser that blocks it): autosave is
+      // a convenience, not a requirement.
+    });
+
   const exit = document.createElement('button');
   exit.type = 'button';
   exit.className = 'editor-exit';
@@ -160,6 +266,16 @@ export function mountEditor(context: EditorContext): EditorHandle {
       refresh();
       return;
     }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+      event.preventDefault();
+      void doSave(event.shiftKey);
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o') {
+      event.preventDefault();
+      void doOpen();
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
       event.preventDefault();
       session?.redo();
@@ -197,6 +313,7 @@ export function mountEditor(context: EditorContext): EditorHandle {
     dispose: () => {
       statusRows.clear();
       buttons.clear();
+      storage.dispose();
       disposer.dispose();
     },
   };

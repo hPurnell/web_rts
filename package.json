@@ -25,6 +25,7 @@
     "@types/jsdom": "^30.0.0",
     "@types/node": "^26.5.1",
     "eslint": "^9.13.0",
+    "fake-indexeddb": "^6.2.5",
     "jsdom": "^30.0.1",
     "playwright": "^1.63.0",
     "rollup-plugin-visualizer": "^5.12.0",

@@ -16,19 +16,28 @@ export type Mode = 'game' | 'editor';
 export const MODE_KEY = 'F2';
 
 export interface ModeContext {
-  readonly world: World;
+  /**
+   * The map being edited, read fresh each time the editor mounts: loading a
+   * file replaces the World object, and a stale reference would leave the
+   * editor quietly editing the previous map.
+   */
+  world(): World;
   readonly overlay: HTMLElement;
   /** Hooks the editing session needs to reach the scene. Omit for a UI-only
    * editor, as the DOM tests do. */
   readonly sessionHooks?: SessionHooks;
   /** Called after every completed switch, with the new mode. */
   onChange?(mode: Mode): void;
+  /** Called when the editor loads a map from disk or from an autosave. */
+  onLoad?(world: World): void;
 }
 
 export interface ModeController {
   current(): Mode;
   editor(): EditorHandle | null;
   session(): EditorSession | null;
+  /** Rebind the editor to the current world. No-op in game mode. */
+  remount(): Promise<void>;
   set(mode: Mode): Promise<void>;
   toggle(): Promise<void>;
   dispose(): void;
@@ -57,14 +66,16 @@ export function createModeController(context: ModeContext): ModeController {
     // The one dynamic import that keeps src/editor out of the game bundle.
     const { mountEditor, createSession } = await import('./editor/index.ts');
     const hooks = context.sessionHooks;
-    session = hooks ? createSession(context.world, { ...hooks, onChange: () => editor?.refresh() }) : null;
+    const world = context.world();
+    session = hooks ? createSession(world, { ...hooks, onChange: () => editor?.refresh() }) : null;
     editor = mountEditor({
-      world: context.world,
+      world,
       overlay: context.overlay,
       ...(session ? { session } : {}),
       onExit: () => {
         void controller.set('game');
       },
+      ...(context.onLoad ? { onLoad: context.onLoad } : {}),
     });
     badge = document.createElement('div');
     badge.className = 'mode-badge';
@@ -106,6 +117,15 @@ export function createModeController(context: ModeContext): ModeController {
     editor: () => editor,
     session: () => session,
     set: (next) => enqueue(() => next),
+    remount() {
+      return enqueue(() => {
+        if (mode !== 'editor') return mode;
+        leave();
+        // Returning the same mode would short-circuit; flip to game and back.
+        mode = 'game';
+        return 'editor';
+      });
+    },
     toggle: () => enqueue(() => (mode === 'game' ? 'editor' : 'game')),
     dispose() {
       leave();

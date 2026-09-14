@@ -99,3 +99,13 @@ html, body { margin: 0; height: 100%; background: #0d1014; color: #e8ecf1;
 }
 
 .editor-root.has-error .editor-status-item:last-of-type span:last-child { color: #ffb4b4; }
+
+.editor-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 0; }
+.editor-file-button {
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px; color: #cbd6e2; font: inherit; font-size: 12px; cursor: pointer;
+}
+.editor-file-button:hover { background: rgba(255, 255, 255, 0.13); }
+.editor-restore { background: rgba(96, 165, 250, 0.18); border-color: rgba(96, 165, 250, 0.45); }
+.editor-status.file-error .editor-status-item span:last-child { color: #ffb4b4; }

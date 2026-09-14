@@ -47,7 +47,8 @@ const KEYS_DOWN = ['KeyS', 'ArrowDown'];
 
 export class RtsCamera {
   readonly camera: FreeCamera;
-  readonly bounds: CameraBounds;
+  /** Mutable: loading a different map changes the extent the camera may cover. */
+  bounds: CameraBounds;
 
   /** Ground point the camera looks at. */
   focusX: number;
@@ -90,6 +91,17 @@ export class RtsCamera {
   /** Zoom as 0 (closest) to 1 (furthest), for HUD and LOD decisions. */
   get zoomFraction(): number {
     return (this.height - this.minHeight) / (this.maxHeight - this.minHeight);
+  }
+
+  /** Re-bound the camera, e.g. after loading a map of a different size. */
+  setBounds(bounds: CameraBounds, recentre = false): void {
+    this.bounds = bounds;
+    if (recentre) {
+      this.focusX = (bounds.minX + bounds.maxX) / 2;
+      this.focusZ = (bounds.minZ + bounds.maxZ) / 2;
+    }
+    this.clampFocus();
+    this.apply();
   }
 
   /** Jump straight to a ground position, e.g. from a minimap click. */
