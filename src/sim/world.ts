@@ -8,6 +8,7 @@
  */
 import type { Fixed } from './fixed.ts';
 import { ONE, div, fromInt, mul, toInt } from './fixed.ts';
+import { fnv1a32, hashArray, hashU32 } from './hash.ts';
 
 export const MAX_TIER = 3;
 export const MAX_DIMENSION = 512;
@@ -272,4 +273,31 @@ function regionHasRamp(world: World, regions: Regions, label: number): boolean {
     if (((world.flags[cell] as number) & RAMP) !== 0) return true;
   }
   return false;
+}
+
+/**
+ * Hash of everything the editor can author.
+ *
+ * Undo must restore a world that is byte-identical, not merely equivalent, and
+ * a map must survive a save/load round trip unchanged (M12). Both are checked
+ * against this.
+ */
+export function hashWorld(world: World): number {
+  let hash = 0x811c9dc5;
+  hash = hashU32(world.width, hash);
+  hash = hashU32(world.height, hash);
+  hash = hashU32(world.cellSize, hash);
+  hash = hashArray(world.tier, hash);
+  hash = hashArray(world.flags, hash);
+  hash = hashU32(world.resourceNodes.length, hash);
+  for (const node of world.resourceNodes) {
+    hash = hashU32(node.cell, hash);
+    hash = hashU32(node.type, hash);
+    hash = hashU32(node.amount, hash);
+  }
+  hash = hashU32(world.startLocations.length, hash);
+  for (const start of world.startLocations) {
+    hash = hashU32(start.cell, hash);
+  }
+  return fnv1a32(new Uint8Array(0), hash);
 }
