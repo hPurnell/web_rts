@@ -34,6 +34,8 @@ export interface UnitType {
   readonly gasCost: number;
   /** True when the weapon rotates independently of the hull. */
   readonly hasTurret: boolean;
+  /** True for buildings: they do not move, and players remember seeing them. */
+  readonly isStructure: boolean;
 }
 
 interface RawUnitType {
@@ -50,6 +52,7 @@ interface RawUnitType {
   mineralCost: number;
   gasCost: number;
   hasTurret: boolean;
+  isStructure: boolean;
 }
 
 function build(raw: RawUnitType, typeId: number): UnitType {
@@ -69,6 +72,7 @@ function build(raw: RawUnitType, typeId: number): UnitType {
     mineralCost: raw.mineralCost | 0,
     gasCost: raw.gasCost | 0,
     hasTurret: raw.hasTurret === true,
+    isStructure: raw.isStructure === true,
   };
 }
 

@@ -5,7 +5,8 @@
  * texture will sample in M23.
  */
 import { Color3 } from '@babylonjs/core/Maths/math.color';
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Vector2, Vector3 } from '@babylonjs/core/Maths/math.vector';
+import type { BaseTexture } from '@babylonjs/core/Materials/Textures/baseTexture';
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { Effect } from '@babylonjs/core/Materials/effect';
 import type { Scene } from '@babylonjs/core/scene';
@@ -47,6 +48,10 @@ uniform vec3 groundHigh;
 uniform vec3 cliffColor;
 uniform float tierHeight;
 uniform float maxTier;
+uniform sampler2D fogSampler;
+uniform vec2 fogTexel;
+uniform float fogEnabled;
+uniform float exploredDim;
 
 /** Cheap value noise, enough to break up flat colour until real textures land. */
 float hash(vec2 p) {
@@ -86,6 +91,22 @@ void main(void) {
   float foot = smoothstep(0.0, 0.35, fract(vPosition.y / max(tierHeight, 0.0001)));
   color *= mix(1.0, 0.86, (1.0 - up) * (1.0 - foot));
 
+  if (fogEnabled > 0.5) {
+    // A small cross blur on top of the texture's own bilinear filtering. One
+    // texel per cell is coarse, and without this the fog boundary reads as a
+    // staircase of squares rather than an edge.
+    vec2 fog = texture2D(fogSampler, vMapUv).rg;
+    fog += texture2D(fogSampler, vMapUv + vec2(fogTexel.x, 0.0)).rg;
+    fog += texture2D(fogSampler, vMapUv - vec2(fogTexel.x, 0.0)).rg;
+    fog += texture2D(fogSampler, vMapUv + vec2(0.0, fogTexel.y)).rg;
+    fog += texture2D(fogSampler, vMapUv - vec2(0.0, fogTexel.y)).rg;
+    fog /= 5.0;
+
+    // Visible is full brightness, explored-only is dimmed, unexplored is black.
+    float brightness = max(fog.r, fog.g * exploredDim);
+    color *= brightness;
+  }
+
   gl_FragColor = vec4(color, 1.0);
 }
 `;
@@ -94,6 +115,20 @@ export interface TerrainMaterialOptions {
   readonly tierHeight: number;
   readonly maxTier: number;
   readonly lightDirection: { x: number; y: number; z: number };
+}
+
+/** Point the terrain shader at a fog texture, or pass null to disable fog. */
+export function setTerrainFog(
+  material: ShaderMaterial,
+  texture: BaseTexture | null,
+  width: number,
+  height: number,
+  exploredDim: number,
+): void {
+  material.setFloat('fogEnabled', texture ? 1 : 0);
+  material.setFloat('exploredDim', exploredDim);
+  material.setVector2('fogTexel', new Vector2(1 / Math.max(1, width), 1 / Math.max(1, height)));
+  if (texture) material.setTexture('fogSampler', texture);
 }
 
 export function createTerrainMaterial(
@@ -113,7 +148,11 @@ export function createTerrainMaterial(
       'cliffColor',
       'tierHeight',
       'maxTier',
+      'fogTexel',
+      'fogEnabled',
+      'exploredDim',
     ],
+    samplers: ['fogSampler'],
   });
 
   const light = options.lightDirection;
@@ -123,6 +162,9 @@ export function createTerrainMaterial(
   material.setColor3('cliffColor', new Color3(0.3, 0.27, 0.24));
   material.setFloat('tierHeight', options.tierHeight);
   material.setFloat('maxTier', options.maxTier);
+  material.setFloat('fogEnabled', 0);
+  material.setFloat('exploredDim', 0);
+  material.setVector2('fogTexel', new Vector2(0, 0));
   material.backFaceCulling = true;
   return material;
 }

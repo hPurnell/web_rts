@@ -1,5 +1,5 @@
 {
-  "note": "Unit type table. Every value is an integer in the unit named by its suffix, so loading never parses a float (invariant 2). hasTurret marks types whose weapon rotates independently of the hull; the renderer gives those a second instance buffer.",
+  "note": "Unit type table. Every value is an integer in the unit named by its suffix, so loading never parses a float (invariant 2). hasTurret marks types whose weapon rotates independently of the hull; isStructure marks types that do not move and that players remember once scouted. Order is part of the determinism contract: append, never reorder.",
   "types": [
     {
       "id": "worker",
@@ -14,7 +14,8 @@
       "buildTicks": 240,
       "mineralCost": 50,
       "gasCost": 0,
-      "hasTurret": false
+      "hasTurret": false,
+      "isStructure": false
     },
     {
       "id": "soldier",
@@ -29,7 +30,8 @@
       "buildTicks": 300,
       "mineralCost": 50,
       "gasCost": 0,
-      "hasTurret": false
+      "hasTurret": false,
+      "isStructure": false
     },
     {
       "id": "raider",
@@ -44,7 +46,8 @@
       "buildTicks": 420,
       "mineralCost": 100,
       "gasCost": 25,
-      "hasTurret": true
+      "hasTurret": true,
+      "isStructure": false
     },
     {
       "id": "siege",
@@ -59,7 +62,24 @@
       "buildTicks": 640,
       "mineralCost": 150,
       "gasCost": 125,
-      "hasTurret": true
+      "hasTurret": true,
+      "isStructure": false
+    },
+    {
+      "id": "depot",
+      "name": "Supply depot",
+      "hp": 400,
+      "speedMilliCellsPerSecond": 0,
+      "sightRadiusMilliCells": 9000,
+      "attackRangeMilliCells": 0,
+      "damage": 0,
+      "cooldownTicks": 0,
+      "radiusMilliCells": 1000,
+      "buildTicks": 400,
+      "mineralCost": 100,
+      "gasCost": 0,
+      "hasTurret": false,
+      "isStructure": true
     }
   ]
 }

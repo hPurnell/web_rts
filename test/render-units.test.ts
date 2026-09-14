@@ -84,14 +84,17 @@ describe('instanced unit rendering', () => {
   it('stays under the draw-call budget with 2,000 units', () => {
     const renderer = createUnitRenderer(scene);
     const match = createMatch({ seed: 1, playerCount: 2 });
-    // Every type, both players: the worst realistic case for draw calls.
+    // Every type, both players: the worst realistic case for draw calls,
+    // since each combination is its own instance buffer.
+    const per = Math.floor(2000 / (UNIT_TYPES.length * 2));
     for (const type of UNIT_TYPES) {
-      spawnMany(match, type.id, 0, 250);
-      spawnMany(match, type.id, 1, 250);
+      spawnMany(match, type.id, 0, per);
+      spawnMany(match, type.id, 1, per);
     }
     renderer.update(match, world, ramps, 1);
 
-    expect(renderer.instanceCount()).toBe(2000);
+    expect(renderer.instanceCount()).toBe(per * UNIT_TYPES.length * 2);
+    expect(renderer.instanceCount()).toBeGreaterThanOrEqual(1900);
     // PLAN.md's budget is under 15 draw calls for the units.
     expect(unitMeshes().length).toBeLessThan(15);
     renderer.dispose();
@@ -100,9 +103,10 @@ describe('instanced unit rendering', () => {
   it('writes 2,000 instances fast enough to do it every frame', () => {
     const renderer = createUnitRenderer(scene);
     const match = createMatch({ seed: 1, playerCount: 2 });
+    const per = Math.floor(2000 / (UNIT_TYPES.length * 2));
     for (const type of UNIT_TYPES) {
-      spawnMany(match, type.id, 0, 250);
-      spawnMany(match, type.id, 1, 250);
+      spawnMany(match, type.id, 0, per);
+      spawnMany(match, type.id, 1, per);
     }
     renderer.captureTick(match);
 

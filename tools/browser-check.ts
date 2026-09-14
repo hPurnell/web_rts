@@ -115,6 +115,16 @@ async function main(): Promise<void> {
   });
   if (!nav.ok) failures.push(`pathfinding worker failed: ${nav.reason}`);
 
+  // M23: fog upload has a 0.5ms budget. Start a match so there is fog to
+  // upload, then read what it cost.
+  await page.keyboard.press('F5');
+  await page.waitForTimeout(1200);
+  const fogMs = Number.parseFloat(await readOverlay('fog'));
+  if (!Number.isFinite(fogMs)) failures.push('fog texture never uploaded');
+  else if (fogMs > 0.5) failures.push(`fog upload over budget: ${fogMs} ms`);
+  await page.keyboard.press('F5');
+  await page.waitForTimeout(200);
+
   const fps = Number(await readOverlay('fps'));
   const navMs = await readOverlay('nav');
   if (!Number.isFinite(fps) || fps < 30) {
@@ -135,7 +145,8 @@ async function main(): Promise<void> {
   }
   console.log(
     `browser check ok — ${url} rendered at ${fps} fps in ${draws} draw calls, ` +
-      `camera responsive, path solved in ${navMs}, self-check passed`,
+      `camera responsive, path solved in ${navMs}, fog uploaded in ${fogMs}ms, ` +
+      'self-check passed',
   );
 }
 

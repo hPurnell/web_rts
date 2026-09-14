@@ -29,6 +29,15 @@ export interface FogGrids {
   readonly visible: Uint8Array[];
   /** Ever seen. OR-accumulated and never cleared. */
   readonly explored: Uint8Array[];
+  /**
+   * What each player remembers standing on each cell: the structure's type id
+   * plus one, or zero for nothing. Updated only where the player can currently
+   * see, so a scouted base stays on the map after the scout dies -- and stays
+   * as it was, which is the point: the memory can be out of date.
+   */
+  readonly remembered: Uint8Array[];
+  /** Owner of the remembered structure, valid where `remembered` is non-zero. */
+  readonly rememberedOwner: Uint8Array[];
   readonly width: number;
   readonly height: number;
 }
@@ -38,6 +47,8 @@ export function createFogGrids(width: number, height: number): FogGrids {
   return {
     visible: Array.from({ length: MAX_PLAYERS }, () => new Uint8Array(cells)),
     explored: Array.from({ length: MAX_PLAYERS }, () => new Uint8Array(cells)),
+    remembered: Array.from({ length: MAX_PLAYERS }, () => new Uint8Array(cells)),
+    rememberedOwner: Array.from({ length: MAX_PLAYERS }, () => new Uint8Array(cells)),
     width,
     height,
   };
@@ -101,6 +112,8 @@ export function updateFog(match: Match, world: World): void {
     const offsets = discOffsets(radius);
     const visible = fog.visible[owner] as Uint8Array;
     const explored = fog.explored[owner] as Uint8Array;
+    const remembered = fog.remembered[owner] as Uint8Array;
+    const rememberedOwner = fog.rememberedOwner[owner] as Uint8Array;
 
     for (let o = 0; o < offsets.length; o += 2) {
       const x = cx + (offsets[o] as number);
@@ -115,8 +128,55 @@ export function updateFog(match: Match, world: World): void {
 
       visible[cell] = VISIBLE;
       explored[cell] = VISIBLE;
+      // Seeing a cell forgets what used to stand there; structures still
+      // standing are restamped below.
+      remembered[cell] = 0;
+      rememberedOwner[cell] = 0;
     }
   }
+
+  stampStructures(match, world);
+}
+
+/**
+ * Stamp the structures each player can currently see.
+ *
+ * Clearing happened during the visibility pass, which already touches exactly
+ * the cells that need it -- a separate sweep over the whole map per player
+ * costs more than the entire rest of the update on a large map.
+ */
+function stampStructures(match: Match, world: World): void {
+  const fog = match.fog;
+  const store = match.units;
+
+  for (let i = 0; i < store.count; i++) {
+    if (store.isAlive[i] !== 1) continue;
+    const typeId = store.typeId[i] as number;
+    if (!unitType(typeId).isStructure) continue;
+
+    const cell = cellFromWorld(world, store.posX[i] as number, store.posZ[i] as number);
+    if (cell < 0) continue;
+
+    for (let player = 0; player < match.playerCount; player++) {
+      if ((fog.visible[player] as Uint8Array)[cell] !== VISIBLE) continue;
+      (fog.remembered[player] as Uint8Array)[cell] = typeId + 1;
+      (fog.rememberedOwner[player] as Uint8Array)[cell] = store.ownerId[i] as number;
+    }
+  }
+}
+
+/** The structure a player remembers on a cell, or null. */
+export function rememberedStructure(
+  fog: FogGrids,
+  player: number,
+  cell: number,
+): { typeId: number; ownerId: number } | null {
+  const remembered = fog.remembered[player];
+  const owner = fog.rememberedOwner[player];
+  if (!remembered || !owner || cell < 0 || cell >= remembered.length) return null;
+  const stored = remembered[cell] as number;
+  if (stored === 0) return null;
+  return { typeId: stored - 1, ownerId: owner[cell] as number };
 }
 
 /** True when a player can currently see a cell. */
@@ -153,6 +213,11 @@ export function fogHashableArrays(fog: FogGrids, playerCount: number): {
   for (let player = 0; player < playerCount; player++) {
     out.push({ name: `fog.visible.${player}`, data: fog.visible[player] as Uint8Array });
     out.push({ name: `fog.explored.${player}`, data: fog.explored[player] as Uint8Array });
+    out.push({ name: `fog.remembered.${player}`, data: fog.remembered[player] as Uint8Array });
+    out.push({
+      name: `fog.rememberedOwner.${player}`,
+      data: fog.rememberedOwner[player] as Uint8Array,
+    });
   }
   return out;
 }

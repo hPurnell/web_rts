@@ -24,6 +24,7 @@ import type { Scene } from '@babylonjs/core/scene';
 import type { Match } from '../sim/match.ts';
 import type { World } from '../sim/world.ts';
 import { cellFromWorld } from '../sim/world.ts';
+import { isVisible } from '../sim/fog.ts';
 import { UNIT_TYPES } from '../sim/unittypes.ts';
 import { toFloat } from '../sim/fixed.ts';
 import type { RampSlopes } from './terrain.ts';
@@ -73,8 +74,15 @@ export interface UnitRenderer {
   /**
    * Write instance matrices for the current frame.
    * `alpha` is the driver's interpolation factor, 0..1.
+   * `localPlayer` decides what fog hides; pass -1 to see everything.
    */
-  update(match: Match, world: World, ramps: RampSlopes, alpha: number): void;
+  update(
+    match: Match,
+    world: World,
+    ramps: RampSlopes,
+    alpha: number,
+    localPlayer?: number,
+  ): void;
   /** Remember this tick's positions as the basis for interpolation. */
   captureTick(match: Match): void;
   /** Live instances written by the last update, for the dev overlay. */
@@ -202,7 +210,7 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
 
     instanceCount: () => written,
 
-    update(match, world, ramps, alpha) {
+    update(match, world, ramps, alpha, localPlayer = -1) {
       const units = match.units;
       // Before the first captured tick there is nothing to interpolate from.
       const blend = prevTick >= 0 ? Math.max(0, Math.min(1, alpha)) : 1;
@@ -211,8 +219,22 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
         for (const group of row) group.count = 0;
       }
 
+      const hidden = (index: number): boolean => {
+        if (localPlayer < 0) return false;
+        if (units.ownerId[index] === localPlayer) return false;
+        const cell = cellFromWorld(
+          world,
+          units.posX[index] as number,
+          units.posZ[index] as number,
+        );
+        // An enemy unit exists only where you can currently see it. Explored
+        // ground is not enough: that is what makes scouting matter.
+        return !isVisible(match.fog, localPlayer, cell);
+      };
+
       for (let i = 0; i < units.count; i++) {
         if (units.isAlive[i] !== 1) continue;
+        if (hidden(i)) continue;
         const group = groups[units.typeId[i] as number]?.[units.ownerId[i] as number];
         if (!group) continue;
         group.count++;
@@ -228,6 +250,7 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
       written = 0;
       for (let i = 0; i < units.count; i++) {
         if (units.isAlive[i] !== 1) continue;
+        if (hidden(i)) continue;
         const group = groups[units.typeId[i] as number]?.[units.ownerId[i] as number];
         if (!group) continue;
 

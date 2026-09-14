@@ -19,6 +19,9 @@ import { describeFlags, pickCell, screenRay } from './render/pick.ts';
 import { FLAG_LAYERS, createFlagOverlay } from './render/flagoverlay.ts';
 import { createGizmos } from './render/gizmos.ts';
 import { createUnitRenderer } from './render/units.ts';
+import { createGhostRenderer } from './render/ghosts.ts';
+import { EXPLORED_DIM, createFogTexture } from './render/fogtexture.ts';
+import { setTerrainFog } from './render/terrainMaterial.ts';
 import { createSelectionRings } from './render/selectionrings.ts';
 import { SelectionController } from './game/selectioncontroller.ts';
 import { dispatchOrder } from './game/orderdispatch.ts';
@@ -88,7 +91,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   const nav: NavClient = createNavClient(createWorkerTransport());
   nav.setGrid(costGrid);
   const unitRenderer = createUnitRenderer(renderer.scene);
+  const ghostRenderer = createGhostRenderer(renderer.scene);
   const selectionRings = createSelectionRings(renderer.scene);
+  let fogTexture = createFogTexture(renderer.scene, world.width, world.height);
 
   /** The player this client controls. Multiplayer decides this at M31. */
   const LOCAL_PLAYER = 0;
@@ -125,6 +130,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     flagOverlay.rebuild(ramps);
     flagOverlay.show(layer);
     gizmos.rebuild(ramps);
+    fogTexture.dispose();
+    fogTexture = createFogTexture(renderer.scene, world.width, world.height);
+    setTerrainFog(terrainMaterial, null, world.width, world.height, EXPLORED_DIM);
     costGrid = createCostGrid(world);
     nav.setGrid(costGrid);
     const cell = toFloat(world.cellSize);
@@ -151,7 +159,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       { world },
     );
     unitRenderer.captureTick(driver.match);
-    unitRenderer.update(driver.match, world, ramps, 1);
+    unitRenderer.update(driver.match, world, ramps, 1, LOCAL_PLAYER);
+    setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
 
     // Open on the local player's base, the way an RTS does.
     const start = world.startLocations[0];
@@ -171,6 +180,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     driver = null;
     mode.editor()?.refresh();
     unitRenderer.clear();
+    ghostRenderer.clear();
+    // Fog is a match concept: with no match running the whole map is lit.
+    setTerrainFog(terrainMaterial, null, world.width, world.height, EXPLORED_DIM);
     pendingCommands = [];
     selection.selection.clear();
     selection.cancelDrag();
@@ -179,6 +191,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     overlay.remove('selected');
     overlay.remove('tick');
     overlay.remove('units');
+    overlay.remove('fog');
     overlay.set('match', 'stopped');
   }
 
@@ -199,7 +212,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
         },
         () => unitRenderer.captureTick(running.match),
       );
-      unitRenderer.update(running.match, world, ramps, running.alpha());
+      unitRenderer.update(running.match, world, ramps, running.alpha(), LOCAL_PLAYER);
+      ghostRenderer.update(running.match, world, ramps, LOCAL_PLAYER);
+      fogTexture.update(running.match.fog, LOCAL_PLAYER);
+      overlay.set('fog', `${fogTexture.lastUploadMs().toFixed(2)} ms`);
 
       selection.prune(running.match.units);
       selectionRings.update(selection.selection.list(), running.match.units, world, ramps);
@@ -425,6 +441,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       flagOverlay.dispose();
       gizmos.dispose();
       unitRenderer.dispose();
+      ghostRenderer.dispose();
+      fogTexture.dispose();
       terrain.dispose();
       terrainMaterial.dispose();
       input.dispose();
