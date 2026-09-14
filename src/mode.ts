@@ -30,6 +30,10 @@ export interface ModeContext {
   onChange?(mode: Mode): void;
   /** Called when the editor loads a map from disk or from an autosave. */
   onLoad?(world: World): void;
+  /** Start or stop a test match against the map being edited. */
+  onToggleTestMatch?(): void;
+  /** Whether a test match is currently running. */
+  isTestMatchRunning?(): boolean;
 }
 
 export interface ModeController {
@@ -86,6 +90,8 @@ export function createModeController(context: ModeContext): ModeController {
         void controller.set('game');
       },
       ...(context.onLoad ? { onLoad: context.onLoad } : {}),
+      ...(context.onToggleTestMatch ? { onToggleTestMatch: context.onToggleTestMatch } : {}),
+      ...(context.isTestMatchRunning ? { isTestMatchRunning: context.isTestMatchRunning } : {}),
     });
     badge = document.createElement('div');
     badge.className = 'mode-badge';

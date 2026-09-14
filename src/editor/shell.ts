@@ -37,6 +37,10 @@ export interface EditorContext {
   onToolChange?(tool: EditorTool): void;
   /** Called when the user asks to leave the editor. */
   onExit?(): void;
+  /** Start or stop a test match against the map being edited. */
+  onToggleTestMatch?(): void;
+  /** Whether a test match is currently running. */
+  isTestMatchRunning?(): boolean;
   /**
    * Replace the world being edited. The app owns the World object, so loading
    * a map hands the new one back rather than mutating in place.
@@ -226,6 +230,13 @@ export function mountEditor(context: EditorContext): EditorHandle {
   fileButton('Save', `Save the map (Ctrl+S)`, () => void doSave(false));
   fileButton('Save as', 'Save to a new file', () => void doSave(true));
   fileButton('Open', `Open a ${MAP_EXTENSION} file (Ctrl+O)`, () => void doOpen());
+
+  const testButton = fileButton('Test map', 'Run a match on this map (F5)', () => {
+    context.onToggleTestMatch?.();
+    refresh();
+  });
+  testButton.classList.add('editor-test');
+  if (!context.onToggleTestMatch) testButton.remove();
   if (!hasFileSystemAccess()) {
     const fallbackNote = document.createElement('p');
     fallbackNote.className = 'editor-hint';
@@ -301,6 +312,11 @@ export function mountEditor(context: EditorContext): EditorHandle {
     // A refused action needs to say why, or the tool just looks broken.
     root.classList.toggle('has-error', session.lastError !== null);
     setStatus('note', session.lastError ?? '');
+    if (context.isTestMatchRunning) {
+      const running = context.isTestMatchRunning();
+      testButton.textContent = running ? 'Stop test' : 'Test map';
+      testButton.classList.toggle('is-running', running);
+    }
   };
 
   disposer.listen(window, 'keydown', (event) => {

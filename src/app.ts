@@ -7,7 +7,10 @@ import type { Scene } from '@babylonjs/core/scene';
 import { createTestMap } from './sim/fixtures/testmap.ts';
 import { toFloat } from './sim/fixed.ts';
 import type { World } from './sim/world.ts';
-import { MAX_TIER } from './sim/world.ts';
+import { MAX_TIER, hashWorld } from './sim/world.ts';
+import { createMatchFromWorld } from './sim/matchinit.ts';
+import type { Driver } from './driver.ts';
+import { createDriver } from './driver.ts';
 import { createRenderer } from './render/engine.ts';
 import { RtsCamera } from './render/camera.ts';
 import { attachInput } from './render/input.ts';
@@ -23,11 +26,17 @@ import { MODE_KEY, createModeController, modeFromLocation } from './mode.ts';
 const INSPECTOR_KEY = 'F9';
 /** Cycles the flag debug overlay: off -> unwalkable -> buildable -> ... */
 const FLAG_OVERLAY_KEY = 'F3';
+/** Starts or stops a test match against the map currently loaded. */
+const TEST_MATCH_KEY = 'F5';
 
 export interface App {
   /** The map currently loaded. Replaced when the editor opens a file. */
   readonly world: World;
   readonly mode: ReturnType<typeof createModeController>;
+  /** The running match, or null when none is in progress. */
+  readonly driver: Driver | null;
+  startMatch(seed?: number): void;
+  stopMatch(): void;
   dispose(): void;
 }
 
@@ -80,10 +89,41 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     overlay.set('map', `${world.width}x${world.height}`);
   }
 
+  // A test match is generated from world state and discarded wholesale; the
+  // world is never written to, so Test/Stop costs nothing but the spawn.
+  let driver: Driver | null = null;
+
+  function startMatch(seed = 1): void {
+    const before = hashWorld(world);
+    driver = createDriver(
+      createMatchFromWorld({ world, seed, playerCount: Math.max(1, world.startLocations.length) }),
+    );
+    if (hashWorld(world) !== before) {
+      // Invariant 4: match setup reads world state and must not write it.
+      console.error('[match] starting a match modified world state');
+    }
+    overlay.set('match', 'running');
+    mode.editor()?.refresh();
+  }
+
+  function stopMatch(): void {
+    driver = null;
+    mode.editor()?.refresh();
+    overlay.remove('tick');
+    overlay.remove('units');
+    overlay.set('match', 'stopped');
+  }
+
   let smoothedFps = 60;
   renderer.engine.runRenderLoop(() => {
     const dt = renderer.frameDelta();
     camera.update(input, dt, renderer.engine.getRenderWidth(), renderer.engine.getRenderHeight());
+
+    if (driver) {
+      driver.advance(dt);
+      overlay.set('tick', String(driver.tick()));
+      overlay.set('units', String(driver.match.units.alive));
+    }
 
     // getFps() is NaN on the very first frames; without this guard the
     // exponential average is poisoned permanently.
@@ -147,6 +187,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       gizmos.setVisible(next === 'editor');
       gizmos.rebuild(ramps);
     },
+    onToggleTestMatch: () => {
+      if (driver) stopMatch();
+      else startMatch();
+    },
+    isTestMatchRunning: () => driver !== null,
     onLoad: (next) => {
       loadWorld(next);
       // The editor holds a reference to the World it mounted with, so it has
@@ -195,6 +240,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     } else if (e.code === MODE_KEY) {
       e.preventDefault();
       void mode.toggle();
+    } else if (e.code === TEST_MATCH_KEY) {
+      e.preventDefault();
+      if (driver) stopMatch();
+      else startMatch();
     } else if (e.code === FLAG_OVERLAY_KEY) {
       e.preventDefault();
       const layer = flagOverlay.cycle();
@@ -209,6 +258,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       return world;
     },
     mode,
+    get driver() {
+      return driver;
+    },
+    startMatch,
+    stopMatch,
     dispose() {
       window.removeEventListener('keydown', onKey);
       canvas.removeEventListener('pointerdown', onPointerDown);
