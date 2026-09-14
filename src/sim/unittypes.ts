@@ -36,6 +36,10 @@ export interface UnitType {
   readonly hasTurret: boolean;
   /** True for buildings: they do not move, and players remember seeing them. */
   readonly isStructure: boolean;
+  /** Cells per tick for this weapon's shot; zero means hitscan. */
+  readonly projectileSpeed: Fixed;
+  /** True when this type can attack at all. */
+  readonly canAttack: boolean;
 }
 
 interface RawUnitType {
@@ -53,6 +57,7 @@ interface RawUnitType {
   gasCost: number;
   hasTurret: boolean;
   isStructure: boolean;
+  projectileSpeedMilliCellsPerSecond: number;
 }
 
 function build(raw: RawUnitType, typeId: number): UnitType {
@@ -73,6 +78,8 @@ function build(raw: RawUnitType, typeId: number): UnitType {
     gasCost: raw.gasCost | 0,
     hasTurret: raw.hasTurret === true,
     isStructure: raw.isStructure === true,
+    projectileSpeed: fromRatio(raw.projectileSpeedMilliCellsPerSecond, MILLI * TICKS_PER_SECOND),
+    canAttack: (raw.damage | 0) > 0 && (raw.attackRangeMilliCells | 0) > 0,
   };
 }
 

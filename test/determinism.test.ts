@@ -10,7 +10,7 @@ import {
   runScriptHash,
 } from './determinism.ts';
 import { createMatch } from '../src/sim/match.ts';
-import { diffComponents, hashMatch } from '../src/sim/statehash.ts';
+import { diffComponents, hashComponents, hashMatch } from '../src/sim/statehash.ts';
 import { CommandKind } from '../src/sim/commands.ts';
 import { stepMatch } from '../src/sim/tick.ts';
 
@@ -51,13 +51,19 @@ describe('determinism harness', () => {
     expect(runScriptHash({ script: moved })).not.toBe(golden.finalHash);
   });
 
-  it('carries the unit store', () => {
+  it('carries the unit store, with casualties', () => {
     const match = runScript();
-    expect(match.units.alive).toBeGreaterThan(20);
     expect(match.units.count).toBeGreaterThan(0);
-    // Two slots were freed and then reused, so the count is below the number
-    // of successful spawns.
-    expect(match.units.count).toBeGreaterThanOrEqual(match.units.alive);
+    // Since M24 the two armies meet and fight, so the survivors are fewer than
+    // the units spawned. Slots are freed and reused, so count exceeds alive.
+    expect(match.units.alive).toBeGreaterThan(0);
+    expect(match.units.count).toBeGreaterThan(match.units.alive);
+  });
+
+  it('carries projectiles', () => {
+    const names = runScript();
+    expect(names.projectiles.count).toBeGreaterThanOrEqual(0);
+    expect(hashComponents(names).has('shot.posX')).toBe(true);
   });
 
   it('notices a single unit position differing by one ULP', () => {

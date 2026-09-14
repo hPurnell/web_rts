@@ -16,7 +16,7 @@
  *    which is what keeps a settled army from jittering.
  */
 import type { Fixed } from './fixed.ts';
-import { ONE, abs, add, div, fromInt, isqrt, mul, sub } from './fixed.ts';
+import { ONE, abs, add, div, fromInt, isqrt, length as fixedLength, mul, sub } from './fixed.ts';
 import { atan2 } from './trig.ts';
 import type { Match } from './match.ts';
 import { UnitState } from './units.ts';
@@ -338,28 +338,6 @@ function separation(
   });
 
   return { x: pushX, z: pushZ };
-}
-
-/** Length of a fixed-point vector, guarding against overflow in the square. */
-function fixedLength(x: Fixed, z: Fixed): Fixed {
-  const ax = abs(x);
-  const az = abs(z);
-  if (ax === 0) return az;
-  if (az === 0) return ax;
-  // sqrt of the sum of squares; both are well inside range for unit vectors.
-  const sum = add(mul(ax, ax), mul(az, az));
-  return sqrtFixed(sum);
-}
-
-function sqrtFixed(a: Fixed): Fixed {
-  if (a <= 0) return 0;
-  const n = a * ONE;
-  let root = 0;
-  for (let bit = 1 << 23; bit !== 0; bit >>= 1) {
-    const trial = root + bit;
-    if (trial * trial <= n) root = trial;
-  }
-  return root | 0;
 }
 
 function isLinkedCell(grid: CostGrid, from: number, to: number): boolean {

@@ -1,5 +1,5 @@
 {
-  "note": "Unit type table. Every value is an integer in the unit named by its suffix, so loading never parses a float (invariant 2). hasTurret marks types whose weapon rotates independently of the hull; isStructure marks types that do not move and that players remember once scouted. Order is part of the determinism contract: append, never reorder.",
+  "note": "Unit type table. Every value is an integer in the unit named by its suffix, so loading never parses a float (invariant 2). hasTurret marks types whose weapon rotates independently of the hull; isStructure marks types that do not move and that players remember once scouted. A projectile speed of zero means the weapon is hitscan; anything else spawns a travelling projectile. Order is part of the determinism contract: append, never reorder.",
   "types": [
     {
       "id": "worker",
@@ -15,7 +15,8 @@
       "mineralCost": 50,
       "gasCost": 0,
       "hasTurret": false,
-      "isStructure": false
+      "isStructure": false,
+      "projectileSpeedMilliCellsPerSecond": 0
     },
     {
       "id": "soldier",
@@ -31,7 +32,8 @@
       "mineralCost": 50,
       "gasCost": 0,
       "hasTurret": false,
-      "isStructure": false
+      "isStructure": false,
+      "projectileSpeedMilliCellsPerSecond": 0
     },
     {
       "id": "raider",
@@ -47,7 +49,8 @@
       "mineralCost": 100,
       "gasCost": 25,
       "hasTurret": true,
-      "isStructure": false
+      "isStructure": false,
+      "projectileSpeedMilliCellsPerSecond": 0
     },
     {
       "id": "siege",
@@ -63,7 +66,8 @@
       "mineralCost": 150,
       "gasCost": 125,
       "hasTurret": true,
-      "isStructure": false
+      "isStructure": false,
+      "projectileSpeedMilliCellsPerSecond": 9000
     },
     {
       "id": "depot",
@@ -79,7 +83,8 @@
       "mineralCost": 100,
       "gasCost": 0,
       "hasTurret": false,
-      "isStructure": true
+      "isStructure": true,
+      "projectileSpeedMilliCellsPerSecond": 0
     }
   ]
 }

@@ -183,8 +183,12 @@ export function sqrt(a: Fixed): Fixed {
 }
 
 /**
- * Integer square root, truncated. Takes a plain non-negative integer rather
- * than a Fixed, for distances in cells where Q16.16 would overflow.
+ * Integer square root of a plain non-negative integer, truncated.
+ *
+ * For whole-number quantities such as a cell distance or a unit count. The
+ * search is 16 bits wide, so the input must be under 2^32 and the result under
+ * 65536 — do not reach for this to take the root of a Q16.16 value, which is
+ * what `sqrt` is for.
  */
 export function isqrt(n: number): number {
   if (n <= 0) return 0;

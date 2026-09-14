@@ -116,6 +116,39 @@ export function forEachNeighbour(
   }
 }
 
+/**
+ * Visit every unit within `radius` world units of a position.
+ *
+ * `forEachNeighbour` only covers the nine buckets around a point, which is
+ * right for separation but far too small for target acquisition: a siege tank
+ * sees eleven cells and the bucket neighbourhood reaches three. This scans as
+ * many buckets as the radius actually needs.
+ */
+export function forEachInRadius(
+  hash: SpatialHash,
+  x: Fixed,
+  z: Fixed,
+  radius: Fixed,
+  visit: (unitIndex: number) => void,
+): void {
+  const cells = Math.ceil(toInt(radius) / BUCKET_SIZE) + 1;
+  const bx = Math.max(0, Math.min(hash.width - 1, (toInt(x) / BUCKET_SIZE) | 0));
+  const bz = Math.max(0, Math.min(hash.height - 1, (toInt(z) / BUCKET_SIZE) | 0));
+
+  for (let oz = -cells; oz <= cells; oz++) {
+    const row = bz + oz;
+    if (row < 0 || row >= hash.height) continue;
+    for (let ox = -cells; ox <= cells; ox++) {
+      const column = bx + ox;
+      if (column < 0 || column >= hash.width) continue;
+      const bucket = row * hash.width + column;
+      const start = hash.starts[bucket] as number;
+      const end = hash.starts[bucket + 1] as number;
+      for (let i = start; i < end; i++) visit(hash.entries[i] as number);
+    }
+  }
+}
+
 /** Units in a bucket, for tests. */
 export function bucketContents(hash: SpatialHash, bucket: number): number[] {
   const start = hash.starts[bucket] as number;

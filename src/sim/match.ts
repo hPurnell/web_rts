@@ -18,6 +18,8 @@ import { createSpatialHash } from './spatialhash.ts';
 import type { CostGrid } from '../nav/grid.ts';
 import type { FogGrids } from './fog.ts';
 import { createFogGrids, fogHashableArrays } from './fog.ts';
+import type { ProjectileStore } from './projectiles.ts';
+import { createProjectileStore, projectileHashableArrays } from './projectiles.ts';
 
 export const MAX_PLAYERS = 8;
 
@@ -48,6 +50,7 @@ export interface Match {
   /** Navigation grid; null until a match is built from a world. */
   costGrid: CostGrid | null;
   readonly fog: FogGrids;
+  readonly projectiles: ProjectileStore;
 }
 
 export function createMatch(init: MatchInit): Match {
@@ -66,6 +69,7 @@ export function createMatch(init: MatchInit): Match {
     spatialHash: createSpatialHash(init.worldWidth ?? 64, init.worldHeight ?? 64),
     costGrid: init.costGrid ?? null,
     fog: createFogGrids(init.worldWidth ?? 64, init.worldHeight ?? 64),
+    projectiles: createProjectileStore(),
   };
 }
 
@@ -83,6 +87,7 @@ export function hashableArrays(match: Match): { name: string; data: ArrayBufferV
     { name: 'gas', data: match.gas },
     ...unitHashableArrays(match.units),
     ...fogHashableArrays(match.fog, match.playerCount),
+    ...projectileHashableArrays(match.projectiles),
   ];
 }
 
@@ -95,5 +100,8 @@ export function hashableScalars(match: Match): { name: string; value: number }[]
     { name: 'units.count', value: match.units.count },
     { name: 'units.alive', value: match.units.alive },
     { name: 'units.freeHead', value: match.units.freeHead },
+    { name: 'shots.count', value: match.projectiles.count },
+    { name: 'shots.alive', value: match.projectiles.alive },
+    { name: 'shots.freeHead', value: match.projectiles.freeHead },
   ];
 }
