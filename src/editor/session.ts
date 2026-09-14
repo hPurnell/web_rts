@@ -11,6 +11,7 @@ import { BUILDABLE, VISION_BLOCKER } from '../sim/world.ts';
 import { EditorHistory } from './history.ts';
 import { TerrainEditCommand } from './commands.ts';
 import { brushCells, stageFlagEdit, stageTierEdit, MAX_BRUSH_RADIUS, MIN_BRUSH_RADIUS } from './brush.ts';
+import { planRamp, stageRamp, stageRampErase } from './ramp.ts';
 import type { EditorTool } from './shell.ts';
 
 export interface SessionHooks {
@@ -28,6 +29,10 @@ export interface EditorSession {
   tool: EditorTool | null;
   /** Cell the pointer is over, or -1. */
   hoverCell: number;
+  /** Why the last action was refused, or null. Shown in the status bar. */
+  readonly lastError: string | null;
+  /** Cell a ramp drag started on, or -1 when no ramp drag is in progress. */
+  readonly rampAnchor: number;
   pointerDown(screenX: number, screenY: number, button: number): void;
   pointerMove(screenX: number, screenY: number): void;
   pointerUp(): void;
@@ -50,19 +55,37 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
   /** Right button inverts the tool: raise becomes lower, set becomes clear. */
   let inverted = false;
   let lastCell = -1;
+  let rampAnchor = -1;
+  let lastError: string | null = null;
 
   const session: EditorSession = {
     history,
     radius: 2,
     tool: null,
     hoverCell: -1,
+    get lastError() {
+      return lastError;
+    },
+    get rampAnchor() {
+      return rampAnchor;
+    },
 
     pointerDown(screenX, screenY, button) {
       if (button !== 0 && button !== 2) return;
       const cell = hooks.pick(screenX, screenY);
       if (cell < 0) return;
-      painting = true;
+      lastError = null;
       inverted = button === 2;
+
+      // A ramp is placed on release, from a drag: it needs both ends before it
+      // can decide anything, unlike a brush which acts on every sample.
+      if (session.tool?.id === 'ramp' && !inverted) {
+        rampAnchor = cell;
+        hooks.onChange?.();
+        return;
+      }
+
+      painting = true;
       lastCell = -1;
       history.beginStroke(`stroke-${++strokeId}`);
       paint(cell);
@@ -76,6 +99,13 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
     },
 
     pointerUp() {
+      if (rampAnchor >= 0) {
+        const target = session.hoverCell;
+        placeRamp(rampAnchor, target);
+        rampAnchor = -1;
+        hooks.onChange?.();
+        return;
+      }
       if (!painting) return;
       painting = false;
       lastCell = -1;
@@ -109,6 +139,19 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
     },
   };
 
+  function placeRamp(from: number, to: number): void {
+    const plan = planRamp(world, from, to);
+    if (!plan.ok) {
+      lastError = plan.reason;
+      return;
+    }
+    const command = new TerrainEditCommand(null);
+    if (stageRamp(world, command, plan) === 0) return;
+    const touched = command.touchedCells();
+    history.push(command);
+    hooks.rebuildCells(touched);
+  }
+
   function paint(cell: number): void {
     // Sampling the same cell twice in a row does no work: a pointer that sits
     // still would otherwise re-stage the same edit sixty times a second.
@@ -125,6 +168,9 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
     if (tool.id === 'raise' || tool.id === 'lower') {
       const raising = tool.id === 'raise' ? !inverted : inverted;
       changed = stageTierEdit(world, command, cells, raising ? 1 : -1);
+    } else if (tool.id === 'ramp') {
+      // Right-dragging the ramp tool erases ramp flags.
+      changed = stageRampErase(world, command, cells);
     } else {
       const flag = FLAG_TOOLS[tool.id];
       if (flag === undefined) return;

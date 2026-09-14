@@ -13,12 +13,15 @@ import { RtsCamera } from './render/camera.ts';
 import { attachInput } from './render/input.ts';
 import { TIER_HEIGHT, createTerrain } from './render/terrain.ts';
 import { describeFlags, pickCell, screenRay } from './render/pick.ts';
+import { FLAG_LAYERS, createFlagOverlay } from './render/flagoverlay.ts';
 import { createTerrainMaterial } from './render/terrainMaterial.ts';
 import { createDevOverlay } from './ui/devoverlay.ts';
 import { MODE_KEY, createModeController, modeFromLocation } from './mode.ts';
 
 /** Dev-only keybind for Babylon's Inspector. */
 const INSPECTOR_KEY = 'F9';
+/** Cycles the flag debug overlay: off -> unwalkable -> buildable -> ... */
+const FLAG_OVERLAY_KEY = 'F3';
 
 export interface App {
   readonly world: World;
@@ -48,6 +51,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   });
   const terrain = createTerrain(renderer.scene, world, terrainMaterial);
   let ramps = terrain.ramps();
+  const flagOverlay = createFlagOverlay(renderer.scene, world);
+  flagOverlay.rebuild(ramps);
 
   let smoothedFps = 60;
   renderer.engine.runRenderLoop(() => {
@@ -104,6 +109,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
         }
         terrain.rebuildChunks(terrain.chunksForRect(x0, y0, x1, y1));
         ramps = terrain.ramps();
+        flagOverlay.rebuild(ramps);
       },
     },
     onChange: (next) => overlay.set('mode', next),
@@ -149,6 +155,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     } else if (e.code === MODE_KEY) {
       e.preventDefault();
       void mode.toggle();
+    } else if (e.code === FLAG_OVERLAY_KEY) {
+      e.preventDefault();
+      const layer = flagOverlay.cycle();
+      const label = FLAG_LAYERS.find((l) => l.id === layer)?.label;
+      overlay.set('overlay', label ?? 'off');
     }
   };
   window.addEventListener('keydown', onKey);
@@ -166,6 +177,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       mode.dispose();
       renderer.engine.stopRenderLoop();
       overlay.dispose();
+      flagOverlay.dispose();
       terrain.dispose();
       terrainMaterial.dispose();
       input.dispose();

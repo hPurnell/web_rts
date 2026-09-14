@@ -97,3 +97,5 @@ html, body { margin: 0; height: 100%; background: #0d1014; color: #e8ecf1;
   font: 11px/1.5 ui-monospace, Menlo, monospace; letter-spacing: 0.08em;
   text-transform: uppercase; color: #bfd9ff; pointer-events: none;
 }
+
+.editor-root.has-error .editor-status-item:last-of-type span:last-child { color: #ffb4b4; }

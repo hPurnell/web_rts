@@ -145,6 +145,9 @@ export function mountEditor(context: EditorContext): EditorHandle {
     if (!session) return;
     setStatus('brush', `r${session.radius}`);
     setStatus('undo', `${session.history.depth} step${session.history.depth === 1 ? '' : 's'}`);
+    // A refused action needs to say why, or the tool just looks broken.
+    root.classList.toggle('has-error', session.lastError !== null);
+    setStatus('note', session.lastError ?? '');
   };
 
   disposer.listen(window, 'keydown', (event) => {
