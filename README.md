@@ -32,15 +32,19 @@ it with the `VITE_BASE` environment variable when serving from elsewhere.
 
 ## Progress
 
-Milestones M0–M23 of [PLAN.md](PLAN.md) are done: foundation, world state,
-renderer, editor, simulation core, movement and fog of war. Phases 6–9
-(combat, economy, buildings, HUD, art, replays, netcode, AI) are not started.
+Milestones M0–M27 and M30 of [PLAN.md](PLAN.md) are done: foundation, world
+state, renderer, editor, simulation core, movement, fog of war, combat,
+economy, buildings and the HUD, plus replays. M28–M29 (art) are blocked on an
+asset collection that is not in the repository. M31–M33 (netcode, skirmish AI,
+performance pass) are not started.
 
 | Key | Does |
 |---|---|
 | F2 | Toggle the map editor |
 | F3 | Cycle the flag debug overlay |
-| F5 | Start or stop a test match |
+| F5 | Start or stop a test match, or stop a replay |
+| F6 / F7 | Save the last match's replay / open a replay |
+| Space, `[`, `]` | Pause a replay, slower, faster |
 | F9 | Babylon Inspector (dev builds only) |
 | WASD / arrows / edge / middle-drag | Pan |
 | Wheel | Zoom |

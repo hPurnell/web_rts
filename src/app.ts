@@ -11,6 +11,10 @@ import { MAX_TIER, hashWorld, worldFromCell } from './sim/world.ts';
 import { createMatchFromWorld } from './sim/matchinit.ts';
 import type { Driver } from './driver.ts';
 import { createDriver } from './driver.ts';
+import type { Replay, ReplayRecorder } from './sim/replay.ts';
+import { createRecorder, decodeReplay, describeReplay, encodeReplay } from './sim/replay.ts';
+import type { ReplayPlayer } from './replayplayer.ts';
+import { PLAYBACK_SPEEDS, createReplayPlayer } from './replayplayer.ts';
 import { createRenderer } from './render/engine.ts';
 import { RtsCamera } from './render/camera.ts';
 import { attachInput } from './render/input.ts';
@@ -49,6 +53,10 @@ const INSPECTOR_KEY = 'F9';
 const FLAG_OVERLAY_KEY = 'F3';
 /** Starts or stops a test match against the map currently loaded. */
 const TEST_MATCH_KEY = 'F5';
+/** Saves the replay of the match that just ended. */
+const SAVE_REPLAY_KEY = 'F6';
+/** Loads a replay file and plays it back. */
+const LOAD_REPLAY_KEY = 'F7';
 
 export interface App {
   /** The map currently loaded. Replaced when the editor opens a file. */
@@ -56,8 +64,13 @@ export interface App {
   readonly mode: ReturnType<typeof createModeController>;
   /** The running match, or null when none is in progress. */
   readonly driver: Driver | null;
+  /** The replay being played back, or null. */
+  readonly playback: ReplayPlayer | null;
+  /** The replay of the most recently finished match, or null. */
+  readonly lastReplay: Replay | null;
   startMatch(seed?: number): void;
   stopMatch(): void;
+  playReplay(replay: Replay): void;
   /** Solve a flow field to a cell. Used by orders, and by the browser check. */
   requestPath(cell: number): Promise<FlowField | null>;
   dispose(): void;
@@ -229,16 +242,23 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   // A test match is generated from world state and discarded wholesale; the
   // world is never written to, so Test/Stop costs nothing but the spawn.
   let driver: Driver | null = null;
+  // Every match is recorded. A replay is a seed and a command stream, so this
+  // costs a few hundred small objects for a whole match.
+  let recorder: ReplayRecorder | null = null;
+  let lastReplay: Replay | null = null;
+  let playback: ReplayPlayer | null = null;
 
   function startMatch(seed = 1): void {
+    stopPlayback();
     const before = hashWorld(world);
+    const playerCount = Math.max(1, world.startLocations.length);
+    recorder = createRecorder({
+      seed,
+      playerCount,
+      mapHash: before,
+    });
     driver = createDriver(
-      createMatchFromWorld({
-        world,
-        seed,
-        playerCount: Math.max(1, world.startLocations.length),
-        costGrid,
-      }),
+      createMatchFromWorld({ world, seed, playerCount, costGrid }),
       { world },
     );
     unitRenderer.captureTick(driver.match);
@@ -259,7 +279,79 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     mode.editor()?.refresh();
   }
 
+  /** Play a recorded match back. The live match, if any, is stopped first. */
+  function startPlayback(replay: Replay): void {
+    stopMatch();
+    stopPlayback();
+    try {
+      playback = createReplayPlayer({ replay, world, costGrid });
+    } catch (error) {
+      overlay.set('replay', error instanceof Error ? error.message : 'replay failed');
+      return;
+    }
+    unitRenderer.captureTick(playback.match);
+    unitRenderer.update(playback.match, world, ramps, 1, LOCAL_PLAYER);
+    setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
+    overlay.set('match', 'replay');
+    overlay.set('replay', describeReplay(replay));
+  }
+
+  function stopPlayback(): void {
+    if (!playback) return;
+    playback = null;
+    unitRenderer.clear();
+    ghostRenderer.clear();
+    selectionRings.clear();
+    setTerrainFog(terrainMaterial, null, world.width, world.height, EXPLORED_DIM);
+    hud.update(null, []);
+    overlay.set('match', 'stopped');
+    overlay.remove('speed');
+  }
+
+  /** Read a replay file the user picked and play it. */
+  async function openReplay(): Promise<void> {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.rtsreplay,application/json';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    const file = await new Promise<File | null>((resolve) => {
+      input.addEventListener('change', () => resolve(input.files?.[0] ?? null));
+      input.click();
+    });
+    input.remove();
+    if (!file) return;
+    try {
+      startPlayback(decodeReplay(await file.text(), hashWorld(world)));
+    } catch (error) {
+      overlay.set('replay', error instanceof Error ? error.message : 'could not read that replay');
+    }
+  }
+
+  /** Download the most recent replay. */
+  function saveReplay(): void {
+    if (!lastReplay) {
+      overlay.set('replay', 'no replay yet - finish a match first');
+      return;
+    }
+    const blob = new Blob([encodeReplay(lastReplay)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `match-${lastReplay.seed.toString(16)}.rtsreplay`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    overlay.set('replay', 'saved');
+  }
+
   function stopMatch(): void {
+    if (driver && recorder) {
+      lastReplay = recorder.finish(driver.match);
+      overlay.set('replay', describeReplay(lastReplay));
+    }
+    recorder = null;
     driver = null;
     mode.editor()?.refresh();
     unitRenderer.clear();
@@ -287,17 +379,48 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     const dt = renderer.frameDelta();
     camera.update(input, dt, renderer.engine.getRenderWidth(), renderer.engine.getRenderHeight());
 
+    if (playback) {
+      const showing = playback;
+      showing.advance(dt, () => unitRenderer.captureTick(showing.match));
+      unitRenderer.update(showing.match, world, ramps, showing.driver.alpha(), LOCAL_PLAYER);
+      ghostRenderer.update(showing.match, world, ramps, LOCAL_PLAYER);
+      fogTexture.update(showing.match.fog, LOCAL_PLAYER);
+      selection.prune(showing.match.units);
+      selectionRings.update(selection.selection.list(), showing.match.units, world, ramps);
+      hud.update(showing.match, selection.selection.list());
+      minimap.draw(
+        world,
+        showing.match.fog,
+        showing.match.units,
+        LOCAL_PLAYER,
+        {
+          focusX: camera.focusX,
+          focusZ: camera.focusZ,
+          halfWidth: camera.currentHeight * 0.9,
+          halfDepth: camera.currentHeight * 0.75,
+        },
+        PLAYER_COLORS,
+      );
+      overlay.set('tick', `${showing.match.tick} / ${showing.replay.ticks}`);
+      overlay.set('speed', showing.paused ? 'paused' : `${showing.speed}x`);
+      const divergence = showing.divergence();
+      if (divergence) overlay.set('desync', `tick ${divergence.tick}`);
+    }
+
     if (driver) {
       // Capture before stepping, so interpolation has both endpoints.
       const running = driver;
+      const recording = recorder;
       running.advance(
         dt,
-        () => {
+        (tick) => {
           const batch = pendingCommands;
           pendingCommands = [];
+          recording?.record(tick, batch);
           return batch;
         },
         () => unitRenderer.captureTick(running.match),
+        () => recording?.checkpoint(running.match),
       );
       unitRenderer.update(running.match, world, ramps, running.alpha(), LOCAL_PLAYER);
       ghostRenderer.update(running.match, world, ramps, LOCAL_PLAYER);
@@ -538,8 +661,28 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       if (selection.handleDigit(digit, driver.match.units, modifiersOf(e))) e.preventDefault();
     } else if (e.code === TEST_MATCH_KEY) {
       e.preventDefault();
-      if (driver) stopMatch();
+      if (playback) stopPlayback();
+      else if (driver) stopMatch();
       else startMatch();
+    } else if (e.code === SAVE_REPLAY_KEY) {
+      e.preventDefault();
+      saveReplay();
+    } else if (e.code === LOAD_REPLAY_KEY) {
+      e.preventDefault();
+      void openReplay();
+    } else if (playback && e.code === 'Space') {
+      e.preventDefault();
+      playback.paused = !playback.paused;
+    } else if (playback && (e.code === 'BracketLeft' || e.code === 'BracketRight')) {
+      e.preventDefault();
+      // Step through the offered speeds rather than scaling freely: a replay
+      // at 3.7x helps nobody.
+      const index = PLAYBACK_SPEEDS.indexOf(playback.speed as (typeof PLAYBACK_SPEEDS)[number]);
+      const next = Math.max(
+        0,
+        Math.min(PLAYBACK_SPEEDS.length - 1, index + (e.code === 'BracketRight' ? 1 : -1)),
+      );
+      playback.speed = PLAYBACK_SPEEDS[next] as number;
     } else if (e.code === FLAG_OVERLAY_KEY) {
       e.preventDefault();
       const layer = flagOverlay.cycle();
@@ -557,8 +700,15 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     get driver() {
       return driver;
     },
+    get playback() {
+      return playback;
+    },
+    get lastReplay() {
+      return lastReplay;
+    },
     startMatch,
     stopMatch,
+    playReplay: startPlayback,
     requestPath: async (cell) => {
       const field = await nav.request(cell);
       overlay.set('nav', field ? `${nav.lastSolveMs().toFixed(1)} ms` : 'stale');

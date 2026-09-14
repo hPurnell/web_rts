@@ -123,6 +123,31 @@ async function main(): Promise<void> {
   if (!Number.isFinite(fogMs)) failures.push('fog texture never uploaded');
   else if (fogMs > 0.5) failures.push(`fog upload over budget: ${fogMs} ms`);
   await page.keyboard.press('F5');
+  await page.waitForTimeout(300);
+
+  // M30: the match that just ran must replay from its command stream alone,
+  // reaching the same state without a reported divergence.
+  const replay = await page.evaluate(async () => {
+    const app = (
+      window as unknown as {
+        __app?: {
+          lastReplay?: { ticks: number; finalHash: number } | null;
+          playReplay(replay: unknown): void;
+          playback: { runToEnd?: () => number } | null;
+        };
+      }
+    ).__app;
+    const recorded = app?.lastReplay;
+    if (!recorded) return { ok: false, reason: 'no replay recorded' };
+    app?.playReplay(recorded);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    return { ok: true, ticks: recorded.ticks, reason: 'played' };
+  });
+  if (!replay.ok) failures.push(`replay failed: ${replay.reason}`);
+  await page.waitForTimeout(1500);
+  const desync = await readOverlay('desync');
+  if (desync.trim() !== '') failures.push(`replay diverged at ${desync}`);
+  await page.keyboard.press('F5');
   await page.waitForTimeout(200);
 
   const fps = Number(await readOverlay('fps'));
@@ -146,7 +171,7 @@ async function main(): Promise<void> {
   console.log(
     `browser check ok — ${url} rendered at ${fps} fps in ${draws} draw calls, ` +
       `camera responsive, path solved in ${navMs}, fog uploaded in ${fogMs}ms, ` +
-      'self-check passed',
+      `${replay.ticks ?? 0}-tick replay verified, self-check passed`,
   );
 }
 
