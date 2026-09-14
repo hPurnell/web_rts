@@ -26,6 +26,7 @@ import { createSelectionRings } from './render/selectionrings.ts';
 import { SelectionController } from './game/selectioncontroller.ts';
 import { dispatchOrder } from './game/orderdispatch.ts';
 import type { SimCommand } from './sim/commands.ts';
+import { CommandKind } from './sim/commands.ts';
 import { MOUSE_LEFT } from './render/input.ts';
 import type { CostGrid } from './nav/grid.ts';
 import { createCostGrid, rebuildRegion } from './nav/grid.ts';
@@ -34,6 +35,12 @@ import { createNavClient, createWorkerTransport } from './nav/client.ts';
 import type { FlowField } from './nav/flowfield.ts';
 import { createTerrainMaterial } from './render/terrainMaterial.ts';
 import { createDevOverlay } from './ui/devoverlay.ts';
+import { createHud } from './ui/hud.ts';
+import type { CommandAction } from './ui/hud.ts';
+import { createMinimap } from './ui/minimap.ts';
+import { PLAYER_COLORS } from './render/units.ts';
+import { OrderKind, NULL_HANDLE } from './sim/units.ts';
+import { unitType } from './sim/unittypes.ts';
 import { MODE_KEY, createModeController, modeFromLocation } from './mode.ts';
 
 /** Dev-only keybind for Babylon's Inspector. */
@@ -99,6 +106,38 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   const LOCAL_PLAYER = 0;
   const selection = new SelectionController(LOCAL_PLAYER);
 
+  /** Type the player is about to place, or -1. Set by a build button. */
+  let pendingBuild = -1;
+
+  const hud = createHud({
+    overlay: overlayRoot,
+    localPlayer: LOCAL_PLAYER,
+    onCommand: (action) => applyHudCommand(action),
+    onMinimapJump: (x, z) => camera.moveTo(x, z),
+  });
+  const minimap = createMinimap();
+  hud.minimapSlot.appendChild(minimap.element);
+  minimap.rebuildTerrain(world);
+
+  // Clicking or dragging on the minimap moves the camera there.
+  let minimapDragging = false;
+  const minimapJump = (event: PointerEvent): void => {
+    const point = minimap.worldAt(event.clientX, event.clientY, world);
+    if (point) camera.moveTo(point.x, point.z);
+  };
+  minimap.element.addEventListener('pointerdown', (event) => {
+    minimapDragging = true;
+    minimap.element.setPointerCapture(event.pointerId);
+    minimapJump(event);
+  });
+  minimap.element.addEventListener('pointermove', (event) => {
+    if (minimapDragging) minimapJump(event);
+  });
+  minimap.element.addEventListener('pointerup', (event) => {
+    minimapDragging = false;
+    minimap.element.releasePointerCapture(event.pointerId);
+  });
+
   const dragBoxElement = document.createElement('div');
   dragBoxElement.className = 'drag-box';
   dragBoxElement.hidden = true;
@@ -110,6 +149,50 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
    * M31 replaces this with the lockstep turn queue.
    */
   let pendingCommands: SimCommand[] = [];
+
+  /** Turn a HUD button into a command, or into a pending build placement. */
+  function applyHudCommand(action: CommandAction): void {
+    if (!driver) return;
+    const handles = selection.selection.list();
+
+    switch (action.kind) {
+      case 'stop':
+        pendingBuild = -1;
+        pendingCommands.push({ kind: CommandKind.StopUnits, player: LOCAL_PLAYER, handles: [...handles] });
+        return;
+      case 'hold':
+        pendingCommands.push({
+          kind: CommandKind.IssueOrders,
+          player: LOCAL_PLAYER,
+          handles: [...handles],
+          order: { kind: OrderKind.Hold, cell: -1, target: NULL_HANDLE },
+          queue: false,
+        });
+        return;
+      case 'attack-move':
+      case 'gather':
+        // Both need a target the player has not picked yet; the next
+        // right-click supplies it, which is what the dispatcher already does.
+        return;
+      case 'produce': {
+        // Queue at every selected structure that can make it.
+        for (const handle of handles) {
+          pendingCommands.push({
+            kind: CommandKind.QueueProduction,
+            player: LOCAL_PLAYER,
+            building: handle,
+            typeId: action.typeId,
+          });
+        }
+        return;
+      }
+      case 'build':
+        // Placement waits for a click on the ground.
+        pendingBuild = action.typeId;
+        overlay.set('placing', unitType(action.typeId).name);
+        return;
+    }
+  }
 
   /** View data the selection code needs, read fresh each time it is used. */
   const viewInfo = () => ({
@@ -183,7 +266,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     ghostRenderer.clear();
     // Fog is a match concept: with no match running the whole map is lit.
     setTerrainFog(terrainMaterial, null, world.width, world.height, EXPLORED_DIM);
+    hud.update(null, []);
     pendingCommands = [];
+    pendingBuild = -1;
+    overlay.remove('placing');
+    overlay.remove('minimap');
     selection.selection.clear();
     selection.cancelDrag();
     selectionRings.clear();
@@ -234,6 +321,22 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       overlay.set('tick', String(driver.tick()));
       overlay.set('units', String(driver.match.units.alive));
       overlay.set('selected', String(selection.selection.count));
+
+      hud.update(running.match, selection.selection.list());
+      minimap.draw(
+        world,
+        running.match.fog,
+        running.match.units,
+        LOCAL_PLAYER,
+        {
+          focusX: camera.focusX,
+          focusZ: camera.focusZ,
+          halfWidth: camera.currentHeight * 0.9,
+          halfDepth: camera.currentHeight * 0.75,
+        },
+        PLAYER_COLORS,
+      );
+      overlay.set('minimap', `${minimap.lastDrawMs().toFixed(2)} ms`);
     }
 
     // getFps() is NaN on the very first frames; without this guard the
@@ -337,10 +440,31 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     // In game mode, left-drag selects.
     if (!driver) return;
     if (e.button === 0) {
+      if (pendingBuild >= 0) {
+        const ray = screenRay(renderer.scene, camera.camera, x, y);
+        const hit = pickCell(world, ramps, ray);
+        if (hit) {
+          pendingCommands.push({
+            kind: CommandKind.PlaceBuilding,
+            player: LOCAL_PLAYER,
+            typeId: pendingBuild,
+            cell: hit.cell,
+          });
+        }
+        pendingBuild = -1;
+        overlay.remove('placing');
+        return;
+      }
       selection.beginDrag(x, y);
       return;
     }
     if (e.button === 2) {
+      if (pendingBuild >= 0) {
+        // Right-click cancels a pending placement, as it should.
+        pendingBuild = -1;
+        overlay.remove('placing');
+        return;
+      }
       // Right-click issues an order to whatever is selected.
       const ray = screenRay(renderer.scene, camera.camera, x, y);
       const hit = pickCell(world, ramps, ray);
@@ -394,6 +518,21 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     } else if (e.code === MODE_KEY) {
       e.preventDefault();
       void mode.toggle();
+    } else if (driver && mode.current() === 'game' && e.code === 'Escape' && pendingBuild >= 0) {
+      e.preventDefault();
+      pendingBuild = -1;
+      overlay.remove('placing');
+    } else if (
+      driver &&
+      mode.current() === 'game' &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      hud.handleKey(e.key)
+    ) {
+      // A command-card hotkey. Checked before control groups so the digits
+      // still belong to control groups and the letters to the card.
+      e.preventDefault();
     } else if (driver && mode.current() === 'game' && /^Digit[0-9]$/.test(e.code)) {
       const digit = Number(e.code.slice(5));
       if (selection.handleDigit(digit, driver.match.units, modifiersOf(e))) e.preventDefault();
@@ -435,6 +574,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       dragBoxElement.remove();
       selectionRings.dispose();
       nav.dispose();
+      hud.dispose();
+      minimap.dispose();
       mode.dispose();
       renderer.engine.stopRenderLoop();
       overlay.dispose();

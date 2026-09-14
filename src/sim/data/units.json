@@ -60,7 +60,7 @@
     },
     {
       "id": "siege",
-      "name": "Siege tank",
+      "name": "Siege",
       "hp": 160,
       "speedMilliCellsPerSecond": 2250,
       "sightRadiusMilliCells": 11000,
@@ -79,7 +79,7 @@
     },
     {
       "id": "depot",
-      "name": "Supply depot",
+      "name": "Depot",
       "hp": 400,
       "speedMilliCellsPerSecond": 0,
       "sightRadiusMilliCells": 9000,

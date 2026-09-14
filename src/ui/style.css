@@ -126,3 +126,67 @@ html, body { margin: 0; height: 100%; background: #0d1014; color: #e8ecf1;
   border: 1px solid rgba(110, 231, 168, 0.9);
   background: rgba(110, 231, 168, 0.12);
 }
+
+/* --- HUD ---------------------------------------------------------------- */
+.hud { position: absolute; inset: 0; pointer-events: none; }
+.hud.is-idle { display: none; }
+
+.hud-resources {
+  position: absolute; top: 10px; right: 12px; display: flex; gap: 18px;
+  padding: 7px 14px; border-radius: 8px;
+  background: rgba(13, 17, 22, 0.82); border: 1px solid rgba(255, 255, 255, 0.09);
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  pointer-events: auto; user-select: none;
+}
+.hud-resource { display: flex; gap: 7px; align-items: baseline; }
+.hud-resource-label { color: #7d8ea0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; }
+.hud-resource-value { color: #e8ecf1; font-variant-numeric: tabular-nums; min-width: 3ch; text-align: right; }
+
+.hud-bar {
+  position: absolute; left: 12px; right: 12px; bottom: 12px;
+  display: flex; align-items: stretch; gap: 12px;
+  padding: 10px; border-radius: 10px;
+  background: rgba(13, 17, 22, 0.86); border: 1px solid rgba(255, 255, 255, 0.09);
+  pointer-events: auto;
+}
+.hud-minimap { flex: 0 0 auto; }
+.minimap {
+  display: block; width: 180px; height: 180px; border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12); background: #0b0e12; cursor: crosshair;
+  image-rendering: pixelated;
+}
+.hud-selection {
+  flex: 1 1 auto; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px;
+  font: 12px/1.4 ui-sans-serif, system-ui, sans-serif; color: #cbd6e2;
+}
+.hud-portrait {
+  display: flex; flex-direction: column; gap: 2px; min-width: 78px;
+  padding: 6px 8px; border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.hud-portrait-name { font-size: 11px; color: #9fb0c2; }
+.hud-portrait-count { font: 15px/1 ui-monospace, Menlo, monospace; color: #e8ecf1; }
+.hud-queue, .hud-hint { align-self: center; color: #8497a9; font-size: 12px; }
+
+.hud-card {
+  flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, 118px);
+  grid-auto-rows: 40px; gap: 6px;
+}
+.hud-button {
+  display: flex; align-items: center; gap: 7px; padding: 0 9px;
+  background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px; color: #cbd6e2; font: inherit; font-size: 12px;
+  text-align: left; cursor: pointer; overflow: hidden;
+}
+.hud-button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.13); }
+.hud-button:disabled { opacity: 0.4; cursor: default; }
+.hud-key {
+  flex: 0 0 auto; display: inline-grid; place-items: center; width: 17px; height: 17px;
+  border-radius: 4px; background: rgba(255, 255, 255, 0.12);
+  font: 10px/1 ui-monospace, Menlo, monospace; color: #9fb0c2;
+}
+.hud-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hud-cost { flex: 0 0 auto; color: #8497a9; font: 10px/1 ui-monospace, Menlo, monospace; }
+
+/* The HUD bar owns the bottom of the screen; the boot status sits above it. */
+body:has(.hud:not(.is-idle)) .status-line { bottom: 220px; }
