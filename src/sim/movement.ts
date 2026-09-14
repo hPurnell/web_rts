@@ -327,7 +327,12 @@ function separation(
 
     const dx = sub(x, store.posX[other] as number);
     const dz = sub(z, store.posZ[other] as number);
-    if (abs(dx) >= minimum && abs(dz) >= minimum) return;
+    // Two units can only overlap if *both* axes are within the sum of their
+    // radii, so either one exceeding it rules the pair out. This was written
+    // with && , which is still correct but only rejects pairs that are far
+    // away on both axes — most of the bucket fell through to the squared
+    // distance test and, when that passed, to a square root.
+    if (abs(dx) >= minimum || abs(dz) >= minimum) return;
 
     const distanceSq = add(mul(dx, dx), mul(dz, dz));
     if (distanceSq >= mul(minimum, minimum)) return;

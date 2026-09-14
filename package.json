@@ -18,7 +18,8 @@
     "gen:golden-sim": "tsx tools/gen-sim-golden.ts",
     "shot": "tsx tools/screenshot.ts",
     "check:bundle": "tsx tools/check-bundle.ts",
-    "test:perf": "vitest run --config vitest.perf.config.ts"
+    "test:perf": "vitest run --config vitest.perf.config.ts",
+    "stress": "tsx tools/stress.ts"
   },
   "devDependencies": {
     "@babylonjs/inspector": "^9.26.0",

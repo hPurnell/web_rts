@@ -10,6 +10,9 @@ import type { World } from './sim/world.ts';
 import { MAX_TIER, hashWorld, worldFromCell } from './sim/world.ts';
 import { createMatchFromWorld } from './sim/matchinit.ts';
 import { setAiPlayer } from './sim/ai.ts';
+import { spawnUnit } from './sim/units.ts';
+import { unitTypeById } from './sim/unittypes.ts';
+import { fromInt } from './sim/fixed.ts';
 import type { Driver } from './driver.ts';
 import { createDriver } from './driver.ts';
 import type { Replay, ReplayRecorder } from './sim/replay.ts';
@@ -71,6 +74,8 @@ export interface App {
   readonly lastReplay: Replay | null;
   startMatch(seed?: number): void;
   stopMatch(): void;
+  /** Spawn a stress army, for profiling the renderer against M33's budget. */
+  stressSpawn(perSide: number): number;
   playReplay(replay: Replay): void;
   /** Solve a flow field to a cell. Used by orders, and by the browser check. */
   requestPath(cell: number): Promise<FlowField | null>;
@@ -304,6 +309,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   function stopPlayback(): void {
     if (!playback) return;
     playback = null;
+    lastFogTick = -1;
     unitRenderer.clear();
     ghostRenderer.clear();
     selectionRings.clear();
@@ -380,7 +386,26 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   }
 
   let smoothedFps = 60;
+  // The frame is split so the two halves can be told apart: everything this
+  // application does, and the GPU work Babylon submits. Under headless
+  // software rendering the second dominates completely, and reporting a
+  // combined number would say nothing about whether the simulation is fast.
+  let smoothedCpuMs = 0;
+  let smoothedGpuMs = 0;
+  /**
+   * The HUD and minimap redraw ten times a second, not sixty.
+   *
+   * Neither shows anything a player can perceive changing faster than that,
+   * and between them they were the largest single slice of the frame at a
+   * thousand units — the minimap walks every cell of the fog and the HUD does
+   * DOM work.
+   */
+  const UI_INTERVAL_MS = 100;
+  let nextUiUpdate = 0;
+  /** Tick the fog texture and ghosts were last built from. */
+  let lastFogTick = -1;
   renderer.engine.runRenderLoop(() => {
+    const frameStarted = performance.now();
     const dt = renderer.frameDelta();
     camera.update(input, dt, renderer.engine.getRenderWidth(), renderer.engine.getRenderHeight());
 
@@ -388,24 +413,30 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       const showing = playback;
       showing.advance(dt, () => unitRenderer.captureTick(showing.match));
       unitRenderer.update(showing.match, world, ramps, showing.driver.alpha(), LOCAL_PLAYER);
-      ghostRenderer.update(showing.match, world, ramps, LOCAL_PLAYER);
-      fogTexture.update(showing.match.fog, LOCAL_PLAYER);
+      if (showing.match.tick !== lastFogTick) {
+        lastFogTick = showing.match.tick;
+        ghostRenderer.update(showing.match, world, ramps, LOCAL_PLAYER);
+        fogTexture.update(showing.match.fog, LOCAL_PLAYER);
+      }
       selection.prune(showing.match.units);
       selectionRings.update(selection.selection.list(), showing.match.units, world, ramps);
-      hud.update(showing.match, selection.selection.list());
-      minimap.draw(
-        world,
-        showing.match.fog,
-        showing.match.units,
-        LOCAL_PLAYER,
-        {
-          focusX: camera.focusX,
-          focusZ: camera.focusZ,
-          halfWidth: camera.currentHeight * 0.9,
-          halfDepth: camera.currentHeight * 0.75,
-        },
-        PLAYER_COLORS,
-      );
+      if (frameStarted >= nextUiUpdate) {
+        nextUiUpdate = frameStarted + UI_INTERVAL_MS;
+        hud.update(showing.match, selection.selection.list());
+        minimap.draw(
+          world,
+          showing.match.fog,
+          showing.match.units,
+          LOCAL_PLAYER,
+          {
+            focusX: camera.focusX,
+            focusZ: camera.focusZ,
+            halfWidth: camera.currentHeight * 0.9,
+            halfDepth: camera.currentHeight * 0.75,
+          },
+          PLAYER_COLORS,
+        );
+      }
       overlay.set('tick', `${showing.match.tick} / ${showing.replay.ticks}`);
       overlay.set('speed', showing.paused ? 'paused' : `${showing.speed}x`);
       const divergence = showing.divergence();
@@ -428,9 +459,16 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
         () => recording?.checkpoint(running.match),
       );
       unitRenderer.update(running.match, world, ramps, running.alpha(), LOCAL_PLAYER);
-      ghostRenderer.update(running.match, world, ramps, LOCAL_PLAYER);
-      fogTexture.update(running.match.fog, LOCAL_PLAYER);
-      overlay.set('fog', `${fogTexture.lastUploadMs().toFixed(2)} ms`);
+
+      // Fog is recomputed every few ticks and remembered structures change
+      // rarely, so neither needs touching on a frame where nothing moved.
+      // The ghost pass in particular walks every cell of the map.
+      if (running.match.tick !== lastFogTick) {
+        lastFogTick = running.match.tick;
+        ghostRenderer.update(running.match, world, ramps, LOCAL_PLAYER);
+        fogTexture.update(running.match.fog, LOCAL_PLAYER);
+        overlay.set('fog', `${fogTexture.lastUploadMs().toFixed(2)} ms`);
+      }
 
       selection.prune(running.match.units);
       selectionRings.update(selection.selection.list(), running.match.units, world, ramps);
@@ -450,21 +488,24 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       overlay.set('units', String(driver.match.units.alive));
       overlay.set('selected', String(selection.selection.count));
 
-      hud.update(running.match, selection.selection.list());
-      minimap.draw(
-        world,
-        running.match.fog,
-        running.match.units,
-        LOCAL_PLAYER,
-        {
-          focusX: camera.focusX,
-          focusZ: camera.focusZ,
-          halfWidth: camera.currentHeight * 0.9,
-          halfDepth: camera.currentHeight * 0.75,
-        },
-        PLAYER_COLORS,
-      );
-      overlay.set('minimap', `${minimap.lastDrawMs().toFixed(2)} ms`);
+      if (frameStarted >= nextUiUpdate) {
+        nextUiUpdate = frameStarted + UI_INTERVAL_MS;
+        hud.update(running.match, selection.selection.list());
+        minimap.draw(
+          world,
+          running.match.fog,
+          running.match.units,
+          LOCAL_PLAYER,
+          {
+            focusX: camera.focusX,
+            focusZ: camera.focusZ,
+            halfWidth: camera.currentHeight * 0.9,
+            halfDepth: camera.currentHeight * 0.75,
+          },
+          PLAYER_COLORS,
+        );
+        overlay.set('minimap', `${minimap.lastDrawMs().toFixed(2)} ms`);
+      }
     }
 
     // getFps() is NaN on the very first frames; without this guard the
@@ -489,7 +530,15 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       overlay.set('flags', '-');
     }
 
+    const cpuMs = performance.now() - frameStarted;
+    const renderStarted = performance.now();
     renderer.scene.render();
+    const gpuMs = performance.now() - renderStarted;
+
+    smoothedCpuMs += (cpuMs - smoothedCpuMs) * 0.1;
+    smoothedGpuMs += (gpuMs - smoothedGpuMs) * 0.1;
+    overlay.set('cpu', `${smoothedCpuMs.toFixed(2)} ms`);
+    overlay.set('draw', `${smoothedGpuMs.toFixed(2)} ms`);
   });
 
   const mode = createModeController({
@@ -713,6 +762,23 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     },
     startMatch,
     stopMatch,
+    stressSpawn(perSide) {
+      if (!driver) return 0;
+      const match = driver.match;
+      const types = ['soldier', 'raider', 'siege'];
+      for (let i = 0; i < perSide; i++) {
+        const type = unitTypeById(types[i % types.length] as string);
+        for (const owner of [0, 1]) {
+          spawnUnit(match.units, {
+            type,
+            ownerId: owner,
+            x: fromInt(6 + (i % 24) + owner * 26) + (1 << 15),
+            z: fromInt(4 + ((i / 24) | 0)) + (1 << 15),
+          });
+        }
+      }
+      return match.units.alive;
+    },
     playReplay: startPlayback,
     requestPath: async (cell) => {
       const field = await nav.request(cell);

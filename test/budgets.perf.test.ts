@@ -21,6 +21,7 @@ import { createUnitRenderer } from '../src/render/units.ts';
 import { solveRamps } from '../src/render/terrain.ts';
 import { createTestMap } from '../src/sim/fixtures/testmap.ts';
 import { unitsInRect } from '../src/game/selection.ts';
+import { stepMatch } from '../src/sim/tick.ts';
 import * as w from '../src/sim/world.ts';
 import { ONE, fromInt } from '../src/sim/fixed.ts';
 
@@ -119,4 +120,31 @@ describe('rendering budgets', () => {
       unitsInRect(match.units, viewProjection, rect, options);
     })).toBeLessThan(1);
   });
+});
+
+describe('the M33 stress profile', () => {
+  it('holds the tick budget with a thousand units in combat', async () => {
+    const { buildStressMatch } = await import('../tools/stress.ts');
+    const baseline = (await import('./golden/perf.json', { with: { type: 'json' } })).default;
+    const { match, world } = buildStressMatch();
+    const context = { world };
+
+    // Let the armies engage, so this measures a fight and not a march.
+    for (let i = 0; i < 400; i++) stepMatch(match, [], context);
+    let engaged = 0;
+    for (let i = 0; i < match.units.count; i++) {
+      if (match.units.isAlive[i] === 1 && match.units.targetHandle[i] !== 0) engaged++;
+    }
+    expect(match.units.alive).toBeGreaterThan(500);
+    expect(engaged).toBeGreaterThan(100);
+
+    const tickMs = best(20, 5, () => stepMatch(match, [], context));
+
+    // PLAN.md's budget.
+    expect(tickMs).toBeLessThan(8);
+    // And a regression guard against the committed baseline: generous enough
+    // that a slower machine passes, tight enough that doubling the cost of the
+    // tick does not.
+    expect(tickMs).toBeLessThan(baseline.tickMs * 3);
+  }, 60_000);
 });

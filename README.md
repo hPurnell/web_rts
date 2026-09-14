@@ -22,6 +22,7 @@ See [PLAN.md](PLAN.md) for the architecture invariants and milestone plan.
 | `pnpm shot out.png` | Screenshots the running game in headless Chromium (`--wheel`, `--keys`, `--wait`) |
 | `pnpm gen:trig` | Regenerates the committed trig lookup tables |
 | `pnpm gen:golden-sim` | Regenerates the determinism harness golden hash (deliberate act only) |
+| `pnpm stress` | Runs the M33 stress profile; `--write` updates the committed baseline |
 
 ## Deployment
 
@@ -35,8 +36,27 @@ it with the `VITE_BASE` environment variable when serving from elsewhere.
 Milestones M0–M27 and M30 of [PLAN.md](PLAN.md) are done: foundation, world
 state, renderer, editor, simulation core, movement, fog of war, combat,
 economy, buildings and the HUD, plus replays. M28–M29 (art) are blocked on an
-asset collection that is not in the repository. M31–M33 (netcode, skirmish AI,
-performance pass) are not started.
+asset collection that is not in the repository. M31 (netcode) is not started.
+
+### Performance
+
+`test/golden/perf.json` holds the committed baseline, regenerated with
+`pnpm stress --write` and guarded by a regression test. The stress scenario is
+PLAN.md's: ~700 live units with 600 of them engaged, on a 256×256 map.
+
+| | |
+|---|---|
+| Simulation tick | 2.4 ms (budget: 8 ms) |
+| — of which movement | 2.2 ms |
+| — of which fog, every 4th tick | 1.6 ms |
+| Browser CPU per frame, ~850 units | ~7 ms |
+| Terrain + units + rings | 11 draw calls |
+
+The "60fps on mid-range hardware" criterion is **not verified**: the only
+browser available here is headless Chromium on SwiftShader, which rasterises in
+software and reports ~19fps for reasons that have nothing to do with a GPU. The
+CPU half of the frame is measured separately and is what the figures above
+report.
 
 | Key | Does |
 |---|---|
