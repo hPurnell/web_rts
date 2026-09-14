@@ -16,6 +16,8 @@ See [PLAN.md](PLAN.md) for the architecture invariants and milestone plan.
 | `pnpm test:determinism` | The determinism harness alone |
 | `pnpm lint` | ESLint, including the invariant rules |
 | `pnpm typecheck` | `tsc --noEmit` |
+| `pnpm check:browser` | Builds, then loads the page in headless Chromium and fails on any console error |
+| `pnpm gen:trig` | Regenerates the committed trig lookup tables |
 
 ## Deployment
 
