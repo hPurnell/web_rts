@@ -1,0 +1,13 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #0d1014; color: #e8ecf1;
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+#viewport { display: block; width: 100vw; height: 100vh; outline: none; touch-action: none; }
+#overlay { position: fixed; inset: 0; pointer-events: none; }
+#overlay > * { pointer-events: auto; }
+.boot {
+  position: fixed; inset: 0; display: grid; place-content: center; place-items: center;
+  gap: 8px; text-align: center;
+}
+.boot h1 { margin: 0; font-size: 28px; letter-spacing: 0.04em; font-weight: 600; }
+.boot p { margin: 0; color: #93a1b1; }
