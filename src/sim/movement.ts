@@ -16,7 +16,7 @@
  *    which is what keeps a settled army from jittering.
  */
 import type { Fixed } from './fixed.ts';
-import { ONE, abs, add, div, mul, sub } from './fixed.ts';
+import { ONE, abs, add, div, fromInt, isqrt, mul, sub } from './fixed.ts';
 import { atan2 } from './trig.ts';
 import type { Match } from './match.ts';
 import { UnitState } from './units.ts';
@@ -39,12 +39,21 @@ const STEP_Z: readonly Fixed[] = [-ONE, -DIAGONAL, 0, DIAGONAL, ONE, DIAGONAL, 0
 
 /** How hard neighbours push each other apart, as a fraction of top speed. */
 const SEPARATION_STRENGTH = ONE; // 1.0
-/** Base arrival radius in cells. */
+/** Base arrival radius in cells, for a single unit. */
 const ARRIVAL_RADIUS = 39321; // 0.6 cells
-/** Extra arrival radius per unit sharing the goal, in cells. */
-const ARRIVAL_PER_UNIT = 3276; // 0.05 cells
+/**
+ * How far the arrival disc spreads per unit, as a multiple of unit radius.
+ *
+ * Units stop once they are inside the arrival radius and stop separating once
+ * idle, so that radius has to be big enough to actually hold the crowd. The
+ * area a crowd needs grows with its count, so the radius grows with the square
+ * root of it: packing `n` discs of radius r loosely needs a disc of about
+ * 1.6 * r * sqrt(n). A linear rule looks fine for six units and leaves fifty
+ * standing inside each other.
+ */
+const ARRIVAL_SPREAD = 65536; // 1.0
 /** Arrival radius never grows past this, however big the army. */
-const MAX_ARRIVAL_RADIUS = 327680; // 5 cells
+const MAX_ARRIVAL_RADIUS = 524288; // 8 cells
 /**
  * Ticks of no real progress before a unit gives up on its goal.
  *
@@ -114,7 +123,10 @@ export function stepMovement(match: Match, context: MovementContext): SpatialHas
     }
 
     // Arrived?
-    const radius = arrivalRadius(crowd.get(goalCell) ?? 1);
+    const radius = arrivalRadius(
+      crowd.get(goalCell) ?? 1,
+      unitType(store.typeId[i] as number).radius,
+    );
     if (cell === goalCell || withinGoal(context.world, x, z, goalCell, radius)) {
       stop(store, i);
       continue;
@@ -190,7 +202,45 @@ export function stepMovement(match: Match, context: MovementContext): SpatialHas
     }
   }
 
+  resolveOverlaps(store, hash, context);
   return hash;
+}
+
+/**
+ * Ease apart units that are standing inside each other.
+ *
+ * Units stop as soon as they enter the arrival radius, and they all arrive
+ * from the same side, so without this a squad settles as a clump at the near
+ * edge of the disc. Nudging only resolves actual overlap, and only by half the
+ * penetration, so it converges instead of oscillating: once nothing overlaps,
+ * nothing moves.
+ */
+function resolveOverlaps(store: Match['units'], hash: SpatialHash, context: MovementContext): void {
+  for (let i = 0; i < store.count; i++) {
+    if (store.isAlive[i] !== 1) continue;
+    if (store.state[i] !== UnitState.Idle) continue;
+
+    const type = unitType(store.typeId[i] as number);
+    const push = separation(store, hash, i, type.radius);
+    if (push.x === 0 && push.z === 0) continue;
+
+    // Half the correction each, since the other unit is doing the same.
+    const stepX = mul(push.x, type.radius) >> 1;
+    const stepZ = mul(push.z, type.radius) >> 1;
+    if (stepX === 0 && stepZ === 0) continue;
+
+    const x = store.posX[i] as number;
+    const z = store.posZ[i] as number;
+    const cell = cellFromWorld(context.world, x, z);
+    const nextX = add(x, stepX);
+    const nextZ = add(z, stepZ);
+    const nextCell = cellFromWorld(context.world, nextX, nextZ);
+    // Same rule as a step under power: never cross a link that does not exist.
+    if (nextCell === cell || (nextCell >= 0 && isLinkedCell(context.grid, cell, nextCell))) {
+      store.posX[i] = nextX;
+      store.posZ[i] = nextZ;
+    }
+  }
 }
 
 function commit(
@@ -217,10 +267,14 @@ function stop(store: Match['units'], index: number): void {
   store.bestProgress[index] = NO_PROGRESS;
 }
 
-/** Arrival radius for a goal shared by `count` units. */
-export function arrivalRadius(count: number): Fixed {
-  const extra = ARRIVAL_PER_UNIT * Math.max(0, count - 1);
-  const radius = ARRIVAL_RADIUS + extra;
+/** Arrival radius for a goal shared by `count` units of radius `unitRadius`. */
+export function arrivalRadius(count: number, unitRadius: Fixed): Fixed {
+  if (count <= 1) return ARRIVAL_RADIUS;
+  // Whole-number square root is precision enough for a crowd size, and it
+  // cannot overflow the way scaling the count into Q16.16 first would.
+  const root = fromInt(isqrt(count));
+  const spread = mul(mul(unitRadius, ARRIVAL_SPREAD), root);
+  const radius = add(ARRIVAL_RADIUS, spread);
   return radius > MAX_ARRIVAL_RADIUS ? MAX_ARRIVAL_RADIUS : radius;
 }
 

@@ -220,10 +220,41 @@ describe('crowds', () => {
     }
   });
 
-  it('widens the arrival radius for a crowd, up to a limit', () => {
-    expect(arrivalRadius(50)).toBeGreaterThan(arrivalRadius(1));
-    expect(arrivalRadius(10_000)).toBe(arrivalRadius(100_000));
-    expect(toFloat(arrivalRadius(1))).toBeLessThan(1);
+  it('widens the arrival radius with the square root of the crowd', () => {
+    const r = unitTypeById('soldier').radius;
+    expect(arrivalRadius(50, r)).toBeGreaterThan(arrivalRadius(6, r));
+    expect(arrivalRadius(6, r)).toBeGreaterThan(arrivalRadius(1, r));
+    expect(toFloat(arrivalRadius(1, r))).toBeLessThan(1);
+    // Four times the units is about twice the radius, not four times.
+    const grow = (n: number) => toFloat(arrivalRadius(n, r)) - toFloat(arrivalRadius(1, r));
+    expect(grow(64) / grow(16)).toBeCloseTo(2, 1);
+    // And it is capped, or one big move order would claim half the map.
+    expect(arrivalRadius(10_000, r)).toBe(arrivalRadius(100_000, r));
+  });
+
+  it('gives a crowd of six room to stand without overlapping', () => {
+    const { match, context, world } = setup();
+    const handles: UnitHandle[] = [];
+    for (let i = 0; i < 6; i++) handles.push(spawnAt(match, 'soldier', 0, 28 + i, 28));
+    stepMatch(match, [move(0, handles, w.cellIndex(world, 40, 40))], context);
+    run(match, context, 400);
+
+    const positions: [number, number][] = [];
+    forEachUnit(match.units, (i) => {
+      positions.push([toFloat(match.units.posX[i] as number), toFloat(match.units.posZ[i] as number)]);
+    });
+    const radius = toFloat(unitTypeById('soldier').radius);
+    for (let a = 0; a < positions.length; a++) {
+      for (let b = a + 1; b < positions.length; b++) {
+        const distance = Math.hypot(
+          (positions[a] as [number, number])[0] - (positions[b] as [number, number])[0],
+          (positions[a] as [number, number])[1] - (positions[b] as [number, number])[1],
+        );
+        // Allow a little overlap -- they stop where they are -- but not units
+        // standing inside one another.
+        expect(distance).toBeGreaterThan(radius);
+      }
+    }
   });
 
   it('gets 200 units through two chokepoints without deadlocking', () => {

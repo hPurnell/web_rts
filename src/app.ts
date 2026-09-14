@@ -21,6 +21,8 @@ import { createGizmos } from './render/gizmos.ts';
 import { createUnitRenderer } from './render/units.ts';
 import { createSelectionRings } from './render/selectionrings.ts';
 import { SelectionController } from './game/selectioncontroller.ts';
+import { dispatchOrder } from './game/orderdispatch.ts';
+import type { SimCommand } from './sim/commands.ts';
 import { MOUSE_LEFT } from './render/input.ts';
 import type { CostGrid } from './nav/grid.ts';
 import { createCostGrid, rebuildRegion } from './nav/grid.ts';
@@ -97,6 +99,13 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   dragBoxElement.hidden = true;
   overlayRoot.appendChild(dragBoxElement);
 
+  /**
+   * Commands waiting for the next tick boundary. Input arrives whenever the
+   * pointer moves; the simulation only accepts it between ticks (invariant 5).
+   * M31 replaces this with the lockstep turn queue.
+   */
+  let pendingCommands: SimCommand[] = [];
+
   /** View data the selection code needs, read fresh each time it is used. */
   const viewInfo = () => ({
     viewProjection: renderer.scene.getTransformMatrix().m,
@@ -162,6 +171,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     driver = null;
     mode.editor()?.refresh();
     unitRenderer.clear();
+    pendingCommands = [];
     selection.selection.clear();
     selection.cancelDrag();
     selectionRings.clear();
@@ -180,7 +190,15 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     if (driver) {
       // Capture before stepping, so interpolation has both endpoints.
       const running = driver;
-      running.advance(dt, undefined, () => unitRenderer.captureTick(running.match));
+      running.advance(
+        dt,
+        () => {
+          const batch = pendingCommands;
+          pendingCommands = [];
+          return batch;
+        },
+        () => unitRenderer.captureTick(running.match),
+      );
       unitRenderer.update(running.match, world, ramps, running.alpha());
 
       selection.prune(running.match.units);
@@ -301,7 +319,24 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       return;
     }
     // In game mode, left-drag selects.
-    if (driver && e.button === 0) selection.beginDrag(x, y);
+    if (!driver) return;
+    if (e.button === 0) {
+      selection.beginDrag(x, y);
+      return;
+    }
+    if (e.button === 2) {
+      // Right-click issues an order to whatever is selected.
+      const ray = screenRay(renderer.scene, camera.camera, x, y);
+      const hit = pickCell(world, ramps, ray);
+      const command = dispatchOrder(driver.match.units, world, LOCAL_PLAYER, selection.selection.list(), {
+        cell: hit?.cell ?? -1,
+        screenX: x,
+        screenY: y,
+        view: viewInfo(),
+        queue: e.shiftKey,
+      });
+      if (command) pendingCommands.push(command);
+    }
   };
 
   const onPointerMove = (e: PointerEvent): void => {

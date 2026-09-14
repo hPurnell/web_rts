@@ -17,6 +17,19 @@ import type { UnitType } from './unittypes.ts';
 /** Slots in the store. Fixed, so the arrays never reallocate mid-match. */
 export const MAX_UNITS = 1 << 14; // 16384
 
+/** Orders a unit can have queued behind the one it is executing. */
+export const MAX_QUEUED_ORDERS = 8;
+
+/** What a queued order tells a unit to do. */
+export const enum OrderKind {
+  None = 0,
+  Move = 1,
+  AttackMove = 2,
+  Attack = 3,
+  Gather = 4,
+  Hold = 5,
+}
+
 /** Handle layout: index in the low 20 bits, generation above it. */
 const INDEX_BITS = 20;
 const INDEX_MASK = (1 << INDEX_BITS) - 1;
@@ -64,6 +77,19 @@ export interface UnitStore {
   /** Best flow-field distance to the goal this unit has reached so far. */
   readonly bestProgress: Int32Array;
 
+  // --- order queue -------------------------------------------------------
+  // A ring buffer per unit, flattened: unit `i` owns entries
+  // [i * MAX_QUEUED_ORDERS, (i + 1) * MAX_QUEUED_ORDERS). Flat typed arrays
+  // rather than an array of queues, so the whole thing hashes by walking
+  // buffers like everything else in the store.
+  readonly orderKind: Uint8Array;
+  readonly orderCell: Int32Array;
+  readonly orderTarget: Int32Array;
+  readonly orderHead: Uint8Array;
+  readonly orderCount: Uint8Array;
+  /** 1 once the head order has been handed to a system to execute. */
+  readonly orderStarted: Uint8Array;
+
   /** Generation of each slot; odd bookkeeping kept out of the hashed set. */
   readonly generation: Uint16Array;
   readonly isAlive: Uint8Array;
@@ -91,6 +117,12 @@ export function createUnitStore(): UnitStore {
     goalCell: new Int32Array(MAX_UNITS).fill(-1),
     stuckTicks: new Int32Array(MAX_UNITS),
     bestProgress: new Int32Array(MAX_UNITS).fill(0x7fffffff),
+    orderKind: new Uint8Array(MAX_UNITS * MAX_QUEUED_ORDERS),
+    orderCell: new Int32Array(MAX_UNITS * MAX_QUEUED_ORDERS).fill(-1),
+    orderTarget: new Int32Array(MAX_UNITS * MAX_QUEUED_ORDERS),
+    orderHead: new Uint8Array(MAX_UNITS),
+    orderCount: new Uint8Array(MAX_UNITS),
+    orderStarted: new Uint8Array(MAX_UNITS),
     generation: new Uint16Array(MAX_UNITS),
     isAlive: new Uint8Array(MAX_UNITS),
     nextFree: new Int32Array(MAX_UNITS),
@@ -167,6 +199,7 @@ export function spawnUnit(store: UnitStore, request: SpawnRequest): UnitHandle {
   store.goalCell[index] = -1;
   store.stuckTicks[index] = 0;
   store.bestProgress[index] = 0x7fffffff;
+  clearOrders(store, index);
   store.isAlive[index] = 1;
   store.alive++;
 
@@ -186,6 +219,7 @@ export function despawnUnit(store: UnitStore, handle: UnitHandle): boolean {
   store.state[index] = UnitState.Dead;
   store.hp[index] = 0;
   store.goalCell[index] = -1;
+  clearOrders(store, index);
   store.alive--;
 
   const next = ((store.generation[index] as number) + 1) & MAX_GENERATION;
@@ -216,6 +250,12 @@ export function resetUnitStore(store: UnitStore): void {
   store.goalCell.fill(-1);
   store.stuckTicks.fill(0);
   store.bestProgress.fill(0x7fffffff);
+  store.orderKind.fill(0);
+  store.orderCell.fill(-1);
+  store.orderTarget.fill(0);
+  store.orderHead.fill(0);
+  store.orderCount.fill(0);
+  store.orderStarted.fill(0);
   store.generation.fill(1);
   store.isAlive.fill(0);
   store.nextFree.fill(-1);
@@ -246,6 +286,12 @@ export function unitHashableArrays(store: UnitStore): { name: string; data: Arra
     { name: 'unit.goalCell', data: store.goalCell.subarray(0, n) },
     { name: 'unit.stuckTicks', data: store.stuckTicks.subarray(0, n) },
     { name: 'unit.bestProgress', data: store.bestProgress.subarray(0, n) },
+    { name: 'unit.orderHead', data: store.orderHead.subarray(0, n) },
+    { name: 'unit.orderCount', data: store.orderCount.subarray(0, n) },
+    { name: 'unit.orderStarted', data: store.orderStarted.subarray(0, n) },
+    { name: 'unit.orderKind', data: store.orderKind.subarray(0, n * MAX_QUEUED_ORDERS) },
+    { name: 'unit.orderCell', data: store.orderCell.subarray(0, n * MAX_QUEUED_ORDERS) },
+    { name: 'unit.orderTarget', data: store.orderTarget.subarray(0, n * MAX_QUEUED_ORDERS) },
     { name: 'unit.generation', data: store.generation.subarray(0, n) },
     { name: 'unit.isAlive', data: store.isAlive.subarray(0, n) },
     { name: 'unit.nextFree', data: store.nextFree.subarray(0, n) },
@@ -257,4 +303,102 @@ export function forEachUnit(store: UnitStore, visit: (index: number) => void): v
   for (let index = 0; index < store.count; index++) {
     if (store.isAlive[index] === 1) visit(index);
   }
+}
+
+// --- order queue ------------------------------------------------------------
+
+export interface UnitOrder {
+  readonly kind: OrderKind;
+  /** Destination cell, or -1 when the order is about a target instead. */
+  readonly cell: number;
+  /** Target unit handle, or NULL_HANDLE. */
+  readonly target: UnitHandle;
+}
+
+export const NO_ORDER: UnitOrder = {
+  kind: OrderKind.None,
+  cell: -1,
+  target: NULL_HANDLE,
+};
+
+function slot(index: number, position: number): number {
+  return index * MAX_QUEUED_ORDERS + (position % MAX_QUEUED_ORDERS);
+}
+
+export function orderCount(store: UnitStore, index: number): number {
+  return store.orderCount[index] as number;
+}
+
+/** The order a unit is executing, or NO_ORDER. */
+export function headOrder(store: UnitStore, index: number): UnitOrder {
+  if ((store.orderCount[index] as number) === 0) return NO_ORDER;
+  const at = slot(index, store.orderHead[index] as number);
+  return {
+    kind: store.orderKind[at] as OrderKind,
+    cell: store.orderCell[at] as number,
+    target: store.orderTarget[at] as UnitHandle,
+  };
+}
+
+/**
+ * Append an order. Returns false when the queue is full.
+ *
+ * A full queue drops the new order rather than the oldest: in an RTS the
+ * orders already given are the ones the player is watching happen.
+ */
+export function queueOrder(store: UnitStore, index: number, order: UnitOrder): boolean {
+  const count = store.orderCount[index] as number;
+  if (count >= MAX_QUEUED_ORDERS) return false;
+  const at = slot(index, (store.orderHead[index] as number) + count);
+  store.orderKind[at] = order.kind;
+  store.orderCell[at] = order.cell;
+  store.orderTarget[at] = order.target;
+  store.orderCount[index] = count + 1;
+  return true;
+}
+
+/** Replace the queue with a single order. */
+export function setOrder(store: UnitStore, index: number, order: UnitOrder): void {
+  clearOrders(store, index);
+  queueOrder(store, index, order);
+}
+
+export function clearOrders(store: UnitStore, index: number): void {
+  const base = index * MAX_QUEUED_ORDERS;
+  for (let i = 0; i < MAX_QUEUED_ORDERS; i++) {
+    store.orderKind[base + i] = OrderKind.None;
+    store.orderCell[base + i] = -1;
+    store.orderTarget[base + i] = NULL_HANDLE;
+  }
+  store.orderHead[index] = 0;
+  store.orderCount[index] = 0;
+  store.orderStarted[index] = 0;
+}
+
+/** Drop the head order and advance to the next. */
+export function popOrder(store: UnitStore, index: number): void {
+  const count = store.orderCount[index] as number;
+  if (count === 0) return;
+  const at = slot(index, store.orderHead[index] as number);
+  store.orderKind[at] = OrderKind.None;
+  store.orderCell[at] = -1;
+  store.orderTarget[at] = NULL_HANDLE;
+  store.orderHead[index] = ((store.orderHead[index] as number) + 1) % MAX_QUEUED_ORDERS;
+  store.orderCount[index] = count - 1;
+  store.orderStarted[index] = 0;
+}
+
+/** Every queued order for a unit, head first. For the HUD and for tests. */
+export function listOrders(store: UnitStore, index: number): UnitOrder[] {
+  const out: UnitOrder[] = [];
+  const count = store.orderCount[index] as number;
+  for (let i = 0; i < count; i++) {
+    const at = slot(index, (store.orderHead[index] as number) + i);
+    out.push({
+      kind: store.orderKind[at] as OrderKind,
+      cell: store.orderCell[at] as number,
+      target: store.orderTarget[at] as UnitHandle,
+    });
+  }
+  return out;
 }

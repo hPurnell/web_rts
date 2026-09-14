@@ -9,7 +9,18 @@
 import type { Fixed } from './fixed.ts';
 import type { Match } from './match.ts';
 import { MAX_PLAYERS } from './match.ts';
-import { NULL_HANDLE, UnitState, despawnUnit, resolve, spawnUnit } from './units.ts';
+import type { UnitOrder } from './units.ts';
+import {
+  NULL_HANDLE,
+  OrderKind,
+  clearOrders,
+  UnitState,
+  despawnUnit,
+  queueOrder,
+  resolve,
+  setOrder,
+  spawnUnit,
+} from './units.ts';
 import { UNIT_TYPES, unitType } from './unittypes.ts';
 
 export const enum CommandKind {
@@ -25,6 +36,8 @@ export const enum CommandKind {
   MoveUnits = 4,
   /** Stops units where they stand. */
   StopUnits = 5,
+  /** Gives units an order, replacing their queue or appending to it. */
+  IssueOrders = 6,
 }
 
 export interface NoopCommand {
@@ -66,18 +79,49 @@ export interface StopUnitsCommand {
   readonly handles: readonly number[];
 }
 
+export interface IssueOrdersCommand {
+  readonly kind: CommandKind.IssueOrders;
+  readonly player: number;
+  readonly handles: readonly number[];
+  readonly order: UnitOrder;
+  /** True to append to the queue, false to replace it. */
+  readonly queue: boolean;
+}
+
 export type SimCommand =
   | NoopCommand
   | GrantResourcesCommand
   | SpawnUnitCommand
   | DespawnUnitCommand
   | MoveUnitsCommand
-  | StopUnitsCommand;
+  | StopUnitsCommand
+  | IssueOrdersCommand;
 
 /** A command tagged with the tick it must execute on. */
 export interface ScheduledCommand {
   readonly tick: number;
   readonly command: SimCommand;
+}
+
+/**
+ * Orders arrive over the wire in lockstep, so a malformed one must be rejected
+ * identically everywhere rather than trusted.
+ */
+function validOrder(order: UnitOrder): boolean {
+  switch (order.kind) {
+    case OrderKind.Move:
+    case OrderKind.AttackMove:
+    case OrderKind.Gather:
+      return Number.isInteger(order.cell) && order.cell >= 0;
+    case OrderKind.Attack:
+      return Number.isInteger(order.target) && order.target !== NULL_HANDLE;
+    case OrderKind.Hold:
+      return true;
+    case OrderKind.None:
+      return false;
+    default:
+      return false;
+  }
 }
 
 function validPlayer(match: Match, player: number): boolean {
@@ -130,8 +174,14 @@ export function applyCommand(match: Match, command: SimCommand): void {
         // command arrived over the wire, and a client must not be able to
         // order someone else's army by sending a handle it does not own.
         if (match.units.ownerId[index] !== command.player) continue;
+        setOrder(match.units, index, {
+          kind: OrderKind.Move,
+          cell: command.goalCell | 0,
+          target: NULL_HANDLE,
+        });
         match.units.goalCell[index] = command.goalCell | 0;
         match.units.state[index] = UnitState.Moving;
+        match.units.orderStarted[index] = 1;
         // A fresh order deserves a fresh chance to get somewhere.
         match.units.stuckTicks[index] = 0;
         match.units.bestProgress[index] = 0x7fffffff;
@@ -144,12 +194,25 @@ export function applyCommand(match: Match, command: SimCommand): void {
         const index = resolve(match.units, handle);
         if (index < 0) continue;
         if (match.units.ownerId[index] !== command.player) continue;
+        clearOrders(match.units, index);
         match.units.goalCell[index] = -1;
         match.units.state[index] = UnitState.Idle;
         match.units.stuckTicks[index] = 0;
         match.units.bestProgress[index] = 0x7fffffff;
         match.units.velX[index] = 0;
         match.units.velZ[index] = 0;
+      }
+      return;
+    }
+    case CommandKind.IssueOrders: {
+      if (!validPlayer(match, command.player)) return;
+      if (!validOrder(command.order)) return;
+      for (const handle of command.handles) {
+        const index = resolve(match.units, handle);
+        if (index < 0) continue;
+        if (match.units.ownerId[index] !== command.player) continue;
+        if (command.queue) queueOrder(match.units, index, command.order);
+        else setOrder(match.units, index, command.order);
       }
       return;
     }

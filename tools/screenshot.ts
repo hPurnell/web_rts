@@ -99,6 +99,18 @@ async function main(): Promise<void> {
     await page.waitForTimeout(300);
   }
 
+  /** --rightclick "x,y" issues an order to the current selection. */
+  const rightClicks = arg('rightclick', '')
+    .split(' ')
+    .filter(Boolean)
+    .map((p) => p.split(',').map(Number) as [number, number]);
+  for (const [x, y] of rightClicks) {
+    await page.mouse.move(x, y);
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.up({ button: 'right' });
+    await page.waitForTimeout(Number(arg('settle', '1500')));
+  }
+
   /** --press "Control+z,Control+z" sends chord presses after everything else. */
   for (const chord of arg('press', '').split(',').filter(Boolean)) {
     await page.keyboard.press(chord);

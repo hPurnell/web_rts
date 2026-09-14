@@ -9,6 +9,7 @@ import { applyCommand } from './commands.ts';
 import type { Match } from './match.ts';
 import { ensureField } from './navcache.ts';
 import { stepMovement } from './movement.ts';
+import { stepOrders } from './orders.ts';
 import type { World } from './world.ts';
 
 export { TICKS_PER_SECOND } from './ticks.ts';
@@ -41,6 +42,7 @@ export function stepMatch(
   // orders -> movement -> combat -> gathering -> production -> fog.
   if (context && match.costGrid) {
     const grid = match.costGrid;
+    stepOrders(match, context);
     match.spatialHash = stepMovement(match, {
       world: context.world,
       grid,

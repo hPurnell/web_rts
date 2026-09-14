@@ -14,7 +14,7 @@ import { cellIndex } from '../src/sim/world.ts';
 import type { ScheduledCommand, SimCommand } from '../src/sim/commands.ts';
 import { CommandKind } from '../src/sim/commands.ts';
 import { fromInt, fromRatio } from '../src/sim/fixed.ts';
-import { makeHandle } from '../src/sim/units.ts';
+import { OrderKind, makeHandle } from '../src/sim/units.ts';
 import { unitTypeById } from '../src/sim/unittypes.ts';
 import { hashMatch } from '../src/sim/statehash.ts';
 import { stepMatch } from '../src/sim/tick.ts';
@@ -97,6 +97,45 @@ export const SCRIPT: readonly ScheduledCommand[] = [
     },
   },
   { tick: 420, command: { kind: CommandKind.StopUnits, player: 1, handles: handleRange(12, 18) } },
+
+  // M21: queued orders. A patrol route for one squad, so the order queue, the
+  // handover between orders and the ring buffer all reach the hash.
+  {
+    tick: 440,
+    command: {
+      kind: CommandKind.IssueOrders,
+      player: 0,
+      handles: handleRange(6, 12),
+      order: { kind: OrderKind.Move, cell: cellIndex(SCRIPT_WORLD, 30, 26), target: 0 },
+      queue: false,
+    },
+  },
+  ...[
+    [36, 30],
+    [30, 34],
+    [24, 30],
+  ].map(([x, z], i) => ({
+    tick: 440 + i,
+    command: {
+      kind: CommandKind.IssueOrders as const,
+      player: 0,
+      handles: handleRange(6, 12),
+      order: { kind: OrderKind.Move as const, cell: cellIndex(SCRIPT_WORLD, x as number, z as number), target: 0 },
+      queue: true,
+    },
+  })),
+  // An order onto a resource patch, and one with a dead target: both must be
+  // handled identically everywhere.
+  {
+    tick: 500,
+    command: {
+      kind: CommandKind.IssueOrders,
+      player: 1,
+      handles: handleRange(18, 24),
+      order: { kind: OrderKind.Attack, cell: -1, target: makeHandle(2, 1) },
+      queue: false,
+    },
+  },
   // An order from the wrong player, which must be ignored identically.
   {
     tick: 430,
