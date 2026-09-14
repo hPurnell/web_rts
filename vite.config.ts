@@ -6,7 +6,9 @@ export default defineConfig({
   base: process.env.VITE_BASE ?? '/web_rts/',
   build: {
     target: 'es2022',
-    sourcemap: true,
+    // Source maps for a Babylon build cost more time than the whole rest of
+    // the build; opt in with VITE_SOURCEMAP=1 when actually debugging one.
+    sourcemap: process.env.VITE_SOURCEMAP === '1',
     rollupOptions: {
       plugins: [
         visualizer({ filename: 'dist/stats.html', gzipSize: true, template: 'treemap' }),

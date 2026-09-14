@@ -11,3 +11,22 @@ html, body { margin: 0; height: 100%; background: #0d1014; color: #e8ecf1;
 }
 .boot h1 { margin: 0; font-size: 28px; letter-spacing: 0.04em; font-weight: 600; }
 .boot p { margin: 0; color: #93a1b1; }
+
+.dev-overlay {
+  position: absolute; top: 8px; left: 8px; min-width: 200px;
+  padding: 8px 10px; border-radius: 6px;
+  background: rgba(10, 13, 17, 0.72); border: 1px solid rgba(255, 255, 255, 0.08);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #cfd8e3; pointer-events: none; user-select: none;
+}
+.dev-row { display: flex; justify-content: space-between; gap: 16px; }
+.dev-key { color: #7d8ea0; }
+.dev-value { color: #e8ecf1; font-variant-numeric: tabular-nums; }
+
+.status-line {
+  position: absolute; left: 8px; bottom: 8px;
+  padding: 4px 8px; border-radius: 4px;
+  background: rgba(10, 13, 17, 0.72);
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  pointer-events: none; user-select: none;
+}
