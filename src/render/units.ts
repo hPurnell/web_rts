@@ -50,7 +50,14 @@ interface PartShape {
   readonly lift: number;
 }
 
-function hullShape(radius: number): PartShape {
+function hullShape(radius: number, footprint = 0): PartShape {
+  if (footprint > 0) {
+    // A structure fills its footprint and stands tall enough to read as a
+    // building rather than a very large tank.
+    const side = footprint * 0.85;
+    const height = footprint * 0.8;
+    return { width: side, height, depth: side, lift: height / 2 };
+  }
   const size = radius * 2;
   return { width: size, height: size * 0.7, depth: size * 1.25, lift: size * 0.35 };
 }
@@ -67,6 +74,8 @@ interface InstanceGroup {
   /** Scratch buffers, grown on demand and reused between frames. */
   hullData: Float32Array;
   turretData: Float32Array;
+  /** Per-instance RGBA, so one mesh serves every player. */
+  colorData: Float32Array;
   count: number;
 }
 
@@ -114,33 +123,29 @@ function makePart(
 }
 
 export function createUnitRenderer(scene: Scene): UnitRenderer {
-  // One material per player, shared by every type that player owns: colour is
-  // the only thing that varies, and a material per unit would cost a draw call
-  // per unit.
-  const materials = PLAYER_COLORS.map((color, i) => {
-    const material = new StandardMaterial(`unit_p${i}`, scene);
-    material.diffuseColor = color;
-    material.emissiveColor = color.scale(0.22);
-    material.specularColor = new Color3(0.15, 0.15, 0.16);
-    return material;
-  });
+  // One material for every unit. Player colour rides on a per-instance colour
+  // buffer instead of a material per player, so the draw-call count depends on
+  // how many unit *types* are on screen and not on how many players are in the
+  // match — six types across eight players is eight draws, not forty-eight.
+  const material = new StandardMaterial('unit', scene);
+  material.diffuseColor = new Color3(1, 1, 1);
+  material.emissiveColor = new Color3(0.22, 0.22, 0.22);
+  material.specularColor = new Color3(0.15, 0.15, 0.16);
 
-  /** Groups are keyed by type and owner: [typeId][ownerId]. */
-  const groups: InstanceGroup[][] = UNIT_TYPES.map((type, typeId) =>
-    PLAYER_COLORS.map((_, ownerId) => {
-      const radius = toFloat(type.radius);
-      const material = materials[ownerId] as StandardMaterial;
-      return {
-        hull: makePart(scene, `hull_t${typeId}_p${ownerId}`, hullShape(radius), material),
-        turret: type.hasTurret
-          ? makePart(scene, `turret_t${typeId}_p${ownerId}`, turretShape(radius), material)
-          : null,
-        hullData: new Float32Array(0),
-        turretData: new Float32Array(0),
-        count: 0,
-      };
-    }),
-  );
+  /** One group per unit type; owner is a per-instance colour. */
+  const groups: InstanceGroup[] = UNIT_TYPES.map((type, typeId) => {
+    const radius = toFloat(type.radius);
+    return {
+      hull: makePart(scene, `hull_t${typeId}`, hullShape(radius, type.footprint), material),
+      turret: type.hasTurret
+        ? makePart(scene, `turret_t${typeId}`, turretShape(radius), material)
+        : null,
+      hullData: new Float32Array(0),
+      turretData: new Float32Array(0),
+      colorData: new Float32Array(0),
+      count: 0,
+    };
+  });
 
   // Previous-tick positions, so a frame can interpolate rather than snap.
   let prevX = new Int32Array(0);
@@ -158,6 +163,7 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
     while (size < needed) size *= 2;
     group.hullData = new Float32Array(size * FLOATS_PER_MATRIX);
     group.turretData = new Float32Array(size * FLOATS_PER_MATRIX);
+    group.colorData = new Float32Array(size * 4);
   };
 
   /**
@@ -215,9 +221,7 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
       // Before the first captured tick there is nothing to interpolate from.
       const blend = prevTick >= 0 ? Math.max(0, Math.min(1, alpha)) : 1;
 
-      for (const row of groups) {
-        for (const group of row) group.count = 0;
-      }
+      for (const group of groups) group.count = 0;
 
       const hidden = (index: number): boolean => {
         if (localPlayer < 0) return false;
@@ -235,23 +239,21 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
       for (let i = 0; i < units.count; i++) {
         if (units.isAlive[i] !== 1) continue;
         if (hidden(i)) continue;
-        const group = groups[units.typeId[i] as number]?.[units.ownerId[i] as number];
+        const group = groups[units.typeId[i] as number];
         if (!group) continue;
         group.count++;
       }
 
-      for (const row of groups) {
-        for (const group of row) {
-          if (group.count > 0) ensure(group, group.count);
-          group.count = 0;
-        }
+      for (const group of groups) {
+        if (group.count > 0) ensure(group, group.count);
+        group.count = 0;
       }
 
       written = 0;
       for (let i = 0; i < units.count; i++) {
         if (units.isAlive[i] !== 1) continue;
         if (hidden(i)) continue;
-        const group = groups[units.typeId[i] as number]?.[units.ownerId[i] as number];
+        const group = groups[units.typeId[i] as number];
         if (!group) continue;
 
         const nowX = toFloat(units.posX[i] as number);
@@ -274,30 +276,40 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
 
         const y = groundHeightAt(world, ramps, x, z);
         const offset = group.count * FLOATS_PER_MATRIX;
-        const radius = toFloat(UNIT_TYPES[units.typeId[i] as number]?.radius ?? 0);
-        writeMatrix(group.hullData, offset, x, y + hullShape(radius).lift, z, sin, cos);
+        const unitKind = UNIT_TYPES[units.typeId[i] as number];
+        const radius = toFloat(unitKind?.radius ?? 0);
+        const lift = hullShape(radius, unitKind?.footprint ?? 0).lift;
+        writeMatrix(group.hullData, offset, x, y + lift, z, sin, cos);
         if (group.turret) {
           writeMatrix(group.turretData, offset, x, y + turretShape(radius).lift, z, sin, cos);
         }
+
+        const color = PLAYER_COLORS[units.ownerId[i] as number] ?? PLAYER_COLORS[0];
+        const colorOffset = group.count * 4;
+        group.colorData[colorOffset] = color?.r ?? 1;
+        group.colorData[colorOffset + 1] = color?.g ?? 1;
+        group.colorData[colorOffset + 2] = color?.b ?? 1;
+        group.colorData[colorOffset + 3] = 1;
+
         group.count++;
         written++;
       }
 
-      for (const row of groups) {
-        for (const group of row) {
-          if (group.count === 0) {
-            group.hull.setEnabled(false);
-            group.turret?.setEnabled(false);
-            continue;
-          }
-          group.hull.thinInstanceSetBuffer('matrix', group.hullData, FLOATS_PER_MATRIX, false);
-          group.hull.thinInstanceCount = group.count;
-          group.hull.setEnabled(true);
-          if (group.turret) {
-            group.turret.thinInstanceSetBuffer('matrix', group.turretData, FLOATS_PER_MATRIX, false);
-            group.turret.thinInstanceCount = group.count;
-            group.turret.setEnabled(true);
-          }
+      for (const group of groups) {
+        if (group.count === 0) {
+          group.hull.setEnabled(false);
+          group.turret?.setEnabled(false);
+          continue;
+        }
+        group.hull.thinInstanceSetBuffer('matrix', group.hullData, FLOATS_PER_MATRIX, false);
+        group.hull.thinInstanceSetBuffer('color', group.colorData, 4, false);
+        group.hull.thinInstanceCount = group.count;
+        group.hull.setEnabled(true);
+        if (group.turret) {
+          group.turret.thinInstanceSetBuffer('matrix', group.turretData, FLOATS_PER_MATRIX, false);
+          group.turret.thinInstanceSetBuffer('color', group.colorData, 4, false);
+          group.turret.thinInstanceCount = group.count;
+          group.turret.setEnabled(true);
         }
       }
     },
@@ -305,23 +317,19 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
     clear() {
       written = 0;
       prevTick = -1;
-      for (const row of groups) {
-        for (const group of row) {
-          group.count = 0;
-          group.hull.setEnabled(false);
-          group.turret?.setEnabled(false);
-        }
+      for (const group of groups) {
+        group.count = 0;
+        group.hull.setEnabled(false);
+        group.turret?.setEnabled(false);
       }
     },
 
     dispose() {
-      for (const row of groups) {
-        for (const group of row) {
-          group.hull.dispose();
-          group.turret?.dispose();
-        }
+      for (const group of groups) {
+        group.hull.dispose();
+        group.turret?.dispose();
       }
-      for (const material of materials) material.dispose();
+      material.dispose();
     },
   };
 }

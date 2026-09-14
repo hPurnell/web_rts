@@ -58,10 +58,11 @@ describe('instanced unit rendering', () => {
     renderer.update(match, world, ramps, 1);
 
     expect(renderer.instanceCount()).toBe(55);
+    // One mesh per type, whoever owns the units: player colour is a
+    // per-instance attribute, not a separate material.
     const byName = new Map(unitMeshes().map((m) => [m.name, m.thinInstanceCount]));
-    expect(byName.get('hull_t1_p0')).toBe(30);
-    expect(byName.get('hull_t1_p1')).toBe(20);
-    expect(byName.get('hull_t2_p0')).toBe(5);
+    expect(byName.get('hull_t1')).toBe(50);
+    expect(byName.get('hull_t2')).toBe(5);
     renderer.dispose();
   });
 
@@ -75,9 +76,9 @@ describe('instanced unit rendering', () => {
     const names = unitMeshes().map((m) => m.name);
     expect(unitTypeById('worker').hasTurret).toBe(false);
     expect(unitTypeById('raider').hasTurret).toBe(true);
-    expect(names).toContain('hull_t0_p0');
-    expect(names).not.toContain('turret_t0_p0'); // workers have no turret
-    expect(names).toContain('turret_t2_p0');
+    expect(names).toContain('hull_t0');
+    expect(names).not.toContain('turret_t0'); // workers have no turret
+    expect(names).toContain('turret_t2');
     renderer.dispose();
   });
 
@@ -116,7 +117,7 @@ describe('instanced unit rendering', () => {
 
     const xAt = (alpha: number): number => {
       renderer.update(match, world, ramps, alpha);
-      const mesh = scene.meshes.find((m) => m.name === 'hull_t1_p0') as Mesh | undefined;
+      const mesh = scene.meshes.find((m) => m.name === 'hull_t1') as Mesh | undefined;
       const data = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
         ._thinInstanceDataStorage.matrixData;
       return data[12] as number;
@@ -135,7 +136,7 @@ describe('instanced unit rendering', () => {
     renderer.captureTick(match);
     match.units.posX[0] = fromInt(20);
     renderer.update(match, world, ramps, 5);
-    const mesh = scene.meshes.find((m) => m.name === 'hull_t1_p0') as Mesh | undefined;
+    const mesh = scene.meshes.find((m) => m.name === 'hull_t1') as Mesh | undefined;
     const data = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
       ._thinInstanceDataStorage.matrixData;
     expect(data[12]).toBeCloseTo(20, 4);
@@ -156,7 +157,7 @@ describe('instanced unit rendering', () => {
     match.units.facing[0] = fromRatio(1, 10); // just past zero
 
     renderer.update(match, world, ramps, 0.5);
-    const mesh = scene.meshes.find((m) => m.name === 'hull_t1_p0') as Mesh | undefined;
+    const mesh = scene.meshes.find((m) => m.name === 'hull_t1') as Mesh | undefined;
     const data = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
       ._thinInstanceDataStorage.matrixData;
     // Halfway between 6.2 and 0.1 the short way is about 6.33 rad, i.e. just
@@ -173,7 +174,7 @@ describe('instanced unit rendering', () => {
     spawnUnit(match.units, { type: unitTypeById('soldier'), ownerId: 0, x: fromInt(32), z: fromInt(32) });
     renderer.update(match, world, ramps, 1);
 
-    const mesh = scene.meshes.find((m) => m.name === 'hull_t1_p0') as Mesh | undefined;
+    const mesh = scene.meshes.find((m) => m.name === 'hull_t1') as Mesh | undefined;
     const data = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
       ._thinInstanceDataStorage.matrixData;
     const plateauY = data[13] as number;
@@ -215,7 +216,7 @@ describe('instanced unit rendering', () => {
     const match = createMatch({ seed: 1, playerCount: 2 });
     spawnMany(match, 'soldier', 0, 10);
     renderer.update(match, world, ramps, 1);
-    const mesh = scene.meshes.find((m) => m.name === 'hull_t1_p0') as Mesh | undefined;
+    const mesh = scene.meshes.find((m) => m.name === 'hull_t1') as Mesh | undefined;
     const first = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
       ._thinInstanceDataStorage.matrixData;
 

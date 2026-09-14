@@ -42,6 +42,13 @@ export interface CostGrid {
   readonly cost: Uint8Array;
   /** Bit i set means DIRECTIONS[i] is reachable from this cell. */
   readonly links: Uint8Array;
+  /**
+   * Cells blocked by something standing on them rather than by the terrain:
+   * buildings, and anything else a match puts in the way. Kept separate from
+   * `cost` so a rebuild can recompute terrain without losing them, and so the
+   * editor's grid and a match's grid differ only here.
+   */
+  readonly occupied: Uint8Array;
   /** Bumped on every rebuild, so the worker can tell its cache is stale. */
   version: number;
 }
@@ -53,6 +60,7 @@ export function createCostGrid(world: World): CostGrid {
     height: world.height,
     cost: new Uint8Array(cells),
     links: new Uint8Array(cells),
+    occupied: new Uint8Array(cells),
     version: 0,
   };
   rebuildCostGrid(grid, world);
@@ -91,7 +99,7 @@ export function rebuildRegion(
   for (let y = top; y <= bottom; y++) {
     for (let x = left; x <= right; x++) {
       const cell = y * world.width + x;
-      grid.cost[cell] = cellCost(world, cell, blocked);
+      grid.cost[cell] = cellCost(world, grid, cell, blocked);
     }
   }
 
@@ -116,11 +124,46 @@ function occupiedCells(world: World): Set<number> {
   return blocked;
 }
 
-function cellCost(world: World, cell: number, blocked: ReadonlySet<number>): number {
+function cellCost(
+  world: World,
+  grid: CostGrid,
+  cell: number,
+  blocked: ReadonlySet<number>,
+): number {
   const flags = world.flags[cell] as number;
   if ((flags & WALKABLE) === 0) return BLOCKED;
   if (blocked.has(cell)) return BLOCKED;
+  if ((grid.occupied[cell] as number) !== 0) return BLOCKED;
   return (flags & RAMP) !== 0 ? RAMP_COST : BASE_COST;
+}
+
+/**
+ * Mark or clear cells blocked by something standing on them, and rebuild the
+ * affected region so links agree with the new costs.
+ */
+export function setOccupied(
+  grid: CostGrid,
+  world: World,
+  cells: readonly number[],
+  occupied: boolean,
+): void {
+  if (cells.length === 0) return;
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const cell of cells) {
+    if (cell < 0 || cell >= grid.occupied.length) continue;
+    grid.occupied[cell] = occupied ? 1 : 0;
+    const cx = cell % grid.width;
+    const cy = (cell / grid.width) | 0;
+    if (cx < x0) x0 = cx;
+    if (cy < y0) y0 = cy;
+    if (cx > x1) x1 = cx;
+    if (cy > y1) y1 = cy;
+  }
+  if (x0 === Infinity) return;
+  rebuildRegion(grid, world, x0, y0, x1, y1);
 }
 
 function cellLinks(world: World, grid: CostGrid, cx: number, cy: number): number {
@@ -195,11 +238,15 @@ export function snapshotCostGrid(grid: CostGrid): CostGridSnapshot {
 }
 
 export function gridFromSnapshot(snapshot: CostGridSnapshot): CostGrid {
+  const cost = new Uint8Array(snapshot.cost);
   return {
     width: snapshot.width,
     height: snapshot.height,
-    cost: new Uint8Array(snapshot.cost),
+    cost,
     links: new Uint8Array(snapshot.links),
+    // Occupancy is already baked into the costs that were sent; the worker
+    // only reads the grid, so it needs no separate overlay.
+    occupied: new Uint8Array(cost.length),
     version: snapshot.version,
   };
 }

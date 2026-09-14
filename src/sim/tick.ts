@@ -13,6 +13,7 @@ import { stepOrders } from './orders.ts';
 import { FOG_INTERVAL_TICKS, updateFog } from './fog.ts';
 import { stepCombat } from './combat.ts';
 import { stepEconomy } from './economy.ts';
+import { stepBuildings } from './building.ts';
 import type { World } from './world.ts';
 
 export { TICKS_PER_SECOND } from './ticks.ts';
@@ -39,13 +40,14 @@ export function stepMatch(
   commands: readonly SimCommand[] = [],
   context?: TickContext,
 ): void {
-  for (const command of commands) applyCommand(match, command);
+  for (const command of commands) applyCommand(match, command, context?.world);
 
   // Systems run in a fixed order. Later milestones fill in the rest:
   // orders -> movement -> combat -> gathering -> production -> fog.
   if (context && match.costGrid) {
     const grid = match.costGrid;
     stepOrders(match, context);
+    stepBuildings(match, context);
     stepEconomy(match, context);
     match.spatialHash = stepMovement(match, {
       world: context.world,

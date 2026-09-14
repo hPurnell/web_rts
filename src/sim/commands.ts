@@ -22,6 +22,8 @@ import {
   spawnUnit,
 } from './units.ts';
 import { UNIT_TYPES, unitType } from './unittypes.ts';
+import type { World } from './world.ts';
+import { placeBuilding, startProduction } from './building.ts';
 
 export const enum CommandKind {
   /** Does nothing. Useful as a keep-alive turn in lockstep. */
@@ -38,6 +40,12 @@ export const enum CommandKind {
   StopUnits = 5,
   /** Gives units an order, replacing their queue or appending to it. */
   IssueOrders = 6,
+  /** Starts a building at a cell. */
+  PlaceBuilding = 7,
+  /** Queues a unit at a structure. */
+  QueueProduction = 8,
+  /** Sets where a structure sends what it produces. */
+  SetRally = 9,
 }
 
 export interface NoopCommand {
@@ -88,6 +96,27 @@ export interface IssueOrdersCommand {
   readonly queue: boolean;
 }
 
+export interface PlaceBuildingCommand {
+  readonly kind: CommandKind.PlaceBuilding;
+  readonly player: number;
+  readonly typeId: number;
+  readonly cell: number;
+}
+
+export interface QueueProductionCommand {
+  readonly kind: CommandKind.QueueProduction;
+  readonly player: number;
+  readonly building: number;
+  readonly typeId: number;
+}
+
+export interface SetRallyCommand {
+  readonly kind: CommandKind.SetRally;
+  readonly player: number;
+  readonly handles: readonly number[];
+  readonly cell: number;
+}
+
 export type SimCommand =
   | NoopCommand
   | GrantResourcesCommand
@@ -95,7 +124,10 @@ export type SimCommand =
   | DespawnUnitCommand
   | MoveUnitsCommand
   | StopUnitsCommand
-  | IssueOrdersCommand;
+  | IssueOrdersCommand
+  | PlaceBuildingCommand
+  | QueueProductionCommand
+  | SetRallyCommand;
 
 /** A command tagged with the tick it must execute on. */
 export interface ScheduledCommand {
@@ -132,8 +164,10 @@ function validPlayer(match: Match, player: number): boolean {
  * Apply one command. Invalid commands are ignored rather than thrown, because
  * in lockstep a peer's malformed command must not halt everyone else's
  * simulation — but every client must ignore it identically.
+ *
+ * `world` is needed by commands that read terrain, such as placing a building.
  */
-export function applyCommand(match: Match, command: SimCommand): void {
+export function applyCommand(match: Match, command: SimCommand, world?: World): void {
   switch (command.kind) {
     case CommandKind.Noop:
       return;
@@ -213,6 +247,32 @@ export function applyCommand(match: Match, command: SimCommand): void {
         if (match.units.ownerId[index] !== command.player) continue;
         if (command.queue) queueOrder(match.units, index, command.order);
         else setOrder(match.units, index, command.order);
+      }
+      return;
+    }
+    case CommandKind.PlaceBuilding: {
+      if (!validPlayer(match, command.player)) return;
+      if (!world) return;
+      if (!Number.isInteger(command.typeId)) return;
+      if (command.typeId < 0 || command.typeId >= UNIT_TYPES.length) return;
+      placeBuilding(match, world, command.player, unitType(command.typeId), command.cell | 0);
+      return;
+    }
+    case CommandKind.QueueProduction: {
+      if (!validPlayer(match, command.player)) return;
+      const index = resolve(match.units, command.building);
+      if (index < 0) return;
+      startProduction(match, command.player, index, command.typeId | 0);
+      return;
+    }
+    case CommandKind.SetRally: {
+      if (!validPlayer(match, command.player)) return;
+      for (const handle of command.handles) {
+        const index = resolve(match.units, handle);
+        if (index < 0) continue;
+        if (match.units.ownerId[index] !== command.player) continue;
+        if (!unitType(match.units.typeId[index] as number).isStructure) continue;
+        match.units.rallyCell[index] = command.cell | 0;
       }
       return;
     }

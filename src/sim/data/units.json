@@ -1,5 +1,5 @@
 {
-  "note": "Unit type table. Every value is an integer in the unit named by its suffix, so loading never parses a float (invariant 2). hasTurret marks types whose weapon rotates independently of the hull; isStructure marks types that do not move and that players remember once scouted. A projectile speed of zero means the weapon is hitscan; anything else spawns a travelling projectile. Order is part of the determinism contract: append, never reorder.",
+  "note": "Unit type table. Every value is an integer in the unit named by its suffix, so loading never parses a float (invariant 2). hasTurret marks types whose weapon rotates independently of the hull; isStructure marks types that do not move and that players remember once scouted. A projectile speed of zero means the weapon is hitscan; anything else spawns a travelling projectile. footprintCells is the side of the square a structure occupies. Order is part of the determinism contract: append, never reorder.",
   "types": [
     {
       "id": "worker",
@@ -16,7 +16,9 @@
       "gasCost": 0,
       "hasTurret": false,
       "isStructure": false,
-      "projectileSpeedMilliCellsPerSecond": 0
+      "projectileSpeedMilliCellsPerSecond": 0,
+      "footprintCells": 0,
+      "produces": []
     },
     {
       "id": "soldier",
@@ -33,7 +35,9 @@
       "gasCost": 0,
       "hasTurret": false,
       "isStructure": false,
-      "projectileSpeedMilliCellsPerSecond": 0
+      "projectileSpeedMilliCellsPerSecond": 0,
+      "footprintCells": 0,
+      "produces": []
     },
     {
       "id": "raider",
@@ -50,7 +54,9 @@
       "gasCost": 25,
       "hasTurret": true,
       "isStructure": false,
-      "projectileSpeedMilliCellsPerSecond": 0
+      "projectileSpeedMilliCellsPerSecond": 0,
+      "footprintCells": 0,
+      "produces": []
     },
     {
       "id": "siege",
@@ -67,7 +73,9 @@
       "gasCost": 125,
       "hasTurret": true,
       "isStructure": false,
-      "projectileSpeedMilliCellsPerSecond": 9000
+      "projectileSpeedMilliCellsPerSecond": 9000,
+      "footprintCells": 0,
+      "produces": []
     },
     {
       "id": "depot",
@@ -84,7 +92,35 @@
       "gasCost": 0,
       "hasTurret": false,
       "isStructure": true,
-      "projectileSpeedMilliCellsPerSecond": 0
+      "projectileSpeedMilliCellsPerSecond": 0,
+      "footprintCells": 2,
+      "produces": [
+        "worker",
+        "soldier"
+      ]
+    },
+    {
+      "id": "barracks",
+      "name": "Barracks",
+      "hp": 900,
+      "speedMilliCellsPerSecond": 0,
+      "sightRadiusMilliCells": 9000,
+      "attackRangeMilliCells": 0,
+      "damage": 0,
+      "cooldownTicks": 0,
+      "radiusMilliCells": 1500,
+      "buildTicks": 600,
+      "mineralCost": 150,
+      "gasCost": 0,
+      "hasTurret": false,
+      "isStructure": true,
+      "projectileSpeedMilliCellsPerSecond": 0,
+      "footprintCells": 3,
+      "produces": [
+        "soldier",
+        "raider",
+        "siege"
+      ]
     }
   ]
 }

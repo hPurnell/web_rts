@@ -40,6 +40,10 @@ export interface UnitType {
   readonly projectileSpeed: Fixed;
   /** True when this type can attack at all. */
   readonly canAttack: boolean;
+  /** Side of the square of cells a structure occupies; 0 for mobile units. */
+  readonly footprint: number;
+  /** Type ids this structure can produce. */
+  readonly produces: readonly number[];
 }
 
 interface RawUnitType {
@@ -58,6 +62,8 @@ interface RawUnitType {
   hasTurret: boolean;
   isStructure: boolean;
   projectileSpeedMilliCellsPerSecond: number;
+  footprintCells: number;
+  produces: string[];
 }
 
 function build(raw: RawUnitType, typeId: number): UnitType {
@@ -80,12 +86,20 @@ function build(raw: RawUnitType, typeId: number): UnitType {
     isStructure: raw.isStructure === true,
     projectileSpeed: fromRatio(raw.projectileSpeedMilliCellsPerSecond, MILLI * TICKS_PER_SECOND),
     canAttack: (raw.damage | 0) > 0 && (raw.attackRangeMilliCells | 0) > 0,
+    footprint: raw.footprintCells | 0,
+    // Resolved by index rather than by name once the table is built, so the
+    // simulation never carries strings across a tick.
+    produces: (raw.produces ?? []).map((id) =>
+      RAW_TYPES.findIndex((candidate) => candidate.id === id),
+    ).filter((index) => index >= 0),
   };
 }
 
 /** Type ids are array indices, and the order in units.json is part of the
  * determinism contract: reordering the file changes every replay. */
-export const UNIT_TYPES: readonly UnitType[] = (rawTable.types as RawUnitType[]).map(build);
+const RAW_TYPES = rawTable.types as RawUnitType[];
+
+export const UNIT_TYPES: readonly UnitType[] = RAW_TYPES.map(build);
 
 const BY_ID = new Map(UNIT_TYPES.map((type) => [type.id, type]));
 

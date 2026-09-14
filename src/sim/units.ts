@@ -20,6 +20,9 @@ export const MAX_UNITS = 1 << 14; // 16384
 /** Orders a unit can have queued behind the one it is executing. */
 export const MAX_QUEUED_ORDERS = 8;
 
+/** Units a structure can have queued for production. */
+export const MAX_PRODUCTION_QUEUE = 5;
+
 /** What a queued order tells a unit to do. */
 export const enum OrderKind {
   None = 0,
@@ -100,6 +103,18 @@ export interface UnitStore {
   /** Ticks left in the current harvest, or 0. */
   readonly harvestTicks: Int32Array;
 
+  // --- structures --------------------------------------------------------
+  /** Ticks left before construction completes; 0 means finished. */
+  readonly buildTicks: Int32Array;
+  /** Where units produced here are sent, or -1. */
+  readonly rallyCell: Int32Array;
+  /** Production queue, flattened like the order queue. */
+  readonly produceType: Uint8Array;
+  readonly produceHead: Uint8Array;
+  readonly produceCount: Uint8Array;
+  /** Ticks left on the item at the head of the production queue. */
+  readonly produceTicks: Int32Array;
+
   /** Generation of each slot; odd bookkeeping kept out of the hashed set. */
   readonly generation: Uint16Array;
   readonly isAlive: Uint8Array;
@@ -137,6 +152,12 @@ export function createUnitStore(): UnitStore {
     carryType: new Uint8Array(MAX_UNITS),
     gatherNode: new Int32Array(MAX_UNITS).fill(-1),
     harvestTicks: new Int32Array(MAX_UNITS),
+    buildTicks: new Int32Array(MAX_UNITS),
+    rallyCell: new Int32Array(MAX_UNITS).fill(-1),
+    produceType: new Uint8Array(MAX_UNITS * MAX_PRODUCTION_QUEUE),
+    produceHead: new Uint8Array(MAX_UNITS),
+    produceCount: new Uint8Array(MAX_UNITS),
+    produceTicks: new Int32Array(MAX_UNITS),
     generation: new Uint16Array(MAX_UNITS),
     isAlive: new Uint8Array(MAX_UNITS),
     nextFree: new Int32Array(MAX_UNITS),
@@ -217,6 +238,11 @@ export function spawnUnit(store: UnitStore, request: SpawnRequest): UnitHandle {
   store.carryType[index] = 0;
   store.gatherNode[index] = -1;
   store.harvestTicks[index] = 0;
+  store.buildTicks[index] = 0;
+  store.rallyCell[index] = -1;
+  store.produceHead[index] = 0;
+  store.produceCount[index] = 0;
+  store.produceTicks[index] = 0;
   clearOrders(store, index);
   store.isAlive[index] = 1;
   store.alive++;
@@ -280,6 +306,12 @@ export function resetUnitStore(store: UnitStore): void {
   store.carryType.fill(0);
   store.gatherNode.fill(-1);
   store.harvestTicks.fill(0);
+  store.buildTicks.fill(0);
+  store.rallyCell.fill(-1);
+  store.produceType.fill(0);
+  store.produceHead.fill(0);
+  store.produceCount.fill(0);
+  store.produceTicks.fill(0);
   store.generation.fill(1);
   store.isAlive.fill(0);
   store.nextFree.fill(-1);
@@ -317,6 +349,12 @@ export function unitHashableArrays(store: UnitStore): { name: string; data: Arra
     { name: 'unit.carryType', data: store.carryType.subarray(0, n) },
     { name: 'unit.gatherNode', data: store.gatherNode.subarray(0, n) },
     { name: 'unit.harvestTicks', data: store.harvestTicks.subarray(0, n) },
+    { name: 'unit.buildTicks', data: store.buildTicks.subarray(0, n) },
+    { name: 'unit.rallyCell', data: store.rallyCell.subarray(0, n) },
+    { name: 'unit.produceHead', data: store.produceHead.subarray(0, n) },
+    { name: 'unit.produceCount', data: store.produceCount.subarray(0, n) },
+    { name: 'unit.produceTicks', data: store.produceTicks.subarray(0, n) },
+    { name: 'unit.produceType', data: store.produceType.subarray(0, n * MAX_PRODUCTION_QUEUE) },
     { name: 'unit.orderKind', data: store.orderKind.subarray(0, n * MAX_QUEUED_ORDERS) },
     { name: 'unit.orderCell', data: store.orderCell.subarray(0, n * MAX_QUEUED_ORDERS) },
     { name: 'unit.orderTarget', data: store.orderTarget.subarray(0, n * MAX_QUEUED_ORDERS) },
@@ -429,4 +467,52 @@ export function listOrders(store: UnitStore, index: number): UnitOrder[] {
     });
   }
   return out;
+}
+
+// --- production queue -------------------------------------------------------
+
+function produceSlot(index: number, position: number): number {
+  return index * MAX_PRODUCTION_QUEUE + (position % MAX_PRODUCTION_QUEUE);
+}
+
+export function productionCount(store: UnitStore, index: number): number {
+  return store.produceCount[index] as number;
+}
+
+/** The type id currently being produced, or -1. */
+export function productionHead(store: UnitStore, index: number): number {
+  if ((store.produceCount[index] as number) === 0) return -1;
+  return store.produceType[produceSlot(index, store.produceHead[index] as number)] as number;
+}
+
+/** Queue an item. Returns false when the queue is full. */
+export function queueProduction(store: UnitStore, index: number, typeId: number): boolean {
+  const count = store.produceCount[index] as number;
+  if (count >= MAX_PRODUCTION_QUEUE) return false;
+  store.produceType[produceSlot(index, (store.produceHead[index] as number) + count)] = typeId;
+  store.produceCount[index] = count + 1;
+  return true;
+}
+
+export function popProduction(store: UnitStore, index: number): void {
+  const count = store.produceCount[index] as number;
+  if (count === 0) return;
+  store.produceHead[index] = ((store.produceHead[index] as number) + 1) % MAX_PRODUCTION_QUEUE;
+  store.produceCount[index] = count - 1;
+  store.produceTicks[index] = 0;
+}
+
+/** Everything queued at a structure, head first. For the HUD and tests. */
+export function listProduction(store: UnitStore, index: number): number[] {
+  const out: number[] = [];
+  const count = store.produceCount[index] as number;
+  for (let i = 0; i < count; i++) {
+    out.push(store.produceType[produceSlot(index, (store.produceHead[index] as number) + i)] as number);
+  }
+  return out;
+}
+
+/** True while a structure is still being built. */
+export function isUnderConstruction(store: UnitStore, index: number): boolean {
+  return (store.buildTicks[index] as number) > 0;
 }
