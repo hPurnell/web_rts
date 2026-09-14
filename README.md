@@ -17,6 +17,7 @@ See [PLAN.md](PLAN.md) for the architecture invariants and milestone plan.
 | `pnpm lint` | ESLint, including the invariant rules |
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm check:browser` | Builds, then loads the page in headless Chromium and fails on any console error |
+| `pnpm shot out.png` | Screenshots the running game in headless Chromium (`--wheel`, `--keys`, `--wait`) |
 | `pnpm gen:trig` | Regenerates the committed trig lookup tables |
 | `pnpm gen:golden-sim` | Regenerates the determinism harness golden hash (deliberate act only) |
 

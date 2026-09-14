@@ -2,17 +2,17 @@
  * Application shell: owns the renderer, the camera and the frame loop, and
  * wires the simulation's world state into both.
  */
-import { Color3 } from '@babylonjs/core/Maths/math.color';
-import { CreateGround } from '@babylonjs/core/Meshes/Builders/groundBuilder';
-import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import type { Scene } from '@babylonjs/core/scene';
 
 import { createTestMap } from './sim/fixtures/testmap.ts';
 import { toFloat } from './sim/fixed.ts';
 import type { World } from './sim/world.ts';
+import { MAX_TIER } from './sim/world.ts';
 import { createRenderer } from './render/engine.ts';
 import { RtsCamera } from './render/camera.ts';
 import { attachInput } from './render/input.ts';
+import { TIER_HEIGHT, createTerrain } from './render/terrain.ts';
+import { createTerrainMaterial } from './render/terrainMaterial.ts';
 import { createDevOverlay } from './ui/devoverlay.ts';
 
 /** Dev-only keybind for Babylon's Inspector. */
@@ -38,17 +38,12 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     bounds: { minX: 0, maxX: widthUnits, minZ: 0, maxZ: depthUnits },
   });
 
-  // Placeholder ground; M6 replaces it with tiered terrain built from `world`.
-  const ground = CreateGround(
-    'ground',
-    { width: widthUnits, height: depthUnits, subdivisions: 1 },
-    renderer.scene,
-  );
-  ground.position.set(widthUnits / 2, 0, depthUnits / 2);
-  const groundMaterial = new StandardMaterial('ground', renderer.scene);
-  groundMaterial.diffuseColor = new Color3(0.26, 0.32, 0.27);
-  groundMaterial.specularColor = new Color3(0.02, 0.02, 0.02);
-  ground.material = groundMaterial;
+  const terrainMaterial = createTerrainMaterial(renderer.scene, {
+    tierHeight: TIER_HEIGHT,
+    maxTier: MAX_TIER,
+    lightDirection: renderer.sun.direction,
+  });
+  const terrain = createTerrain(renderer.scene, world, terrainMaterial);
 
   let smoothedFps = 60;
   renderer.engine.runRenderLoop(() => {
@@ -63,6 +58,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     overlay.set('frame', `${(dt * 1000).toFixed(1)} ms`);
     overlay.set('camera', `${camera.focusX.toFixed(1)}, ${camera.focusZ.toFixed(1)}`);
     overlay.set('height', camera.currentHeight.toFixed(1));
+    overlay.set('draws', String(renderer.scene.getActiveMeshes().length));
 
     renderer.scene.render();
   });
@@ -81,6 +77,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       window.removeEventListener('keydown', onKey);
       renderer.engine.stopRenderLoop();
       overlay.dispose();
+      terrain.dispose();
+      terrainMaterial.dispose();
       input.dispose();
       renderer.dispose();
     },

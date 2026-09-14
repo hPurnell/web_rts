@@ -15,7 +15,8 @@
     "gen:trig": "tsx tools/gen-trig.ts",
     "gen:golden": "tsx tools/gen-trig-golden.ts",
     "check:browser": "pnpm build && tsx tools/browser-check.ts",
-    "gen:golden-sim": "tsx tools/gen-sim-golden.ts"
+    "gen:golden-sim": "tsx tools/gen-sim-golden.ts",
+    "shot": "tsx tools/screenshot.ts"
   },
   "devDependencies": {
     "@babylonjs/inspector": "^9.26.0",

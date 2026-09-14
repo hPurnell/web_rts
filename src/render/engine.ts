@@ -13,6 +13,7 @@ export interface Renderer {
   readonly engine: Engine;
   readonly scene: Scene;
   readonly canvas: HTMLCanvasElement;
+  readonly sun: DirectionalLight;
   /** Seconds since the previous frame, clamped against tab-switch spikes. */
   frameDelta(): number;
   dispose(): void;
@@ -52,6 +53,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     engine,
     scene,
     canvas,
+    sun,
     frameDelta: () => Math.min(engine.getDeltaTime() / 1000, MAX_FRAME_DELTA),
     dispose: () => {
       window.removeEventListener('resize', onResize);

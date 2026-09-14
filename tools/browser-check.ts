@@ -91,6 +91,12 @@ async function main(): Promise<void> {
   const after = await readOverlay('camera');
   if (before === after) failures.push(`camera did not pan on KeyD (still ${after})`);
 
+  // M6 budget: terrain must stay at or under eight draw calls.
+  const draws = Number(await readOverlay('draws'));
+  if (!Number.isFinite(draws) || draws < 1 || draws > 8) {
+    failures.push(`terrain draw calls out of budget: ${draws}`);
+  }
+
   const fps = Number(await readOverlay('fps'));
   if (!Number.isFinite(fps) || fps < 30) {
     // Headless software rendering is slower than a real GPU; 30 is a floor
@@ -108,7 +114,10 @@ async function main(): Promise<void> {
     console.error('browser check FAILED');
     process.exit(1);
   }
-  console.log(`browser check ok — ${url} rendered at ${fps} fps, camera responsive, self-check passed`);
+  console.log(
+    `browser check ok — ${url} rendered at ${fps} fps in ${draws} draw calls, ` +
+      'camera responsive, self-check passed',
+  );
 }
 
 void main();
