@@ -80,7 +80,14 @@ function main(): void {
 
   for (const chunk of allChunks) {
     const code = readFileSync(join(ASSETS, chunk), 'utf8');
-    if (code.includes('BABYLON.Inspector') || code.includes('babylonjs-inspector')) {
+    // Fluent UI is only reachable through the Inspector, and is the marker
+    // that actually survives minification.
+    if (
+      code.includes('BABYLON.Inspector') ||
+      code.includes('babylonjs-inspector') ||
+      code.includes('@fluentui') ||
+      code.includes('makeStyles')
+    ) {
       failures.push({ message: `the Babylon Inspector shipped in ${chunk}` });
     }
   }

@@ -7,6 +7,7 @@
  */
 import type { Match, MatchInit } from './match.ts';
 import { MAX_PLAYERS, createMatch } from './match.ts';
+import { createCostGrid } from '../nav/grid.ts';
 import type { World } from './world.ts';
 import { cellFromWorld, worldFromCell } from './world.ts';
 import { spawnUnit } from './units.ts';
@@ -41,8 +42,13 @@ function ringOffset(index: number, count: number, radius: Fixed): { x: Fixed; z:
 }
 
 export function createMatchFromWorld(setup: MatchSetup): Match {
-  const match = createMatch(setup);
   const world = setup.world;
+  const match = createMatch({
+    ...setup,
+    worldWidth: world.width,
+    worldHeight: world.height,
+    costGrid: setup.costGrid ?? createCostGrid(world),
+  });
   const workers = setup.startingWorkers ?? STARTING_WORKERS;
   const minerals = setup.startingMinerals ?? STARTING_MINERALS;
   const workerType = unitTypeById('worker');

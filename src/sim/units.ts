@@ -57,6 +57,12 @@ export interface UnitStore {
   readonly targetHandle: Int32Array;
   readonly cooldown: Int32Array;
   readonly facing: Int32Array;
+  /** Flow-field goal this unit is walking to, or -1. */
+  readonly goalCell: Int32Array;
+  /** Consecutive ticks spent making no real progress toward that goal. */
+  readonly stuckTicks: Int32Array;
+  /** Best flow-field distance to the goal this unit has reached so far. */
+  readonly bestProgress: Int32Array;
 
   /** Generation of each slot; odd bookkeeping kept out of the hashed set. */
   readonly generation: Uint16Array;
@@ -82,6 +88,9 @@ export function createUnitStore(): UnitStore {
     targetHandle: new Int32Array(MAX_UNITS),
     cooldown: new Int32Array(MAX_UNITS),
     facing: new Int32Array(MAX_UNITS),
+    goalCell: new Int32Array(MAX_UNITS).fill(-1),
+    stuckTicks: new Int32Array(MAX_UNITS),
+    bestProgress: new Int32Array(MAX_UNITS).fill(0x7fffffff),
     generation: new Uint16Array(MAX_UNITS),
     isAlive: new Uint8Array(MAX_UNITS),
     nextFree: new Int32Array(MAX_UNITS),
@@ -89,6 +98,7 @@ export function createUnitStore(): UnitStore {
   };
   store.generation.fill(1);
   store.nextFree.fill(-1);
+  store.goalCell.fill(-1);
   return store;
 }
 
@@ -154,6 +164,9 @@ export function spawnUnit(store: UnitStore, request: SpawnRequest): UnitHandle {
   store.targetHandle[index] = NULL_HANDLE;
   store.cooldown[index] = 0;
   store.facing[index] = request.facing ?? 0;
+  store.goalCell[index] = -1;
+  store.stuckTicks[index] = 0;
+  store.bestProgress[index] = 0x7fffffff;
   store.isAlive[index] = 1;
   store.alive++;
 
@@ -172,6 +185,7 @@ export function despawnUnit(store: UnitStore, handle: UnitHandle): boolean {
   store.isAlive[index] = 0;
   store.state[index] = UnitState.Dead;
   store.hp[index] = 0;
+  store.goalCell[index] = -1;
   store.alive--;
 
   const next = ((store.generation[index] as number) + 1) & MAX_GENERATION;
@@ -199,6 +213,9 @@ export function resetUnitStore(store: UnitStore): void {
   store.targetHandle.fill(0);
   store.cooldown.fill(0);
   store.facing.fill(0);
+  store.goalCell.fill(-1);
+  store.stuckTicks.fill(0);
+  store.bestProgress.fill(0x7fffffff);
   store.generation.fill(1);
   store.isAlive.fill(0);
   store.nextFree.fill(-1);
@@ -226,6 +243,9 @@ export function unitHashableArrays(store: UnitStore): { name: string; data: Arra
     { name: 'unit.targetHandle', data: store.targetHandle.subarray(0, n) },
     { name: 'unit.cooldown', data: store.cooldown.subarray(0, n) },
     { name: 'unit.facing', data: store.facing.subarray(0, n) },
+    { name: 'unit.goalCell', data: store.goalCell.subarray(0, n) },
+    { name: 'unit.stuckTicks', data: store.stuckTicks.subarray(0, n) },
+    { name: 'unit.bestProgress', data: store.bestProgress.subarray(0, n) },
     { name: 'unit.generation', data: store.generation.subarray(0, n) },
     { name: 'unit.isAlive', data: store.isAlive.subarray(0, n) },
     { name: 'unit.nextFree', data: store.nextFree.subarray(0, n) },

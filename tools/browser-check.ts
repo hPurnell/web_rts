@@ -103,7 +103,20 @@ async function main(): Promise<void> {
   if (!/^\d+ \(\d+,\d+\)$/.test(cell.trim())) failures.push(`cell picking reported "${cell}"`);
   if (!Number.isInteger(tier) || tier < 0 || tier > 3) failures.push(`picked tier out of range: ${tier}`);
 
+  // M19: the pathfinding worker must actually solve a field, off the main
+  // thread, without the page freezing.
+  const nav = await page.evaluate(async () => {
+    const app = (window as unknown as { __app?: { requestPath(cell: number): Promise<unknown> } })
+      .__app;
+    if (!app) return { ok: false, reason: 'app not exposed' };
+    const started = performance.now();
+    const field = await app.requestPath(32 * 64 + 32);
+    return { ok: field !== null, reason: 'solved', waitedMs: performance.now() - started };
+  });
+  if (!nav.ok) failures.push(`pathfinding worker failed: ${nav.reason}`);
+
   const fps = Number(await readOverlay('fps'));
+  const navMs = await readOverlay('nav');
   if (!Number.isFinite(fps) || fps < 30) {
     // Headless software rendering is slower than a real GPU; 30 is a floor
     // that still catches a scene that is not rendering at all.
@@ -122,7 +135,7 @@ async function main(): Promise<void> {
   }
   console.log(
     `browser check ok — ${url} rendered at ${fps} fps in ${draws} draw calls, ` +
-      'camera responsive, self-check passed',
+      `camera responsive, path solved in ${navMs}, self-check passed`,
   );
 }
 

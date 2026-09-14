@@ -8,7 +8,9 @@
  * introduced by that commit.
  */
 import type { Match } from '../src/sim/match.ts';
-import { createMatch } from '../src/sim/match.ts';
+import { createMatchFromWorld } from '../src/sim/matchinit.ts';
+import { createTestMap } from '../src/sim/fixtures/testmap.ts';
+import { cellIndex } from '../src/sim/world.ts';
 import type { ScheduledCommand, SimCommand } from '../src/sim/commands.ts';
 import { CommandKind } from '../src/sim/commands.ts';
 import { fromInt, fromRatio } from '../src/sim/fixed.ts';
@@ -17,6 +19,11 @@ import { unitTypeById } from '../src/sim/unittypes.ts';
 import { hashMatch } from '../src/sim/statehash.ts';
 import { stepMatch } from '../src/sim/tick.ts';
 
+/**
+ * The script runs on the fixture map, so movement has real terrain to path
+ * over: cliffs, ramps and chokepoints are exactly where a desync would hide.
+ */
+export const SCRIPT_WORLD = createTestMap();
 export const SCRIPT_SEED = 0xc0ffee;
 export const SCRIPT_PLAYERS = 2;
 export const SCRIPT_TICKS = 600; // 30 seconds at 20Hz
@@ -57,7 +64,57 @@ export const SCRIPT: readonly ScheduledCommand[] = [
   { tick: 210, command: { kind: CommandKind.SpawnUnit, player: 5, typeId: 0, x: 0, z: 0 } },
   { tick: 210, command: { kind: CommandKind.SpawnUnit, player: 0, typeId: 99, x: 0, z: 0 } },
   { tick: 210, command: { kind: CommandKind.DespawnUnit, handle: makeHandle(9000, 3) } },
+
+  // M20: movement. Marching two armies across the map exercises flow fields,
+  // separation, cliff rejection and the stuck rule, all of which write to
+  // state the hash covers.
+  {
+    tick: 220,
+    command: {
+      kind: CommandKind.MoveUnits,
+      player: 0,
+      handles: handleRange(0, 12),
+      goalCell: cellIndex(SCRIPT_WORLD, 40, 40),
+    },
+  },
+  {
+    tick: 220,
+    command: {
+      kind: CommandKind.MoveUnits,
+      player: 1,
+      handles: handleRange(12, 24),
+      goalCell: cellIndex(SCRIPT_WORLD, 20, 18),
+    },
+  },
+  // A second order mid-march, which must reset progress tracking.
+  {
+    tick: 320,
+    command: {
+      kind: CommandKind.MoveUnits,
+      player: 0,
+      handles: handleRange(0, 6),
+      goalCell: cellIndex(SCRIPT_WORLD, 8, 12),
+    },
+  },
+  { tick: 420, command: { kind: CommandKind.StopUnits, player: 1, handles: handleRange(12, 18) } },
+  // An order from the wrong player, which must be ignored identically.
+  {
+    tick: 430,
+    command: {
+      kind: CommandKind.MoveUnits,
+      player: 1,
+      handles: handleRange(0, 4),
+      goalCell: cellIndex(SCRIPT_WORLD, 60, 60),
+    },
+  },
 ];
+
+/** Handles for slots [from, to), all at generation 1. */
+function handleRange(from: number, to: number): number[] {
+  const handles: number[] = [];
+  for (let i = from; i < to; i++) handles.push(makeHandle(i, 1));
+  return handles;
+}
 
 /**
  * A row of units spawned on one tick. Positions are offset by an exact
@@ -111,14 +168,20 @@ export interface RunOptions {
 
 /** Run the scripted match and return the final state. */
 export function runScript(options: RunOptions = {}): Match {
-  const match = createMatch({
+  const world = SCRIPT_WORLD;
+  const match = createMatchFromWorld({
+    world,
     seed: options.seed ?? SCRIPT_SEED,
     playerCount: options.players ?? SCRIPT_PLAYERS,
+    // The script spawns everything itself, so the opening position does not
+    // silently shift the hash when starting forces change.
+    startingWorkers: 0,
   });
+  const context = { world };
   const schedule = byTick(options.script ?? SCRIPT);
   const ticks = options.ticks ?? SCRIPT_TICKS;
   for (let t = 0; t < ticks; t++) {
-    stepMatch(match, schedule.get(t) ?? []);
+    stepMatch(match, schedule.get(t) ?? [], context);
     options.onTick?.(match);
   }
   return match;

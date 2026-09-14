@@ -15,8 +15,11 @@ export default tseslint.config(
     },
   },
   // Invariants 2 and 3: the simulation is deterministic and renderer-free.
+  // src/nav/grid.ts and src/nav/flowfield.ts are held to the same standard:
+  // the simulation consumes their output, so a float in either is a desync.
+  // The worker and its client are transport glue and are not.
   {
-    files: ['src/sim/**/*.ts'],
+    files: ['src/sim/**/*.ts', 'src/nav/grid.ts', 'src/nav/flowfield.ts'],
     plugins: { rts },
     rules: {
       'rts/no-nondeterminism': 'error',

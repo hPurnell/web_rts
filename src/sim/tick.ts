@@ -7,8 +7,21 @@
 import type { SimCommand } from './commands.ts';
 import { applyCommand } from './commands.ts';
 import type { Match } from './match.ts';
+import { ensureField } from './navcache.ts';
+import { stepMovement } from './movement.ts';
+import type { World } from './world.ts';
 
 export { TICKS_PER_SECOND } from './ticks.ts';
+
+/**
+ * Everything a tick needs that is not match state.
+ *
+ * The world is read-only here (invariant 4) and the navigation grid is derived
+ * from it, so both are inputs rather than part of the state being advanced.
+ */
+export interface TickContext {
+  readonly world: World;
+}
 
 /**
  * Advance the match by one tick.
@@ -17,11 +30,24 @@ export { TICKS_PER_SECOND } from './ticks.ts';
  * same ordering; systems then run in a fixed sequence. The tick counter
  * increments last, so a command scheduled for tick N sees `match.tick === N`.
  */
-export function stepMatch(match: Match, commands: readonly SimCommand[] = []): void {
+export function stepMatch(
+  match: Match,
+  commands: readonly SimCommand[] = [],
+  context?: TickContext,
+): void {
   for (const command of commands) applyCommand(match, command);
 
-  // Systems run here in a fixed order as later milestones add them:
+  // Systems run in a fixed order. Later milestones fill in the rest:
   // orders -> movement -> combat -> gathering -> production -> fog.
+  if (context && match.costGrid) {
+    const grid = match.costGrid;
+    match.spatialHash = stepMovement(match, {
+      world: context.world,
+      grid,
+      hash: match.spatialHash,
+      field: (goalCell) => ensureField(match.fields, grid, goalCell),
+    });
+  }
 
   match.tick = (match.tick + 1) | 0;
 }

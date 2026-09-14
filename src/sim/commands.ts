@@ -9,7 +9,7 @@
 import type { Fixed } from './fixed.ts';
 import type { Match } from './match.ts';
 import { MAX_PLAYERS } from './match.ts';
-import { NULL_HANDLE, despawnUnit, spawnUnit } from './units.ts';
+import { NULL_HANDLE, UnitState, despawnUnit, resolve, spawnUnit } from './units.ts';
 import { UNIT_TYPES, unitType } from './unittypes.ts';
 
 export const enum CommandKind {
@@ -21,6 +21,10 @@ export const enum CommandKind {
   SpawnUnit = 2,
   /** Removes a unit outright, without the death handling combat will add. */
   DespawnUnit = 3,
+  /** Sends units to a cell. Handles are checked, so stale ones are ignored. */
+  MoveUnits = 4,
+  /** Stops units where they stand. */
+  StopUnits = 5,
 }
 
 export interface NoopCommand {
@@ -49,11 +53,26 @@ export interface DespawnUnitCommand {
   readonly handle: number;
 }
 
+export interface MoveUnitsCommand {
+  readonly kind: CommandKind.MoveUnits;
+  readonly player: number;
+  readonly handles: readonly number[];
+  readonly goalCell: number;
+}
+
+export interface StopUnitsCommand {
+  readonly kind: CommandKind.StopUnits;
+  readonly player: number;
+  readonly handles: readonly number[];
+}
+
 export type SimCommand =
   | NoopCommand
   | GrantResourcesCommand
   | SpawnUnitCommand
-  | DespawnUnitCommand;
+  | DespawnUnitCommand
+  | MoveUnitsCommand
+  | StopUnitsCommand;
 
 /** A command tagged with the tick it must execute on. */
 export interface ScheduledCommand {
@@ -99,6 +118,39 @@ export function applyCommand(match: Match, command: SimCommand): void {
     case CommandKind.DespawnUnit: {
       if (command.handle === NULL_HANDLE) return;
       despawnUnit(match.units, command.handle | 0);
+      return;
+    }
+    case CommandKind.MoveUnits: {
+      if (!validPlayer(match, command.player)) return;
+      if (!Number.isInteger(command.goalCell) || command.goalCell < 0) return;
+      for (const handle of command.handles) {
+        const index = resolve(match.units, handle);
+        if (index < 0) continue;
+        // Ownership is checked here rather than trusted: in lockstep the
+        // command arrived over the wire, and a client must not be able to
+        // order someone else's army by sending a handle it does not own.
+        if (match.units.ownerId[index] !== command.player) continue;
+        match.units.goalCell[index] = command.goalCell | 0;
+        match.units.state[index] = UnitState.Moving;
+        // A fresh order deserves a fresh chance to get somewhere.
+        match.units.stuckTicks[index] = 0;
+        match.units.bestProgress[index] = 0x7fffffff;
+      }
+      return;
+    }
+    case CommandKind.StopUnits: {
+      if (!validPlayer(match, command.player)) return;
+      for (const handle of command.handles) {
+        const index = resolve(match.units, handle);
+        if (index < 0) continue;
+        if (match.units.ownerId[index] !== command.player) continue;
+        match.units.goalCell[index] = -1;
+        match.units.state[index] = UnitState.Idle;
+        match.units.stuckTicks[index] = 0;
+        match.units.bestProgress[index] = 0x7fffffff;
+        match.units.velX[index] = 0;
+        match.units.velZ[index] = 0;
+      }
       return;
     }
   }

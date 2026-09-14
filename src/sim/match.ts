@@ -11,12 +11,22 @@ import type { RandState } from './rand.ts';
 import { makeRand } from './rand.ts';
 import type { UnitStore } from './units.ts';
 import { createUnitStore, unitHashableArrays } from './units.ts';
+import type { FieldCache } from './navcache.ts';
+import { createFieldCache } from './navcache.ts';
+import type { SpatialHash } from './spatialhash.ts';
+import { createSpatialHash } from './spatialhash.ts';
+import type { CostGrid } from '../nav/grid.ts';
 
 export const MAX_PLAYERS = 8;
 
 export interface MatchInit {
   readonly seed: number;
   readonly playerCount: number;
+  /** Map dimensions, for sizing the spatial hash. Defaults to 64x64. */
+  readonly worldWidth?: number;
+  readonly worldHeight?: number;
+  /** The navigation grid the match pathfinds over. */
+  readonly costGrid?: CostGrid;
 }
 
 export interface Match {
@@ -29,6 +39,12 @@ export interface Match {
   readonly minerals: Int32Array;
   readonly gas: Int32Array;
   readonly units: UnitStore;
+  /** Flow fields, computed on demand and warmed by the worker. */
+  readonly fields: FieldCache;
+  /** Rebuilt each tick for neighbour queries. */
+  spatialHash: SpatialHash;
+  /** Navigation grid; null until a match is built from a world. */
+  costGrid: CostGrid | null;
 }
 
 export function createMatch(init: MatchInit): Match {
@@ -43,6 +59,9 @@ export function createMatch(init: MatchInit): Match {
     minerals: new Int32Array(MAX_PLAYERS),
     gas: new Int32Array(MAX_PLAYERS),
     units: createUnitStore(),
+    fields: createFieldCache(),
+    spatialHash: createSpatialHash(init.worldWidth ?? 64, init.worldHeight ?? 64),
+    costGrid: init.costGrid ?? null,
   };
 }
 

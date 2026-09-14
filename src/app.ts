@@ -22,6 +22,11 @@ import { createUnitRenderer } from './render/units.ts';
 import { createSelectionRings } from './render/selectionrings.ts';
 import { SelectionController } from './game/selectioncontroller.ts';
 import { MOUSE_LEFT } from './render/input.ts';
+import type { CostGrid } from './nav/grid.ts';
+import { createCostGrid, rebuildRegion } from './nav/grid.ts';
+import type { NavClient } from './nav/client.ts';
+import { createNavClient, createWorkerTransport } from './nav/client.ts';
+import type { FlowField } from './nav/flowfield.ts';
 import { createTerrainMaterial } from './render/terrainMaterial.ts';
 import { createDevOverlay } from './ui/devoverlay.ts';
 import { MODE_KEY, createModeController, modeFromLocation } from './mode.ts';
@@ -41,6 +46,8 @@ export interface App {
   readonly driver: Driver | null;
   startMatch(seed?: number): void;
   stopMatch(): void;
+  /** Solve a flow field to a cell. Used by orders, and by the browser check. */
+  requestPath(cell: number): Promise<FlowField | null>;
   dispose(): void;
 }
 
@@ -72,6 +79,12 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   flagOverlay.rebuild(ramps);
   const gizmos = createGizmos(renderer.scene, () => world);
   gizmos.rebuild(ramps);
+
+  // Pathfinding lives in a worker: a 256x256 field is several milliseconds,
+  // which is a visible hitch if it lands inside a frame.
+  let costGrid: CostGrid = createCostGrid(world);
+  const nav: NavClient = createNavClient(createWorkerTransport());
+  nav.setGrid(costGrid);
   const unitRenderer = createUnitRenderer(renderer.scene);
   const selectionRings = createSelectionRings(renderer.scene);
 
@@ -103,6 +116,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     flagOverlay.rebuild(ramps);
     flagOverlay.show(layer);
     gizmos.rebuild(ramps);
+    costGrid = createCostGrid(world);
+    nav.setGrid(costGrid);
     const cell = toFloat(world.cellSize);
     camera.setBounds(
       { minX: 0, maxX: world.width * cell, minZ: 0, maxZ: world.height * cell },
@@ -118,7 +133,13 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   function startMatch(seed = 1): void {
     const before = hashWorld(world);
     driver = createDriver(
-      createMatchFromWorld({ world, seed, playerCount: Math.max(1, world.startLocations.length) }),
+      createMatchFromWorld({
+        world,
+        seed,
+        playerCount: Math.max(1, world.startLocations.length),
+        costGrid,
+      }),
+      { world },
     );
     unitRenderer.captureTick(driver.match);
     unitRenderer.update(driver.match, world, ramps, 1);
@@ -233,6 +254,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
         ramps = terrain.ramps();
         flagOverlay.rebuild(ramps);
         gizmos.rebuild(ramps);
+        // Only the edited region is recomputed; the worker gets the result.
+        rebuildRegion(costGrid, world, x0, y0, x1, y1);
+        nav.setGrid(costGrid);
       },
       // Any session change can move a marker: a placed patch, an undo, a load.
       onChange: () => gizmos.rebuild(ramps),
@@ -345,6 +369,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     },
     startMatch,
     stopMatch,
+    requestPath: async (cell) => {
+      const field = await nav.request(cell);
+      overlay.set('nav', field ? `${nav.lastSolveMs().toFixed(1)} ms` : 'stale');
+      return field;
+    },
     dispose() {
       window.removeEventListener('keydown', onKey);
       canvas.removeEventListener('pointerdown', onPointerDown);
@@ -354,6 +383,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       window.removeEventListener('blur', onPointerLost);
       dragBoxElement.remove();
       selectionRings.dispose();
+      nav.dispose();
       mode.dispose();
       renderer.engine.stopRenderLoop();
       overlay.dispose();

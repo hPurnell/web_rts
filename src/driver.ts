@@ -12,6 +12,7 @@
 import type { SimCommand } from './sim/commands.ts';
 import type { Match } from './sim/match.ts';
 import { TICKS_PER_SECOND } from './sim/ticks.ts';
+import type { TickContext } from './sim/tick.ts';
 import { stepMatch } from './sim/tick.ts';
 
 export const SECONDS_PER_TICK = 1 / TICKS_PER_SECOND;
@@ -59,7 +60,7 @@ export interface Driver {
   droppedTicks(): number;
 }
 
-export function createDriver(match: Match): Driver {
+export function createDriver(match: Match, context?: TickContext): Driver {
   let accumulatorMicros = 0;
   let dropped = 0;
 
@@ -76,7 +77,7 @@ export function createDriver(match: Match): Driver {
       let stepped = 0;
       while (accumulatorMicros >= MICROS_PER_TICK && stepped < MAX_CATCHUP_TICKS) {
         beforeTick?.();
-        stepMatch(match, commandsFor?.(match.tick) ?? []);
+        stepMatch(match, commandsFor?.(match.tick) ?? [], context);
         accumulatorMicros -= MICROS_PER_TICK;
         stepped++;
       }

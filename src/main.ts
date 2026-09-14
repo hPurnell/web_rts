@@ -23,4 +23,6 @@ status.textContent =
 status.style.color = failed.length === 0 ? '#6ee7a8' : '#ff7a7a';
 overlay.appendChild(status);
 
-startApp(canvas, overlay);
+// Exposed for tools/browser-check.ts, which drives the real app rather than a
+// stripped-down copy of it.
+(window as unknown as Record<string, unknown>)['__app'] = startApp(canvas, overlay);
