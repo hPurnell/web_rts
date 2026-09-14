@@ -29,6 +29,24 @@ Pushing to `main` runs CI and publishes `dist/` to GitHub Pages
 source once in the repository settings. Vite's `base` is `/web_rts/`; override
 it with the `VITE_BASE` environment variable when serving from elsewhere.
 
+## Progress
+
+Milestones M0–M23 of [PLAN.md](PLAN.md) are done: foundation, world state,
+renderer, editor, simulation core, movement and fog of war. Phases 6–9
+(combat, economy, buildings, HUD, art, replays, netcode, AI) are not started.
+
+| Key | Does |
+|---|---|
+| F2 | Toggle the map editor |
+| F3 | Cycle the flag debug overlay |
+| F5 | Start or stop a test match |
+| F9 | Babylon Inspector (dev builds only) |
+| WASD / arrows / edge / middle-drag | Pan |
+| Wheel | Zoom |
+| Left-drag | Box select |
+| Right-click | Order (shift queues) |
+| 0–9 | Control groups (ctrl sets, shift adds) |
+
 ## Invariant enforcement
 
 `eslint-rules/` holds two custom rules applied to `src/sim/**`:
