@@ -65,8 +65,20 @@ async function main(): Promise<void> {
   // The canvas must actually be rendering: wait for the dev overlay's fps row
   // to report a real number, then drive the camera and check it moved.
   const failures: string[] = [];
+  /**
+   * Read a dev-overlay row, or '' when there is no such row.
+   *
+   * Some rows only appear when something has gone wrong — `desync` is the
+   * point — so waiting for one would make the check fail precisely when the
+   * game is behaving.
+   */
   const readOverlay = async (key: string): Promise<string> =>
-    (await page.textContent(`.dev-row:has(.dev-key:text-is("${key}")) .dev-value`)) ?? '';
+    page.evaluate((name) => {
+      const row = Array.from(document.querySelectorAll('.dev-row')).find(
+        (candidate) => candidate.firstElementChild?.textContent === name,
+      );
+      return row?.lastElementChild?.textContent ?? '';
+    }, key);
 
   await page.waitForFunction(
     () => {
