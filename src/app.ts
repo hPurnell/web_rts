@@ -9,16 +9,21 @@ import { toFloat } from './sim/fixed.ts';
 import type { World } from './sim/world.ts';
 import { MAX_TIER, hashWorld, worldFromCell } from './sim/world.ts';
 import { createMatchFromWorld } from './sim/matchinit.ts';
+import { stepMatch } from './sim/tick.ts';
+import { hashMatch } from './sim/statehash.ts';
 import { setAiPlayer } from './sim/ai.ts';
 import { spawnUnit } from './sim/units.ts';
 import { unitTypeById } from './sim/unittypes.ts';
 import { fromInt } from './sim/fixed.ts';
 import type { Driver } from './driver.ts';
-import { createDriver } from './driver.ts';
+import { SECONDS_PER_TICK, createDriver } from './driver.ts';
 import type { Replay, ReplayRecorder } from './sim/replay.ts';
 import { createRecorder, decodeReplay, describeReplay, encodeReplay } from './sim/replay.ts';
 import type { ReplayPlayer } from './replayplayer.ts';
 import { PLAYBACK_SPEEDS, createReplayPlayer } from './replayplayer.ts';
+import type { Lockstep } from './net/lockstep.ts';
+import { createLockstep } from './net/lockstep.ts';
+import { connect } from './net/transport.ts';
 import { createRenderer } from './render/engine.ts';
 import { RtsCamera } from './render/camera.ts';
 import { attachInput } from './render/input.ts';
@@ -74,6 +79,12 @@ export interface App {
   readonly lastReplay: Replay | null;
   startMatch(seed?: number): void;
   stopMatch(): void;
+  /** Join a networked match through a relay. */
+  joinMatch(url: string, matchId: string): Promise<void>;
+  /** The lockstep scheduler, when a networked match is running. */
+  readonly lockstep: Lockstep | null;
+  /** Hash of the running match's state, for cross-client comparison. */
+  stateHash(): number;
   /** Spawn a stress army, for profiling the renderer against M33's budget. */
   stressSpawn(perSide: number): number;
   playReplay(replay: Replay): void;
@@ -121,7 +132,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   const selectionRings = createSelectionRings(renderer.scene);
   let fogTexture = createFogTexture(renderer.scene, world.width, world.height);
 
-  /** The player this client controls. Multiplayer decides this at M31. */
+  /**
+   * The player this client controls. Single player is always 0; a networked
+   * match uses whatever id the relay assigned.
+   */
   const LOCAL_PLAYER = 0;
   const selection = new SelectionController(LOCAL_PLAYER);
 
@@ -253,6 +267,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   let recorder: ReplayRecorder | null = null;
   let lastReplay: Replay | null = null;
   let playback: ReplayPlayer | null = null;
+  /** Set while a networked match is running; null for single player. */
+  let lockstep: Lockstep | null = null;
+  /** The player this client controls in a networked match. */
+  let netPlayer = LOCAL_PLAYER;
 
   function startMatch(seed = 1): void {
     stopPlayback();
@@ -357,6 +375,65 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     overlay.set('replay', 'saved');
   }
 
+  /**
+   * Join a networked match.
+   *
+   * The relay decides the seed and the player ids, so every client builds the
+   * same opening position from the same world -- which is the only state that
+   * ever crosses the wire.
+   */
+  async function joinMatch(url: string, matchId: string): Promise<void> {
+    stopMatch();
+    stopPlayback();
+    overlay.set('net', 'connecting');
+
+    const connection = connect({
+      url,
+      matchId,
+      mapHash: hashWorld(world),
+      onClose: (reason) => overlay.set('net', reason),
+    });
+
+    const { playerId } = await connection.welcome;
+    if (playerId < 0) {
+      overlay.set('net', 'room full');
+      connection.close();
+      return;
+    }
+    overlay.set('net', `player ${playerId}, waiting`);
+
+    const start = await connection.start;
+    netPlayer = playerId;
+    const match = createMatchFromWorld({
+      world,
+      seed: start.seed,
+      playerCount: start.playerCount,
+      costGrid,
+    });
+    driver = createDriver(match, { world });
+    lockstep = createLockstep({
+      transport: connection,
+      playerId,
+      players: start.players,
+    });
+    recorder = createRecorder({
+      seed: start.seed,
+      playerCount: start.playerCount,
+      mapHash: hashWorld(world),
+    });
+
+    unitRenderer.captureTick(match);
+    unitRenderer.update(match, world, ramps, 1, netPlayer);
+    setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
+    const home = world.startLocations[playerId] ?? world.startLocations[0];
+    if (home) {
+      const centre = worldFromCell(world, home.cell);
+      camera.moveTo(toFloat(centre.x), toFloat(centre.z));
+    }
+    overlay.set('net', `player ${playerId} of ${start.playerCount}`);
+    overlay.set('match', 'multiplayer');
+  }
+
   function stopMatch(): void {
     if (driver && recorder) {
       lastReplay = recorder.finish(driver.match);
@@ -364,6 +441,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     }
     recorder = null;
     driver = null;
+    lockstep?.dispose();
+    lockstep = null;
+    netPlayer = LOCAL_PLAYER;
+    overlay.remove('net');
+    overlay.remove('waiting');
     mode.editor()?.refresh();
     unitRenderer.clear();
     ghostRenderer.clear();
@@ -447,17 +529,37 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       // Capture before stepping, so interpolation has both endpoints.
       const running = driver;
       const recording = recorder;
-      running.advance(
-        dt,
-        (tick) => {
-          const batch = pendingCommands;
-          pendingCommands = [];
-          recording?.record(tick, batch);
-          return batch;
-        },
-        () => unitRenderer.captureTick(running.match),
-        () => recording?.checkpoint(running.match),
-      );
+
+      if (lockstep) {
+        // In a networked match the scheduler decides when a tick may run, not
+        // the accumulator: a tick waits for every player's commands.
+        for (const command of pendingCommands) lockstep.issue(command);
+        pendingCommands = [];
+
+        const budget = Math.max(1, Math.round(dt / SECONDS_PER_TICK));
+        lockstep.step(running.match, budget, (commands) => {
+          unitRenderer.captureTick(running.match);
+          recording?.record(running.match.tick, commands);
+          stepMatch(running.match, commands, { world });
+          recording?.checkpoint(running.match);
+        });
+
+        overlay.set('waiting', lockstep.stalled() ? lockstep.waitingFor().join(',') : '-');
+        const halted = lockstep.halted();
+        if (halted) overlay.set('net', halted);
+      } else {
+        running.advance(
+          dt,
+          (tick) => {
+            const batch = pendingCommands;
+            pendingCommands = [];
+            recording?.record(tick, batch);
+            return batch;
+          },
+          () => unitRenderer.captureTick(running.match),
+          () => recording?.checkpoint(running.match),
+        );
+      }
       unitRenderer.update(running.match, world, ramps, running.alpha(), LOCAL_PLAYER);
 
       // Fog is recomputed every few ticks and remembered structures change
@@ -595,6 +697,14 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   });
   overlay.set('mode', 'game');
   if (modeFromLocation(window.location.search) === 'editor') void mode.set('editor');
+
+  // ?relay=ws://host:port&match=id joins a networked match on load, which is
+  // all two browsers need to play each other.
+  const params = new URLSearchParams(window.location.search);
+  const relayUrl = params.get('relay');
+  if (relayUrl) {
+    void joinMatch(relayUrl, params.get('match') ?? 'default');
+  }
 
   // Editor pointer routing. The camera keeps middle-drag; the brush uses left
   // and right, and only while the editor is open.
@@ -762,6 +872,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     },
     startMatch,
     stopMatch,
+    joinMatch,
+    get lockstep() {
+      return lockstep;
+    },
+    stateHash: () => (driver ? hashMatch(driver.match) : 0),
     stressSpawn(perSide) {
       if (!driver) return 0;
       const match = driver.match;

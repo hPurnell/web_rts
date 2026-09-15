@@ -17,6 +17,8 @@ See [PLAN.md](PLAN.md) for the architecture invariants and milestone plan.
 | `pnpm test:determinism` | The determinism harness alone |
 | `pnpm lint` | ESLint, including the invariant rules |
 | `pnpm typecheck` | `tsc --noEmit` |
+| `pnpm check:multiplayer` | Runs two browsers against a local relay and asserts they stay in sync |
+| `pnpm relay [port]` | Runs the match relay locally for development |
 | `pnpm check:bundle` | Asserts the editor stays code-split and the Inspector never ships |
 | `pnpm check:browser` | Builds, then loads the page in headless Chromium and fails on any console error |
 | `pnpm shot out.png` | Screenshots the running game in headless Chromium (`--wheel`, `--keys`, `--wait`) |
@@ -33,10 +35,11 @@ it with the `VITE_BASE` environment variable when serving from elsewhere.
 
 ## Progress
 
-Milestones M0–M27 and M30 of [PLAN.md](PLAN.md) are done: foundation, world
+Milestones M0–M27 and M30–M33 of [PLAN.md](PLAN.md) are done: foundation, world
 state, renderer, editor, simulation core, movement, fog of war, combat,
-economy, buildings and the HUD, plus replays. M28–M29 (art) are blocked on an
-asset collection that is not in the repository. M31 (netcode) is not started.
+economy, buildings and the HUD, plus replays, lockstep multiplayer, a skirmish
+bot and a performance baseline. M28–M29 (art) are blocked on an asset collection that is not in the
+repository.
 
 ### Performance
 
@@ -93,3 +96,21 @@ Every simulation milestone **extends** `SCRIPT` and regenerates the golden hash
 with `pnpm gen:golden-sim`, and says so in the commit. A golden hash that
 changes without a matching script change is a desync introduced by that commit,
 not a test that needs updating.
+
+## Multiplayer
+
+Lockstep: only commands cross the wire, never state, so the traffic does not
+grow with the size of the army. A tick does not run until every player's
+commands for it have arrived — no prediction and no reconciliation — and state
+hashes are exchanged every 100 ticks, halting the match with a tick number if
+they ever disagree.
+
+`src/net/room.ts` is the relay: it assigns player ids, starts the match, and
+forwards turns. It never simulates anything, so it cannot be a bottleneck and
+cannot desync. It runs as a Cloudflare Durable Object (`wrangler.toml`,
+`src/net/worker.ts`) and, unchanged, as a local server for development
+(`pnpm relay`).
+
+To play locally: run `pnpm relay`, then open two browsers on
+`?relay=ws://localhost:8787/?match=demo&match=demo`. `pnpm check:multiplayer`
+does exactly that headlessly and asserts the two clients stay bit-identical.

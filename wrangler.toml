@@ -1,0 +1,20 @@
+# Cloudflare Worker hosting the match relay.
+#
+# The relay is a Durable Object per match: one object, one room, holding
+# nothing but the connected sockets. Deploy with `wrangler deploy`; the game
+# connects with ?relay=wss://<worker-host>/?match=<id>.
+#
+# Nothing in src/ imports this file, and the game plays single-player without
+# it. tools/relay.ts runs the same relay locally for development.
+
+name = "web-rts-relay"
+main = "src/net/worker.ts"
+compatibility_date = "2024-09-23"
+
+[[durable_objects.bindings]]
+name = "MATCH_ROOM"
+class_name = "MatchRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MatchRoom"]

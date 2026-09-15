@@ -36,6 +36,7 @@ jobs:
       - run: pnpm check:bundle
       - run: pnpm exec playwright install --with-deps chromium-headless-shell
       - run: pnpm exec tsx tools/browser-check.ts
+      - run: pnpm check:multiplayer
       - uses: actions/upload-pages-artifact@v3
         if: github.ref == 'refs/heads/main'
         with:
