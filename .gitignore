@@ -3,3 +3,10 @@ dist
 coverage
 *.local
 .DS_Store
+
+# Generals content pack: nothing derived from the game is ever committed.
+# A converted mesh is still derived from the original — passing through a
+# converter does not make it committable. See generals/PLAN.md.
+generals/generals.local.json
+generals/.cache/
+generals/assets/
