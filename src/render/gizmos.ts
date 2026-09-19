@@ -18,14 +18,14 @@ import type { Scene } from '@babylonjs/core/scene';
 import type { World } from '../sim/world.ts';
 import { ResourceType } from '../sim/world.ts';
 import { toFloat } from '../sim/fixed.ts';
-import type { RampSlopes } from './terrain.ts';
-import { cornerHeights } from './terrain.ts';
+import type { HeightOverrides } from '../sim/terrain.ts';
+import { cellCornerY } from './terrain.ts';
 
 export interface Gizmos {
   visible(): boolean;
   setVisible(visible: boolean): void;
   /** Re-read the world. Cheap enough to call on every edit. */
-  rebuild(ramps: RampSlopes): void;
+  rebuild(overrides: HeightOverrides | null): void;
   dispose(): void;
 }
 
@@ -38,8 +38,8 @@ function flatMaterial(scene: Scene, name: string, color: Color3): StandardMateri
 }
 
 /** Average of a cell's corner heights: the marker sits on the surface. */
-function surfaceHeight(world: World, ramps: RampSlopes, cell: number): number {
-  const h = cornerHeights(world, ramps, cell);
+function surfaceHeight(world: World, overrides: HeightOverrides | null, cell: number): number {
+  const h = cellCornerY(world, cell, overrides);
   return ((h[0] as number) + (h[1] as number) + (h[2] as number) + (h[3] as number)) / 4;
 }
 
@@ -58,13 +58,13 @@ export interface GizmoPlacements {
  * Where every marker goes, in world space. Separated from the Babylon plumbing
  * below so the placement itself is testable without a render.
  */
-export function gizmoPlacements(world: World, ramps: RampSlopes): GizmoPlacements {
+export function gizmoPlacements(world: World, overrides: HeightOverrides | null): GizmoPlacements {
   const cellSize = toFloat(world.cellSize);
   const placements: GizmoPlacements = { minerals: [], gas: [], starts: [] };
 
   const at = (cell: number, lift: number): [number, number, number] => [
     ((cell % world.width) + 0.5) * cellSize,
-    surfaceHeight(world, ramps, cell) + lift,
+    surfaceHeight(world, overrides, cell) + lift,
     (((cell / world.width) | 0) + 0.5) * cellSize,
   ];
 
@@ -131,8 +131,8 @@ export function createGizmos(scene: Scene, getWorld: () => World): Gizmos {
       Matrix.Compose(Vector3.One(), rotation, new Vector3(p[0], p[1], p[2])),
     );
 
-  const rebuild = (ramps: RampSlopes): void => {
-    const placements = gizmoPlacements(getWorld(), ramps);
+  const rebuild = (overrides: HeightOverrides | null): void => {
+    const placements = gizmoPlacements(getWorld(), overrides);
     writeInstances(minerals, toMatrices(placements.minerals, upright));
     writeInstances(gas, toMatrices(placements.gas, upright));
     writeInstances(start, toMatrices(placements.starts, flat));

@@ -27,6 +27,13 @@ import type { UnitType } from './unittypes.ts';
 import type { World } from './world.ts';
 import { BUILDABLE, cellIndex, worldFromCell } from './world.ts';
 import { isPassable, setOccupied } from '../nav/grid.ts';
+import {
+  MAX_BUILD_SLOPE,
+  cellCorners,
+  cornerHeight,
+  setOverride,
+  slopeAtMost,
+} from './terrain.ts';
 import type { CostGrid } from '../nav/grid.ts';
 import { add, div, fromInt, mul, sub } from './fixed.ts';
 
@@ -84,17 +91,22 @@ export function canPlace(
   cell: number,
 ): PlacementCheck {
   if (!type.isStructure) return REFUSE('that is not a building');
-  if (cell < 0 || cell >= world.tier.length) return REFUSE('place that on the map');
+  if (cell < 0 || cell >= world.flags.length) return REFUSE('place that on the map');
 
   const cells = footprintCells(world, type, cell);
   if (cells.length === 0) return REFUSE('it does not fit on the map');
 
-  const tier = world.tier[cell] as number;
   for (const footprint of cells) {
     if (((world.flags[footprint] as number) & BUILDABLE) === 0) {
       return REFUSE('the ground there is not buildable');
     }
-    if (world.tier[footprint] !== tier) return REFUSE('a building needs level ground');
+    // Tiers made this a question of equality: same tier or refuse. A
+    // heightfield almost never has two cells at exactly the same height, so
+    // the question becomes one of degree — ground gentle enough that levelling
+    // it would not leave the building standing on a visible step.
+    if (!slopeAtMost(world, footprint, MAX_BUILD_SLOPE, match.terrain)) {
+      return REFUSE('the ground there is too steep to build on');
+    }
     if (match.costGrid && !isPassable(match.costGrid, footprint)) {
       return REFUSE('something is already there');
     }
@@ -130,6 +142,8 @@ export function placeBuilding(
   });
   if (handle === NULL_HANDLE) return -1;
 
+  levelFootprint(match, world, check.cells);
+
   const index = resolve(match.units, handle);
   match.minerals[player] = (match.minerals[player] as number) - type.mineralCost;
   match.gas[player] = (match.gas[player] as number) - type.gasCost;
@@ -139,6 +153,34 @@ export function placeBuilding(
   match.units.hp[index] = Math.max(1, Math.floor(type.maxHp / 10));
   match.units.state[index] = UnitState.Building;
   return handle;
+}
+
+/**
+ * Flatten the ground under a footprint into the match's height overrides.
+ *
+ * Even ground that passed the slope check is not flat, and a building modelled
+ * as a box would sink a corner into the hill or float one above it. Levelling
+ * to the mean height of the footprint's corners splits the difference: the
+ * building sits on a small plinth cut into the slope, which is what the eye
+ * expects and what every RTS since Generals has done.
+ *
+ * This writes to `match.terrain`, never to `world.heights` — invariant 5. The
+ * world stays exactly as the editor saved it, so `hashWorld` does not move and
+ * a replay of this match reproduces the levelling from the commands alone.
+ */
+function levelFootprint(match: Match, world: World, cells: readonly number[]): void {
+  const corners = new Set<number>();
+  for (const cell of cells) {
+    for (const corner of cellCorners(world, cell)) corners.add(corner);
+  }
+
+  let total = 0;
+  for (const corner of corners) total += cornerHeight(world, corner, match.terrain);
+  // Integer division: the mean is deterministic and the remainder is a
+  // fraction of a fixed-point unit, far below anything visible.
+  const mean = Math.trunc(total / corners.size);
+
+  for (const corner of corners) setOverride(match.terrain, corner, mean);
 }
 
 export interface BuildingContext {

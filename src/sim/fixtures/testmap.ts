@@ -1,84 +1,127 @@
 /**
- * The 64x64 test map. Three tiers, two ramps, four resource clusters, two
- * start locations — the fixture every terrain, pathing, vision and editor test
- * runs against.
+ * The 128x128 test map: the fixture every terrain, pathing, vision and editor
+ * test runs against.
  *
- * Layout (x to the right, y downward):
+ * A central basin, two raised plateaus each reachable by one sculpted ramp, and
+ * a ridge too steep to climb that splits the basin into two approaches. It is
+ * built by code rather than stored as data so the intent stays readable, and
+ * because it is the clearest statement of what this terrain model is for:
+ * there are no tiers and no ramp objects here, only ground of varying
+ * steepness, and which parts of it are walkable falls out of the slope rules.
  *
- *   +---------------------------------------+
- *   | tier 2 plateau (NW)      tier 1 shelf |
- *   |   start 0                             |
- *   |            ramp v                     |
- *   |======================== tier 0 basin ==|
- *   |                          ramp ^       |
- *   | tier 1 shelf (SW)     tier 2 plateau  |
- *   |                             start 1   |
- *   +---------------------------------------+
- *
- * It is built by code rather than stored as data so the intent stays readable
- * and the invariants below are checked on every load.
+ *   +--------------------------------------------------+
+ *   |  plateau A        |                              |
+ *   |  (start 0)      ==+== ramp A                     |
+ *   |                   |            ridge             |
+ *   |         basin     |         (impassable)         |
+ *   |                            ==+== ramp B          |
+ *   |                              |      plateau B    |
+ *   |                              |      (start 1)    |
+ *   +--------------------------------------------------+
  */
 import type { World } from '../world.ts';
-import {
-  BUILDABLE,
-  RAMP,
-  ResourceType,
-  VISION_BLOCKER,
-  WALKABLE,
-  cellIndex,
-  createWorld,
-} from '../world.ts';
+import { BUILDABLE, ResourceType, VISION_BLOCKER, cellIndex, createWorld } from '../world.ts';
+import { cornerStride } from '../terrain.ts';
+import type { Fixed } from '../fixed.ts';
+import { fromInt, fromRatio, mul } from '../fixed.ts';
 
-export const TEST_MAP_SIZE = 64;
+export const TEST_MAP_SIZE = 128;
 
-interface Rect {
+/** Height of the two plateaus, in world units. */
+const PLATEAU_HEIGHT = fromInt(6);
+/** Height of the impassable ridge. */
+const RIDGE_HEIGHT = fromInt(10);
+
+interface Box {
   x0: number;
-  y0: number;
+  z0: number;
   x1: number;
-  y1: number;
+  z1: number;
 }
 
-const NW_PLATEAU: Rect = { x0: 0, y0: 0, x1: 25, y1: 20 };
-const NE_SHELF: Rect = { x0: 40, y0: 0, x1: 63, y1: 16 };
-const SE_PLATEAU: Rect = { x0: 38, y0: 43, x1: 63, y1: 63 };
-const SW_SHELF: Rect = { x0: 0, y0: 47, x1: 23, y1: 63 };
+const PLATEAU_A: Box = { x0: 8, z0: 8, x1: 44, z1: 44 };
+const PLATEAU_B: Box = { x0: 84, z0: 84, x1: 120, z1: 120 };
+/**
+ * The ridge is a crest, not a wall with a top.
+ *
+ * A zero-width box falling away over two cells has no flat summit, so there is
+ * nowhere up there to strand. The first version of this fixture gave it a
+ * five-cell top, and validate() immediately reported 184 cells of ground that
+ * could be seen and never reached — which is exactly the mistake sculpted
+ * terrain invites and exactly what that check is for.
+ */
+const RIDGE: Box = { x0: 64, z0: 42, x1: 64, z1: 88 };
+const RIDGE_SKIRT_CELLS = 2;
 
-/** Ramps are three cells wide, matching the SC2 feel. */
-const NW_RAMP: Rect = { x0: 20, y0: 20, x1: 22, y1: 23 };
-const SE_RAMP: Rect = { x0: 41, y0: 40, x1: 43, y1: 43 };
-const NE_RAMP: Rect = { x0: 44, y0: 16, x1: 46, y1: 19 };
-const SW_RAMP: Rect = { x0: 17, y0: 44, x1: 19, y1: 47 };
-
-function fillTier(world: World, rect: Rect, tier: number): void {
-  for (let y = rect.y0; y <= rect.y1; y++) {
-    for (let x = rect.x0; x <= rect.x1; x++) {
-      const cell = cellIndex(world, x, y);
-      if (cell >= 0) world.tier[cell] = tier;
-    }
-  }
+/** Ramps: a corridor whose height falls linearly from `from` to `to`. */
+interface Ramp {
+  readonly box: Box;
+  /** The axis the ramp descends along, and which end is high. */
+  readonly axis: 'x' | 'z';
+  readonly highAt: number;
+  readonly lowAt: number;
+  readonly top: Fixed;
 }
 
-function fillRamp(world: World, rect: Rect, tier: number): void {
-  for (let y = rect.y0; y <= rect.y1; y++) {
-    for (let x = rect.x0; x <= rect.x1; x++) {
-      const cell = cellIndex(world, x, y);
-      if (cell < 0) continue;
-      world.tier[cell] = tier;
-      world.flags[cell] = WALKABLE | RAMP;
-    }
-  }
+const RAMP_A: Ramp = {
+  box: { x0: 44, z0: 22, x1: 64, z1: 30 },
+  axis: 'x',
+  highAt: 44,
+  lowAt: 64,
+  top: PLATEAU_HEIGHT,
+};
+const RAMP_B: Ramp = {
+  box: { x0: 64, z0: 98, x1: 84, z1: 106 },
+  axis: 'x',
+  highAt: 84,
+  lowAt: 64,
+  top: PLATEAU_HEIGHT,
+};
+
+/**
+ * How far outside a plateau its skirt falls to nothing.
+ *
+ * Two cells for six units of height is a slope of 3, comfortably a cliff. This
+ * is what makes the plateaus defensible: the only way up is the ramp, and that
+ * is a consequence of the geometry rather than a flag saying so.
+ */
+const SKIRT_CELLS = 2;
+
+/** Chebyshev distance from a point to a box; zero inside it. */
+function distanceOutside(box: Box, cx: number, cz: number): number {
+  const dx = Math.max(0, Math.max(box.x0 - cx, cx - box.x1));
+  const dz = Math.max(0, Math.max(box.z0 - cz, cz - box.z1));
+  return Math.max(dx, dz);
 }
 
-function addCluster(world: World, cx: number, cy: number, type: ResourceType, count: number): void {
+/** A flat top with a linear skirt: `top` inside, falling to zero over `skirt`. */
+function plateauHeight(box: Box, top: Fixed, skirt: number, cx: number, cz: number): Fixed {
+  const outside = distanceOutside(box, cx, cz);
+  if (outside === 0) return top;
+  if (outside >= skirt) return 0;
+  return mul(top, fromRatio(skirt - outside, skirt));
+}
+
+/** Linear descent along the ramp's axis, zero outside its corridor. */
+function rampHeight(ramp: Ramp, cx: number, cz: number): Fixed {
+  if (distanceOutside(ramp.box, cx, cz) > 0) return 0;
+  const along = ramp.axis === 'x' ? cx : cz;
+  const span = Math.abs(ramp.lowAt - ramp.highAt);
+  if (span === 0) return ramp.top;
+  const travelled = Math.min(span, Math.abs(along - ramp.highAt));
+  return mul(ramp.top, fromRatio(span - travelled, span));
+}
+
+function addCluster(world: World, cx: number, cz: number, type: ResourceType, count: number): void {
   for (let i = 0; i < count; i++) {
-    const cell = cellIndex(world, cx + i, cy);
+    const cell = cellIndex(world, cx + i, cz);
     if (cell < 0) continue;
     world.resourceNodes.push({
       cell,
       type,
       amount: type === ResourceType.Minerals ? 1500 : 2500,
     });
-    // Resource patches block building and sight, like SC2 mineral lines.
+    // Resource patches block building and block sight, like a mineral line.
     world.flags[cell] = ((world.flags[cell] as number) & ~BUILDABLE) | VISION_BLOCKER;
   }
 }
@@ -86,35 +129,30 @@ function addCluster(world: World, cx: number, cy: number, type: ResourceType, co
 export function createTestMap(): World {
   const world = createWorld({ width: TEST_MAP_SIZE, height: TEST_MAP_SIZE });
 
-  // Tier 0 is the basin across the middle; everything else is raised.
-  fillTier(world, NW_PLATEAU, 2);
-  fillTier(world, NE_SHELF, 1);
-  fillTier(world, SE_PLATEAU, 2);
-  fillTier(world, SW_SHELF, 1);
+  // Sculpt every corner from the shapes above. Taking the maximum means a ramp
+  // cuts through the skirt it crosses: at the plateau edge both are at full
+  // height, and from there the skirt plunges while the ramp eases down.
+  const stride = cornerStride(world);
+  for (let cz = 0; cz <= world.height; cz++) {
+    for (let cx = 0; cx <= world.width; cx++) {
+      let height = plateauHeight(PLATEAU_A, PLATEAU_HEIGHT, SKIRT_CELLS, cx, cz);
+      height = Math.max(height, plateauHeight(PLATEAU_B, PLATEAU_HEIGHT, SKIRT_CELLS, cx, cz));
+      height = Math.max(height, plateauHeight(RIDGE, RIDGE_HEIGHT, RIDGE_SKIRT_CELLS, cx, cz));
+      height = Math.max(height, rampHeight(RAMP_A, cx, cz));
+      height = Math.max(height, rampHeight(RAMP_B, cx, cz));
+      world.heights[cz * stride + cx] = height;
+    }
+  }
 
-  // One ramp out of each raised region. The plateau ramps drop two tiers, so
-  // they sit on the tier between their ends; the shelf ramps drop one, so they
-  // are cut into the cliff at the basin's tier. Both are exactly what the
-  // editor's ramp tool produces from a drag (see planRamp).
-  fillRamp(world, NW_RAMP, 1); // tier 2 plateau -> basin
-  fillRamp(world, NE_RAMP, 0); // tier 1 shelf -> basin
-  fillRamp(world, SE_RAMP, 1);
-  fillRamp(world, SW_RAMP, 0);
+  addCluster(world, 14, 16, ResourceType.Minerals, 8);
+  addCluster(world, 96, 112, ResourceType.Minerals, 8);
+  addCluster(world, 30, 70, ResourceType.Minerals, 8);
+  addCluster(world, 90, 40, ResourceType.Minerals, 8);
+  addCluster(world, 14, 26, ResourceType.Gas, 2);
+  addCluster(world, 108, 100, ResourceType.Gas, 2);
 
-  // The apron cells directly below each plateau ramp sit at tier 1 so the ramp
-  // never bridges two tiers at once.
-  fillTier(world, { x0: 18, y0: 20, x1: 24, y1: 22 }, 1);
-  fillTier(world, { x0: 39, y0: 41, x1: 45, y1: 43 }, 1);
-
-  addCluster(world, 4, 6, ResourceType.Minerals, 8);
-  addCluster(world, 48, 4, ResourceType.Minerals, 8);
-  addCluster(world, 46, 54, ResourceType.Minerals, 8);
-  addCluster(world, 4, 54, ResourceType.Minerals, 8);
-  addCluster(world, 14, 9, ResourceType.Gas, 2);
-  addCluster(world, 48, 50, ResourceType.Gas, 2);
-
-  world.startLocations.push({ cell: cellIndex(world, 8, 12) });
-  world.startLocations.push({ cell: cellIndex(world, 54, 50) });
+  world.startLocations.push({ cell: cellIndex(world, 20, 20) });
+  world.startLocations.push({ cell: cellIndex(world, 108, 108) });
 
   return world;
 }

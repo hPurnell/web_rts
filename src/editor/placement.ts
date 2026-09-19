@@ -7,7 +7,8 @@
  * line does in SC2.
  */
 import type { ResourceNode, StartLocation, World } from '../sim/world.ts';
-import { BUILDABLE, RAMP, ResourceType, VISION_BLOCKER, WALKABLE, cellIndex } from '../sim/world.ts';
+import { BUILDABLE, ResourceType, VISION_BLOCKER, WALKABLE, cellIndex } from '../sim/world.ts';
+import { MAX_BUILD_SLOPE, slopeAtMost } from '../sim/terrain.ts';
 
 /** Default contents of a newly placed patch. */
 export const MINERAL_AMOUNT = 1500;
@@ -42,10 +43,12 @@ export function placeResourceNode(
   cell: number,
   type: ResourceType,
 ): PlacementResult {
-  if (cell < 0 || cell >= world.tier.length) return REFUSE('place that on the map');
+  if (cell < 0 || cell >= world.flags.length) return REFUSE('place that on the map');
   const flags = world.flags[cell] as number;
   if ((flags & WALKABLE) === 0) return REFUSE('resource patches need walkable ground');
-  if ((flags & RAMP) !== 0) return REFUSE('a resource patch cannot sit on a ramp');
+  if (!slopeAtMost(world, cell, MAX_BUILD_SLOPE)) {
+    return REFUSE('a resource patch needs level ground');
+  }
   if (world.resourceNodes.some((n) => n.cell === cell)) return REFUSE('there is already a patch here');
   if (world.startLocations.some((s) => s.cell === cell)) {
     return REFUSE('that cell is a start location');
@@ -53,14 +56,15 @@ export function placeResourceNode(
 
   // Gas geysers are larger, so the whole footprint has to be clear and flat.
   if (type === ResourceType.Gas) {
-    const cx = cellIndex(world, 0, 0) >= 0 ? cell % world.width : 0;
+    const cx = cell % world.width;
     const cy = (cell / world.width) | 0;
-    const tier = world.tier[cell] as number;
     for (let oy = 0; oy < GAS_FOOTPRINT; oy++) {
       for (let ox = 0; ox < GAS_FOOTPRINT; ox++) {
         const foot = cellIndex(world, cx + ox, cy + oy);
         if (foot < 0) return REFUSE('the geyser does not fit here');
-        if (world.tier[foot] !== tier) return REFUSE('a geyser needs flat ground');
+        if (!slopeAtMost(world, foot, MAX_BUILD_SLOPE)) {
+          return REFUSE('a geyser needs level ground');
+        }
       }
     }
   }
@@ -85,9 +89,12 @@ export function removeResourceNode(world: World, cell: number): PlacementResult 
 }
 
 export function placeStartLocation(world: World, cell: number): PlacementResult {
-  if (cell < 0 || cell >= world.tier.length) return REFUSE('place that on the map');
+  if (cell < 0 || cell >= world.flags.length) return REFUSE('place that on the map');
   const flags = world.flags[cell] as number;
   if ((flags & WALKABLE) === 0) return REFUSE('a start location needs walkable ground');
+  if (!slopeAtMost(world, cell, MAX_BUILD_SLOPE)) {
+    return REFUSE('a start location needs level ground to build on');
+  }
   if (world.resourceNodes.some((n) => n.cell === cell)) return REFUSE('there is a resource patch here');
   if (world.startLocations.some((s) => s.cell === cell)) return REFUSE('there is already a start here');
   const starts = world.startLocations.map((s) => ({ ...s }));

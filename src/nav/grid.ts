@@ -6,19 +6,41 @@
  * plain Uint8Arrays so they can be handed to the pathfinding worker as
  * transferable buffers (invariant 6 rules out SharedArrayBuffer).
  *
- * Connectivity, not geometry, is what makes cliffs real: two cells are
- * neighbours only if they share a tier, or if a ramp bridges exactly one tier
- * between them. A unit can therefore stand a metre from the cell below a cliff
- * and have no route to it but the ramp.
+ * Connectivity, not geometry, is what makes cliffs real. With a heightfield
+ * that takes two rules, and both are needed:
+ *
+ *   - a cell is passable if its own slope is gentle enough, and
+ *   - a step between two cells is passable if the slope *between them* is.
+ *
+ * The second does not follow from the first. Two cells can each be perfectly
+ * flat with a cliff face between them, which is precisely the shape the top
+ * and bottom of a drop have; checking only the cells would let units walk off
+ * ledges. A ramp is not a special case here — it is simply ground where both
+ * rules happen to pass.
  */
 import type { World } from '../sim/world.ts';
-import { RAMP, WALKABLE, cellIndex, tiersConnect } from '../sim/world.ts';
+import { WALKABLE, cellIndex } from '../sim/world.ts';
+import type { HeightOverrides } from '../sim/terrain.ts';
+import {
+  MAX_TRAVERSABLE_SLOPE,
+  cellRelief,
+  slopeAtMost,
+  stepSlopeAtMost,
+} from '../sim/terrain.ts';
+import { div, mul } from '../sim/fixed.ts';
 
 /** Impassable. Every other value is a relative movement cost. */
 export const BLOCKED = 0;
 export const BASE_COST = 1;
-/** Ramps cost a little more, so paths prefer flat ground when both work. */
-export const RAMP_COST = 2;
+/**
+ * Cost of the steepest ground a unit will still walk on.
+ *
+ * Cost rises with slope between these, so a path over a hill is only taken
+ * when going around it is genuinely longer. This is the single rule that makes
+ * continuous terrain feel different from a flat plane with obstacles: armies
+ * follow the valleys without anyone telling them to.
+ */
+export const MAX_SLOPE_COST = 8;
 
 /** Neighbour directions, in bit order. */
 export const DIRECTIONS: readonly [number, number][] = [
@@ -68,8 +90,12 @@ export function createCostGrid(world: World): CostGrid {
 }
 
 /** Rebuild the whole grid. */
-export function rebuildCostGrid(grid: CostGrid, world: World): void {
-  rebuildRegion(grid, world, 0, 0, world.width - 1, world.height - 1);
+export function rebuildCostGrid(
+  grid: CostGrid,
+  world: World,
+  overrides?: HeightOverrides | null,
+): void {
+  rebuildRegion(grid, world, 0, 0, world.width - 1, world.height - 1, overrides);
 }
 
 /**
@@ -86,6 +112,10 @@ export function rebuildRegion(
   y0: number,
   x1: number,
   y1: number,
+  /** A match's terrain changes, when rebuilding during a match rather than in
+   * the editor. Levelling a building footprint changes what is traversable
+   * around it, so the grid has to see the same ground the units will. */
+  overrides?: HeightOverrides | null,
 ): number {
   const blocked = occupiedCells(world);
 
@@ -99,7 +129,7 @@ export function rebuildRegion(
   for (let y = top; y <= bottom; y++) {
     for (let x = left; x <= right; x++) {
       const cell = y * world.width + x;
-      grid.cost[cell] = cellCost(world, grid, cell, blocked);
+      grid.cost[cell] = cellCost(world, grid, cell, blocked, overrides);
     }
   }
 
@@ -124,17 +154,31 @@ function occupiedCells(world: World): Set<number> {
   return blocked;
 }
 
+/**
+ * Cost of standing on a cell, or BLOCKED.
+ *
+ * Interpolates from BASE_COST on the flat to MAX_SLOPE_COST at the steepest
+ * ground a unit will still walk on. Staying in integers keeps the result a
+ * small byte the flow field can bucket on.
+ */
 function cellCost(
   world: World,
   grid: CostGrid,
   cell: number,
   blocked: ReadonlySet<number>,
+  overrides?: HeightOverrides | null,
 ): number {
   const flags = world.flags[cell] as number;
   if ((flags & WALKABLE) === 0) return BLOCKED;
   if (blocked.has(cell)) return BLOCKED;
   if ((grid.occupied[cell] as number) !== 0) return BLOCKED;
-  return (flags & RAMP) !== 0 ? RAMP_COST : BASE_COST;
+  if (!slopeAtMost(world, cell, MAX_TRAVERSABLE_SLOPE, overrides)) return BLOCKED;
+
+  const limit = mul(MAX_TRAVERSABLE_SLOPE, world.cellSize);
+  if (limit <= 0) return BASE_COST;
+  const steepness = div(cellRelief(world, cell, overrides), limit); // 0..1 in Q16.16
+  const cost = BASE_COST + ((steepness * (MAX_SLOPE_COST - BASE_COST)) >> 16);
+  return cost > MAX_SLOPE_COST ? MAX_SLOPE_COST : cost;
 }
 
 /**
@@ -176,7 +220,8 @@ function cellLinks(world: World, grid: CostGrid, cx: number, cy: number): number
     const neighbour = cellIndex(world, cx + dx, cy + dy);
     if (neighbour < 0) continue;
     if (grid.cost[neighbour] === BLOCKED) continue;
-    if (!tiersConnect(world, cell, neighbour)) continue;
+    // The step itself, not just the two cells.
+    if (!stepSlopeAtMost(world, cell, neighbour, MAX_TRAVERSABLE_SLOPE)) continue;
 
     if (IS_DIAGONAL[dir]) {
       // No cutting a corner between two blocked cells, and no diagonal move
@@ -186,8 +231,18 @@ function cellLinks(world: World, grid: CostGrid, cx: number, cy: number): number
       const sideB = cellIndex(world, cx, cy + dy);
       if (sideA < 0 || sideB < 0) continue;
       if (grid.cost[sideA] === BLOCKED || grid.cost[sideB] === BLOCKED) continue;
-      if (!tiersConnect(world, cell, sideA) || !tiersConnect(world, cell, sideB)) continue;
-      if (!tiersConnect(world, sideA, neighbour) || !tiersConnect(world, sideB, neighbour)) continue;
+      if (
+        !stepSlopeAtMost(world, cell, sideA, MAX_TRAVERSABLE_SLOPE) ||
+        !stepSlopeAtMost(world, cell, sideB, MAX_TRAVERSABLE_SLOPE)
+      ) {
+        continue;
+      }
+      if (
+        !stepSlopeAtMost(world, sideA, neighbour, MAX_TRAVERSABLE_SLOPE) ||
+        !stepSlopeAtMost(world, sideB, neighbour, MAX_TRAVERSABLE_SLOPE)
+      ) {
+        continue;
+      }
     }
 
     links |= 1 << dir;

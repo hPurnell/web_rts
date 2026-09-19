@@ -46,8 +46,8 @@ uniform vec3 lightDirection;
 uniform vec3 groundLow;
 uniform vec3 groundHigh;
 uniform vec3 cliffColor;
-uniform float tierHeight;
-uniform float maxTier;
+uniform float heightRange;
+uniform float cliffSlope;
 uniform sampler2D fogSampler;
 uniform vec2 fogTexel;
 uniform float fogEnabled;
@@ -72,13 +72,21 @@ void main(void) {
   vec3 n = normalize(vNormal);
   float up = clamp(n.y, 0.0, 1.0);
 
-  // Tier tint: higher ground reads lighter, which is what makes discrete
-  // cliffs legible from an RTS camera.
-  float tier = clamp(vPosition.y / max(tierHeight, 0.0001) / max(maxTier, 1.0), 0.0, 1.0);
-  vec3 flat_ = mix(groundLow, groundHigh, tier);
+  // Height tint: higher ground reads lighter. With tiers this produced five
+  // flat bands and the terraces read themselves; over a heightfield it is a
+  // smooth gradient, and on its own it would be mush.
+  float elevation = clamp(vPosition.y / max(heightRange, 0.0001), 0.0, 1.0);
+  vec3 flat_ = mix(groundLow, groundHigh, elevation);
 
-  // Walls are near-vertical; blend to the cliff colour by how vertical we are.
-  vec3 base = mix(cliffColor, flat_, up);
+  // Slope does the work the tier step used to. The normal's y component is
+  // the cosine of the surface angle, so rise over run is sin/cos -- the same
+  // quantity the simulation calls slope. Shading against the simulation's own
+  // traversable limit puts the colour change exactly where the ground stops
+  // being walkable, rather than somewhere near it.
+  float rise = sqrt(max(0.0, 1.0 - up * up));
+  float slope = rise / max(up, 0.0001);
+  float cliffness = smoothstep(cliffSlope * 0.5, cliffSlope, slope);
+  vec3 base = mix(flat_, cliffColor, cliffness);
 
   float grain = noise(vUv * 3.0) * 0.12 + noise(vUv * 11.0) * 0.06;
   base *= 0.92 + grain;
@@ -87,9 +95,9 @@ void main(void) {
   float ambient = 0.42 + 0.18 * up;
   vec3 color = base * (ambient + lambert * 0.85);
 
-  // Contact darkening at the foot of cliffs, so walls do not float.
-  float foot = smoothstep(0.0, 0.35, fract(vPosition.y / max(tierHeight, 0.0001)));
-  color *= mix(1.0, 0.86, (1.0 - up) * (1.0 - foot));
+  // Steep ground is darkened a little beyond what the lambert term gives it,
+  // so a slope reads as a slope even when the sun is behind the camera.
+  color *= mix(1.0, 0.84, cliffness);
 
   if (fogEnabled > 0.5) {
     // A small cross blur on top of the texture's own bilinear filtering. One
@@ -112,8 +120,10 @@ void main(void) {
 `;
 
 export interface TerrainMaterialOptions {
-  readonly tierHeight: number;
-  readonly maxTier: number;
+  /** World-space height the ground tint reaches full brightness at. */
+  readonly heightRange: number;
+  /** Traversable slope limit as rise over run, matching the simulation's. */
+  readonly cliffSlope: number;
   readonly lightDirection: { x: number; y: number; z: number };
 }
 
@@ -146,8 +156,8 @@ export function createTerrainMaterial(
       'groundLow',
       'groundHigh',
       'cliffColor',
-      'tierHeight',
-      'maxTier',
+      'heightRange',
+      'cliffSlope',
       'fogTexel',
       'fogEnabled',
       'exploredDim',
@@ -160,8 +170,8 @@ export function createTerrainMaterial(
   material.setColor3('groundLow', new Color3(0.21, 0.29, 0.2));
   material.setColor3('groundHigh', new Color3(0.38, 0.44, 0.3));
   material.setColor3('cliffColor', new Color3(0.3, 0.27, 0.24));
-  material.setFloat('tierHeight', options.tierHeight);
-  material.setFloat('maxTier', options.maxTier);
+  material.setFloat('heightRange', options.heightRange);
+  material.setFloat('cliffSlope', options.cliffSlope);
   material.setFloat('fogEnabled', 0);
   material.setFloat('exploredDim', 0);
   material.setVector2('fogTexel', new Vector2(0, 0));

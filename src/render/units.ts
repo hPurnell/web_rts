@@ -27,8 +27,8 @@ import { cellFromWorld } from '../sim/world.ts';
 import { isVisible } from '../sim/fog.ts';
 import { UNIT_TYPES } from '../sim/unittypes.ts';
 import { toFloat } from '../sim/fixed.ts';
-import type { RampSlopes } from './terrain.ts';
-import { cornerHeights } from './terrain.ts';
+import type { HeightOverrides } from '../sim/terrain.ts';
+import { cellCornerY } from './terrain.ts';
 
 /** Player colours, indexed by owner id. */
 export const PLAYER_COLORS: readonly Color3[] = [
@@ -88,7 +88,7 @@ export interface UnitRenderer {
   update(
     match: Match,
     world: World,
-    ramps: RampSlopes,
+    overrides: HeightOverrides | null,
     alpha: number,
     localPlayer?: number,
   ): void;
@@ -216,7 +216,7 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
 
     instanceCount: () => written,
 
-    update(match, world, ramps, alpha, localPlayer = -1) {
+    update(match, world, overrides, alpha, localPlayer = -1) {
       const units = match.units;
       // Before the first captured tick there is nothing to interpolate from.
       const blend = prevTick >= 0 ? Math.max(0, Math.min(1, alpha)) : 1;
@@ -274,7 +274,7 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
         const sin = Math.sin(facing);
         const cos = Math.cos(facing);
 
-        const y = groundHeightAt(world, ramps, x, z);
+        const y = groundHeightAt(world, overrides, x, z);
         const offset = group.count * FLOATS_PER_MATRIX;
         const unitKind = UNIT_TYPES[units.typeId[i] as number];
         const radius = toFloat(unitKind?.radius ?? 0);
@@ -335,11 +335,11 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
 }
 
 /** Terrain height under a world-space point, following ramp slopes. */
-export function groundHeightAt(world: World, ramps: RampSlopes, x: number, z: number): number {
+export function groundHeightAt(world: World, overrides: HeightOverrides | null, x: number, z: number): number {
   const cellSize = toFloat(world.cellSize);
   const cell = cellFromWorld(world, Math.round(x * 65536), Math.round(z * 65536));
   if (cell < 0) return 0;
-  const h = cornerHeights(world, ramps, cell);
+  const h = cellCornerY(world, cell, overrides);
   // Bilinear across the cell, so a unit walking a ramp rises smoothly rather
   // than stepping at each cell boundary.
   const fx = x / cellSize - Math.floor(x / cellSize);

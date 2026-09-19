@@ -19,7 +19,7 @@ import type { World } from '../sim/world.ts';
 import { isVisible, rememberedStructure } from '../sim/fog.ts';
 import { UNIT_TYPES } from '../sim/unittypes.ts';
 import { toFloat } from '../sim/fixed.ts';
-import type { RampSlopes } from './terrain.ts';
+import type { HeightOverrides } from '../sim/terrain.ts';
 import { groundHeightAt } from './units.ts';
 import { PLAYER_COLORS } from './units.ts';
 
@@ -28,7 +28,7 @@ const FLOATS_PER_MATRIX = 16;
 const GHOST_ALPHA = 0.55;
 
 export interface GhostRenderer {
-  update(match: Match, world: World, ramps: RampSlopes, localPlayer: number): void;
+  update(match: Match, world: World, overrides: HeightOverrides | null, localPlayer: number): void;
   count(): number;
   /** Hide every ghost, e.g. when a match ends. */
   clear(): void;
@@ -70,7 +70,7 @@ export function createGhostRenderer(scene: Scene): GhostRenderer {
   return {
     count: () => written,
 
-    update(match, world, ramps, localPlayer) {
+    update(match, world, overrides, localPlayer) {
       const counts = new Map<Mesh, number>();
       written = 0;
       if (localPlayer < 0) {
@@ -79,7 +79,7 @@ export function createGhostRenderer(scene: Scene): GhostRenderer {
       }
 
       const cellSize = toFloat(world.cellSize);
-      for (let cell = 0; cell < world.tier.length; cell++) {
+      for (let cell = 0; cell < world.flags.length; cell++) {
         // A remembered structure is only drawn where the player cannot
         // currently see: where they can, the live renderer draws the real one.
         if (isVisible(match.fog, localPlayer, cell)) continue;
@@ -100,7 +100,7 @@ export function createGhostRenderer(scene: Scene): GhostRenderer {
 
         const x = ((cell % world.width) + 0.5) * cellSize;
         const z = (((cell / world.width) | 0) + 0.5) * cellSize;
-        const y = groundHeightAt(world, ramps, x, z);
+        const y = groundHeightAt(world, overrides, x, z);
         const offset = index * FLOATS_PER_MATRIX;
         data.fill(0, offset, offset + FLOATS_PER_MATRIX);
         data[offset] = 1;

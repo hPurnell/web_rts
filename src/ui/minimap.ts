@@ -11,11 +11,17 @@
  * walks over the same few thousand pixels.
  */
 import type { World } from '../sim/world.ts';
-import { RAMP, WALKABLE } from '../sim/world.ts';
+import { WALKABLE } from '../sim/world.ts';
+import { HEIGHT_MAX, MAX_BUILD_SLOPE, cellCentreHeight, cellSlope } from '../sim/terrain.ts';
 import type { FogGrids } from '../sim/fog.ts';
 import type { UnitStore } from '../sim/units.ts';
 import { unitType } from '../sim/unittypes.ts';
 import { toFloat } from '../sim/fixed.ts';
+
+/** Clamp a computed shade into a byte. */
+function clamp8(value: number): number {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
 
 /** How dark explored-but-not-visible ground is drawn. */
 const EXPLORED_ALPHA = 0.55;
@@ -76,25 +82,30 @@ export function createMinimap(size = 200): Minimap {
 
     const image = terrainContext.createImageData(world.width, world.height);
     const data = image.data;
-    for (let cell = 0; cell < world.tier.length; cell++) {
+    for (let cell = 0; cell < world.flags.length; cell++) {
       const flags = world.flags[cell] as number;
-      const tier = world.tier[cell] as number;
-      // Higher ground reads lighter, the same rule the terrain shader uses.
-      const shade = 42 + tier * 34;
       const offset = cell * 4;
       if ((flags & WALKABLE) === 0) {
         data[offset] = 26;
         data[offset + 1] = 24;
         data[offset + 2] = 30;
-      } else if ((flags & RAMP) !== 0) {
-        data[offset] = shade + 30;
-        data[offset + 1] = shade + 40;
-        data[offset + 2] = shade + 20;
-      } else {
-        data[offset] = shade - 8;
-        data[offset + 1] = shade + 22;
-        data[offset + 2] = shade - 4;
+        data[offset + 3] = 255;
+        continue;
       }
+
+      // Tiers gave the minimap a free contour: five heights, five shades, and
+      // the map read as terraces. A heightfield shaded only by height is a
+      // smooth wash you cannot navigate by, so height sets the brightness and
+      // slope darkens it — the hillsides draw themselves as shading, which is
+      // how a relief map has always worked.
+      const height = cellCentreHeight(world, cell) / HEIGHT_MAX;
+      const slope = cellSlope(world, cell);
+      const relief = Math.min(1, slope / (MAX_BUILD_SLOPE * 4));
+      const shade = 46 + height * 150 - relief * 34;
+
+      data[offset] = clamp8(shade - 8);
+      data[offset + 1] = clamp8(shade + 22 - relief * 14);
+      data[offset + 2] = clamp8(shade - 4);
       data[offset + 3] = 255;
     }
     terrainContext.putImageData(image, 0, 0);

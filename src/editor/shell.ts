@@ -61,15 +61,25 @@ export interface EditorHandle {
   dispose(): void;
 }
 
-/** Tools are declared here and implemented over M10-M13. */
+/**
+ * The tool palette.
+ *
+ * There is no ramp *placement* tool any more, because there is nothing to
+ * place: the ramp tool sculpts an incline, and whether units can climb it is
+ * a fact about its slope that the editor shows you rather than a property it
+ * grants.
+ */
 export const EDITOR_TOOLS: readonly EditorTool[] = [
-  { id: 'raise', label: 'Raise tier', hotkey: '1', hint: 'Drag to raise terrain a tier' },
-  { id: 'lower', label: 'Lower tier', hotkey: '2', hint: 'Drag to lower terrain a tier' },
-  { id: 'ramp', label: 'Ramp', hotkey: '3', hint: 'Drag across a cliff to place a ramp' },
-  { id: 'buildable', label: 'Buildable', hotkey: '4', hint: 'Paint the BUILDABLE flag' },
-  { id: 'blocker', label: 'Vision blocker', hotkey: '5', hint: 'Paint the VISION_BLOCKER flag' },
-  { id: 'resource', label: 'Resource node', hotkey: '6', hint: 'Place a mineral or gas node' },
-  { id: 'start', label: 'Start location', hotkey: '7', hint: 'Place a player start location' },
+  { id: 'raise', label: 'Raise', hotkey: '1', hint: 'Drag to raise the ground; right-drag lowers it' },
+  { id: 'lower', label: 'Lower', hotkey: '2', hint: 'Drag to lower the ground; right-drag raises it' },
+  { id: 'smooth', label: 'Smooth', hotkey: '3', hint: 'Drag to soften slopes and remove faceting' },
+  { id: 'flatten', label: 'Flatten', hotkey: '4', hint: 'Drag to level ground to the height you started on' },
+  { id: 'ramp', label: 'Ramp', hotkey: '5', hint: 'Drag from high ground to low to cut an incline' },
+  { id: 'noise', label: 'Noise', hotkey: '6', hint: 'Drag to rough up flat ground' },
+  { id: 'buildable', label: 'Buildable', hotkey: '7', hint: 'Paint the BUILDABLE flag' },
+  { id: 'blocker', label: 'Vision blocker', hotkey: '8', hint: 'Paint the VISION_BLOCKER flag' },
+  { id: 'resource', label: 'Resource node', hotkey: '9', hint: 'Place a mineral or gas node' },
+  { id: 'start', label: 'Start location', hotkey: '0', hint: 'Place a player start location' },
 ];
 
 export function mountEditor(context: EditorContext): EditorHandle {

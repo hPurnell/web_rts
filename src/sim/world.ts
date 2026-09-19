@@ -1,16 +1,24 @@
 /**
- * World state (invariant 4): terrain and authored data. Owned by the editor,
+ * World state (invariant 5): terrain and authored data. Owned by the editor,
  * saved to disk, and read — never written — by the simulation.
  *
- * Terrain height is a discrete tier index, not a continuous value. The
- * simulation uses it for pathing connectivity and vision only; the renderer is
- * the only thing that turns a tier into a Y coordinate.
+ * Terrain is a continuous heightfield: Q16.16 heights on cell corners, owned
+ * by src/sim/terrain.ts, which also owns everything derived from them. This
+ * module holds the authored data around it — the flags, the resource nodes,
+ * the start locations — and the validation that says whether a map is
+ * playable.
  */
 import type { Fixed } from './fixed.ts';
 import { ONE, div, fromInt, isqrt, mul, toInt } from './fixed.ts';
 import { fnv1a32, hashArray, hashU32 } from './hash.ts';
+import {
+  HEIGHT_MAX,
+  HEIGHT_MIN,
+  MAX_TRAVERSABLE_SLOPE,
+  slopeAtMost,
+  stepSlopeAtMost,
+} from './terrain.ts';
 
-export const MAX_TIER = 3;
 export const MAX_DIMENSION = 512;
 /**
  * Minimum cell distance between two start locations. Closer than this and the
@@ -22,7 +30,8 @@ export const MIN_START_SEPARATION = 16;
 /** Cell flag bits. */
 export const WALKABLE = 1 << 0;
 export const BUILDABLE = 1 << 1;
-export const RAMP = 1 << 2;
+// Bit 2 was RAMP. Ramps are no longer authored: a ramp is ground sculpted
+// gently enough to walk up, which the slope rules work out for themselves.
 export const VISION_BLOCKER = 1 << 3;
 
 export const enum ResourceType {
@@ -52,13 +61,14 @@ export interface World {
   readonly width: number;
   readonly height: number;
   readonly cellSize: Fixed;
-  readonly tier: Uint8Array;
+  /** Q16.16 heights on cell corners: (width + 1) * (height + 1) of them. */
+  readonly heights: Int32Array;
   readonly flags: Uint8Array;
   resourceNodes: ResourceNode[];
   startLocations: StartLocation[];
 }
 
-/** A fresh world: tier 0 everywhere, walkable and buildable, nothing placed. */
+/** A fresh world: flat at height zero, walkable and buildable, nothing placed. */
 export function createWorld(init: WorldInit): World {
   const { width, height } = init;
   if (!Number.isInteger(width) || !Number.isInteger(height)) {
@@ -74,7 +84,7 @@ export function createWorld(init: WorldInit): World {
     width,
     height,
     cellSize: init.cellSize ?? ONE,
-    tier: new Uint8Array(cells),
+    heights: new Int32Array((width + 1) * (height + 1)),
     flags,
     resourceNodes: [],
     startLocations: [],
@@ -98,14 +108,6 @@ export function cellY(world: World, cell: number): number {
   return (cell / world.width) | 0;
 }
 
-/** Tier at a cell. Out-of-bounds reads return the edge tier, so vision and
- * pathing at the map border behave as if the terrain continued. */
-export function tierAt(world: World, cx: number, cy: number): number {
-  const x = cx < 0 ? 0 : cx >= world.width ? world.width - 1 : cx;
-  const y = cy < 0 ? 0 : cy >= world.height ? world.height - 1 : cy;
-  return world.tier[y * world.width + x] as number;
-}
-
 /** Flags at a cell. Out-of-bounds reads return 0 — nothing outside the map is
  * walkable, buildable or visible. */
 export function flagsAt(world: World, cx: number, cy: number): number {
@@ -120,9 +122,10 @@ export function setFlags(world: World, cell: number, flags: number): void {
   if (cell >= 0 && cell < world.flags.length) world.flags[cell] = flags & 0xff;
 }
 
-export function setTier(world: World, cell: number, tier: number): void {
-  if (cell < 0 || cell >= world.tier.length) return;
-  world.tier[cell] = tier < 0 ? 0 : tier > MAX_TIER ? MAX_TIER : tier;
+/** Set a corner height, clamped to the sculptable range. */
+export function setCornerHeight(world: World, corner: number, height: Fixed): void {
+  if (corner < 0 || corner >= world.heights.length) return;
+  world.heights[corner] = height < HEIGHT_MIN ? HEIGHT_MIN : height > HEIGHT_MAX ? HEIGHT_MAX : height;
 }
 
 /** World-space centre of a cell, in fixed-point units. */
@@ -142,17 +145,30 @@ export function cellFromWorld(world: World, x: Fixed, z: Fixed): number {
   return cellIndex(world, cx, cy);
 }
 
-/** Two cells are navigably adjacent when they share a tier, or a ramp bridges
- * exactly one tier of difference. Used by validate() and by M18's nav grid. */
-export function tiersConnect(world: World, aCell: number, bCell: number): boolean {
-  const aTier = world.tier[aCell] as number;
-  const bTier = world.tier[bCell] as number;
-  if (aTier === bTier) return true;
-  const diff = aTier > bTier ? aTier - bTier : bTier - aTier;
-  if (diff !== 1) return false;
-  const aFlags = world.flags[aCell] as number;
-  const bFlags = world.flags[bCell] as number;
-  return ((aFlags | bFlags) & RAMP) !== 0;
+/**
+ * Whether a unit can stand on a cell at all: walkable, and not a cliff face.
+ *
+ * With tiers this was implied by the tier grid. With a heightfield it is a
+ * threshold on the cell's own slope, and it is only half the rule — see
+ * `cellsConnect` for the other half.
+ */
+export function isTraversable(world: World, cell: number): boolean {
+  if (cell < 0 || cell >= world.flags.length) return false;
+  if (((world.flags[cell] as number) & WALKABLE) === 0) return false;
+  return slopeAtMost(world, cell, MAX_TRAVERSABLE_SLOPE);
+}
+
+/**
+ * Whether a unit can step from one cell to an adjacent one.
+ *
+ * Both cells must be traversable *and* the step between them must be walkable.
+ * That second condition is not implied by the first: two cells can both be
+ * flat with a cliff face between them, and checking only the cells would let
+ * units walk off a ledge. Used by validate() and by M18's nav grid.
+ */
+export function cellsConnect(world: World, aCell: number, bCell: number): boolean {
+  if (!isTraversable(world, aCell) || !isTraversable(world, bCell)) return false;
+  return stepSlopeAtMost(world, aCell, bCell, MAX_TRAVERSABLE_SLOPE);
 }
 
 export interface ValidationIssue {
@@ -164,27 +180,35 @@ export interface ValidationIssue {
 
 /**
  * Reports structural problems: start locations that are unreachable from each
- * other, and orphaned tiers — raised regions with no ramp connecting them to
- * anything, which look like terrain but are unreachable.
+ * other, and stranded ground — a patch of gentle terrain surrounded by slopes
+ * too steep to climb, which looks like somewhere you could stand and is not.
+ * With tiers this was a plateau with no ramp; sculpted terrain produces the
+ * same mistake far more easily, because nothing about a hillside tells you
+ * where it stops being climbable.
  */
 export function validate(world: World): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const regions = labelRegions(world);
 
   for (const node of world.resourceNodes) {
-    if (node.cell < 0 || node.cell >= world.tier.length) {
+    if (node.cell < 0 || node.cell >= world.flags.length) {
       issues.push({ severity: 'error', code: 'node-out-of-bounds', message: `resource node at cell ${node.cell} is outside the map`, cell: node.cell });
     }
   }
 
   const startRegions: number[] = [];
   for (const start of world.startLocations) {
-    if (start.cell < 0 || start.cell >= world.tier.length) {
+    if (start.cell < 0 || start.cell >= world.flags.length) {
       issues.push({ severity: 'error', code: 'start-out-of-bounds', message: `start location at cell ${start.cell} is outside the map`, cell: start.cell });
       continue;
     }
-    if (((world.flags[start.cell] as number) & WALKABLE) === 0) {
-      issues.push({ severity: 'error', code: 'start-unwalkable', message: `start location at cell ${start.cell} is not walkable`, cell: start.cell });
+    if (!isTraversable(world, start.cell)) {
+      issues.push({
+        severity: 'error',
+        code: 'start-unwalkable',
+        message: `start location at cell ${start.cell} is on ground too steep or not walkable`,
+        cell: start.cell,
+      });
       continue;
     }
     startRegions.push(regions.labels[start.cell] as number);
@@ -221,25 +245,33 @@ export function validate(world: World): ValidationIssue[] {
     }
   }
 
-  // An orphaned tier is a walkable region raised above tier 0 that connects to
-  // no other region: terrain you can see but never stand on.
-  for (let label = 0; label < regions.count; label++) {
-    const sample = regions.sample[label] as number;
-    if ((world.tier[sample] as number) === 0) continue;
-    if ((regions.size[label] as number) === 0) continue;
-    if (regions.count === 1) break;
-    if (!regionHasRamp(world, regions, label)) {
+  // Stranded ground: any region that is not the largest one. A map normally
+  // has one big connected area and, at most, deliberate islands; anything else
+  // is usually a hillside the sculptor did not realise had become a cliff.
+  if (regions.count > 1) {
+    let largest = 0;
+    for (let label = 1; label < regions.count; label++) {
+      if ((regions.size[label] as number) > (regions.size[largest] as number)) largest = label;
+    }
+    for (let label = 0; label < regions.count; label++) {
+      if (label === largest) continue;
+      const size = regions.size[label] as number;
+      // A handful of cells behind a rock is noise; a plateau is a mistake.
+      if (size < STRANDED_REGION_MIN_CELLS) continue;
       issues.push({
         severity: 'warning',
-        code: 'orphaned-tier',
-        message: `raised region of ${regions.size[label]} cells at cell ${sample} has no ramp connecting it`,
-        cell: sample,
+        code: 'stranded-ground',
+        message: `${size} cells around cell ${regions.sample[label]} cannot be reached from the rest of the map`,
+        cell: regions.sample[label] as number,
       });
     }
   }
 
   return issues;
 }
+
+/** Below this, an isolated patch is scenery rather than a sculpting mistake. */
+export const STRANDED_REGION_MIN_CELLS = 16;
 
 interface Regions {
   /** Region label per cell, or -1 for unwalkable cells. */
@@ -249,7 +281,7 @@ interface Regions {
   readonly sample: Int32Array;
 }
 
-/** Flood-fill walkable cells into connected regions, obeying the tier rule. */
+/** Flood-fill traversable cells into connected regions, obeying the slope rules. */
 export function labelRegions(world: World): Regions {
   const total = world.width * world.height;
   const labels = new Int32Array(total).fill(-1);
@@ -260,7 +292,7 @@ export function labelRegions(world: World): Regions {
 
   for (let start = 0; start < total; start++) {
     if (labels[start] !== -1) continue;
-    if (((world.flags[start] as number) & WALKABLE) === 0) continue;
+    if (!isTraversable(world, start)) continue;
 
     const label = count++;
     labels[start] = label;
@@ -281,8 +313,7 @@ export function labelRegions(world: World): Regions {
         if (!inBounds(world, nx, ny)) continue;
         const next = ny * world.width + nx;
         if (labels[next] !== -1) continue;
-        if (((world.flags[next] as number) & WALKABLE) === 0) continue;
-        if (!tiersConnect(world, cell, next)) continue;
+        if (!cellsConnect(world, cell, next)) continue;
         labels[next] = label;
         queue[tail++] = next;
       }
@@ -293,13 +324,6 @@ export function labelRegions(world: World): Regions {
   return { labels, count, size: Int32Array.from(size), sample: Int32Array.from(sample) };
 }
 
-function regionHasRamp(world: World, regions: Regions, label: number): boolean {
-  for (let cell = 0; cell < regions.labels.length; cell++) {
-    if (regions.labels[cell] !== label) continue;
-    if (((world.flags[cell] as number) & RAMP) !== 0) return true;
-  }
-  return false;
-}
 
 /**
  * Hash of everything the editor can author.
@@ -313,7 +337,7 @@ export function hashWorld(world: World): number {
   hash = hashU32(world.width, hash);
   hash = hashU32(world.height, hash);
   hash = hashU32(world.cellSize, hash);
-  hash = hashArray(world.tier, hash);
+  hash = hashArray(world.heights, hash);
   hash = hashArray(world.flags, hash);
   hash = hashU32(world.resourceNodes.length, hash);
   for (const node of world.resourceNodes) {

@@ -6,25 +6,33 @@
  * out, so saving a 512x512 map is two memcpys rather than half a million
  * JSON numbers.
  *
- *   offset  size  field
- *        0     4  magic "RTSM"
- *        4     2  format version (uint16 LE)
- *        6     2  reserved, must be zero
- *        8     2  width  (uint16 LE)
- *       10     2  height (uint16 LE)
- *       12     4  cellSize, Q16.16 (int32 LE)
- *       16     4  JSON tail length in bytes (uint32 LE)
- *       20   w*h  tier grid
- *   20+w*h   w*h  flag grid
- *        …     …  JSON tail: resource nodes and start locations
+ *   offset          size  field
+ *        0             4  magic "RTSM"
+ *        4             2  format version (uint16 LE)
+ *        6             2  reserved, must be zero
+ *        8             2  width  (uint16 LE)
+ *       10             2  height (uint16 LE)
+ *       12             4  cellSize, Q16.16 (int32 LE)
+ *       16             4  JSON tail length in bytes (uint32 LE)
+ *       20  (w+1)*(h+1)*4  corner heights, Q16.16 LE
+ *        …           w*h  flag grid
+ *        …             …  JSON tail: resource nodes and start locations
  */
 import type { ResourceNode, StartLocation, World } from '../sim/world.ts';
 import { MAX_DIMENSION, createWorld } from '../sim/world.ts';
 import { ONE } from '../sim/fixed.ts';
 
 export const MAGIC = 'RTSM';
-/** Bump when the layout changes; decode refuses anything it does not know. */
-export const FORMAT_VERSION = 1;
+/**
+ * Format version.
+ *
+ * Bumped to 2 for the heightfield: version 1 stored one byte of tier per cell,
+ * version 2 stores four bytes of Q16.16 height per *corner*, of which there is
+ * one more per row and column. There is no migration — a tiered map has no
+ * heights to recover, only tiers that could be multiplied out into a shape
+ * nobody sculpted — so version 1 files are refused with a message saying so.
+ */
+export const FORMAT_VERSION = 2;
 export const HEADER_BYTES = 20;
 export const MAP_EXTENSION = '.rtsmap';
 
@@ -45,13 +53,14 @@ export class MapFormatError extends Error {
 
 export function encodeMap(world: World): Uint8Array {
   const cells = world.width * world.height;
+  const corners = (world.width + 1) * (world.height + 1);
   const tail: JsonTail = {
     resourceNodes: world.resourceNodes.map((n) => ({ ...n })),
     startLocations: world.startLocations.map((s) => ({ ...s })),
   };
   const json = new TextEncoder().encode(JSON.stringify(tail));
 
-  const bytes = new Uint8Array(HEADER_BYTES + cells * 2 + json.length);
+  const bytes = new Uint8Array(HEADER_BYTES + corners * 4 + cells + json.length);
   const view = new DataView(bytes.buffer);
 
   for (let i = 0; i < 4; i++) bytes[i] = MAGIC.charCodeAt(i);
@@ -62,9 +71,13 @@ export function encodeMap(world: World): Uint8Array {
   view.setInt32(12, world.cellSize, true);
   view.setUint32(16, json.length, true);
 
-  bytes.set(world.tier, HEADER_BYTES);
-  bytes.set(world.flags, HEADER_BYTES + cells);
-  bytes.set(json, HEADER_BYTES + cells * 2);
+  // Heights are four bytes each and the platform may be big-endian, so they
+  // go through a DataView rather than a bulk copy. Flags are still a memcpy.
+  for (let i = 0; i < corners; i++) {
+    view.setInt32(HEADER_BYTES + i * 4, world.heights[i] as number, true);
+  }
+  bytes.set(world.flags, HEADER_BYTES + corners * 4);
+  bytes.set(json, HEADER_BYTES + corners * 4 + cells);
   return bytes;
 }
 
@@ -81,6 +94,13 @@ export function decodeMap(bytes: Uint8Array): World {
   }
 
   const version = view.getUint16(4, true);
+  if (version === 1) {
+    throw new MapFormatError(
+      'This map uses the old tiered terrain format, which this build cannot read: ' +
+        'there are no heights in it to recover.',
+      'version',
+    );
+  }
   if (version !== FORMAT_VERSION) {
     throw new MapFormatError(
       `This map was saved in format version ${version}, but this build reads version ${FORMAT_VERSION}.`,
@@ -97,7 +117,8 @@ export function decodeMap(bytes: Uint8Array): World {
   const cellSize = view.getInt32(12, true) || ONE;
   const jsonLength = view.getUint32(16, true);
   const cells = width * height;
-  const expected = HEADER_BYTES + cells * 2 + jsonLength;
+  const corners = (width + 1) * (height + 1);
+  const expected = HEADER_BYTES + corners * 4 + cells + jsonLength;
   if (bytes.length !== expected) {
     throw new MapFormatError(
       `This map file is ${bytes.length} bytes but its header describes ${expected}.`,
@@ -106,11 +127,15 @@ export function decodeMap(bytes: Uint8Array): World {
   }
 
   const world = createWorld({ width, height, cellSize });
-  world.tier.set(bytes.subarray(HEADER_BYTES, HEADER_BYTES + cells));
-  world.flags.set(bytes.subarray(HEADER_BYTES + cells, HEADER_BYTES + cells * 2));
+  for (let i = 0; i < corners; i++) {
+    world.heights[i] = view.getInt32(HEADER_BYTES + i * 4, true);
+  }
+  world.flags.set(
+    bytes.subarray(HEADER_BYTES + corners * 4, HEADER_BYTES + corners * 4 + cells),
+  );
 
   if (jsonLength > 0) {
-    const text = new TextDecoder().decode(bytes.subarray(HEADER_BYTES + cells * 2));
+    const text = new TextDecoder().decode(bytes.subarray(HEADER_BYTES + corners * 4 + cells));
     let tail: Partial<JsonTail>;
     try {
       tail = JSON.parse(text) as Partial<JsonTail>;

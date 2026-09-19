@@ -24,8 +24,18 @@ import {
   resourceCellFlags,
   whatIsAt,
 } from './placement.ts';
-import { brushCells, stageFlagEdit, stageTierEdit, MAX_BRUSH_RADIUS, MIN_BRUSH_RADIUS } from './brush.ts';
-import { planRamp, stageRamp, stageRampErase } from './ramp.ts';
+import {
+  MAX_BRUSH_RADIUS,
+  MIN_BRUSH_RADIUS,
+  brushCells,
+  brushCorners,
+  rampTarget,
+  stageFlagEdit,
+  stageSculpt,
+} from './sculpt.ts';
+import type { SculptMode } from './sculpt.ts';
+import { cornerStride, heightAt } from '../sim/terrain.ts';
+import { worldFromCell } from '../sim/world.ts';
 import type { EditorTool } from './shell.ts';
 
 export interface SessionHooks {
@@ -47,6 +57,8 @@ export interface EditorSession {
   readonly lastError: string | null;
   /** Cell a ramp drag started on, or -1 when no ramp drag is in progress. */
   readonly rampAnchor: number;
+  /** Height the current flatten or ramp stroke is pulling toward. */
+  readonly referenceHeight: number;
   /** Which resource the resource tool places. */
   resourceType: ResourceType;
   /** Cycle the resource tool between minerals and gas. */
@@ -66,6 +78,15 @@ const FLAG_TOOLS: Record<string, number> = {
   blocker: VISION_BLOCKER,
 };
 
+/** Which sculpt mode each terrain tool uses. */
+const SCULPT_TOOLS: Record<string, SculptMode> = {
+  raise: 'raise',
+  lower: 'lower',
+  smooth: 'smooth',
+  flatten: 'flatten',
+  noise: 'noise',
+};
+
 export function createSession(world: World, hooks: SessionHooks): EditorSession {
   const history = new EditorHistory(world, 256, () => hooks.onChange?.());
   let strokeId = 0;
@@ -74,6 +95,8 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
   let inverted = false;
   let lastCell = -1;
   let rampAnchor = -1;
+  let referenceHeight = 0;
+  let strokeSeed = 0;
   let lastError: string | null = null;
 
   const session: EditorSession = {
@@ -93,6 +116,9 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
     get rampAnchor() {
       return rampAnchor;
     },
+    get referenceHeight() {
+      return referenceHeight;
+    },
 
     pointerDown(screenX, screenY, button) {
       if (button !== 0 && button !== 2) return;
@@ -101,10 +127,13 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
       lastError = null;
       inverted = button === 2;
 
-      // A ramp is placed on release, from a drag: it needs both ends before it
-      // can decide anything, unlike a brush which acts on every sample.
+      // A ramp is a drag, not a stroke: it needs both ends before it can
+      // decide anything. Unlike the old ramp tool it places no object — it
+      // sculpts the ground between the two ends into a straight incline, and
+      // whether that is walkable is then just a fact about its slope.
       if (session.tool?.id === 'ramp' && !inverted) {
         rampAnchor = cell;
+        referenceHeight = sampleHeight(cell);
         hooks.onChange?.();
         return;
       }
@@ -123,7 +152,11 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
 
       painting = true;
       lastCell = -1;
-      history.beginStroke(`stroke-${++strokeId}`);
+      // Flatten pulls toward the ground the stroke started on, so the height
+      // is sampled once at the start rather than chased per sample.
+      referenceHeight = sampleHeight(cell);
+      strokeSeed = ++strokeId;
+      history.beginStroke(`stroke-${strokeId}`);
       paint(cell);
     },
 
@@ -136,8 +169,7 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
 
     pointerUp() {
       if (rampAnchor >= 0) {
-        const target = session.hoverCell;
-        placeRamp(rampAnchor, target);
+        sculptRamp(rampAnchor, session.hoverCell);
         rampAnchor = -1;
         hooks.onChange?.();
         return;
@@ -174,7 +206,7 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
   /** Rebuild whatever terrain an undone or redone command moved. */
   function rebuildFor(command: ReturnType<EditorHistory['undo']>): void {
     if (!command) return;
-    hooks.rebuildCells(command.touchedCells?.() ?? []);
+    hooks.rebuildCells(command.touchedCells?.(world) ?? []);
   }
 
   function placeOrRemoveNode(cell: number, remove: boolean): void {
@@ -193,10 +225,10 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
     for (const flagCell of result.flagCells ?? []) {
       const current = world.flags[flagCell] as number;
       const next = removing ? clearedResourceCellFlags(current) : resourceCellFlags(current);
-      if (next !== current) flagCommand.record(world, flagCell, world.tier[flagCell] as number, next);
+      if (next !== current) flagCommand.recordFlags(world, flagCell, next);
     }
 
-    const touched = flagCommand.touchedCells();
+    const touched = flagCommand.touchedCells(world);
     history.push(
       flagCommand.isEmpty()
         ? new ResourceNodeCommand(result.nodes)
@@ -215,15 +247,55 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
     history.push(new StartLocationCommand(result.starts));
   }
 
-  function placeRamp(from: number, to: number): void {
-    const plan = planRamp(world, from, to);
-    if (!plan.ok) {
-      lastError = plan.reason;
-      return;
-    }
+  /** Sample the terrain height at a cell's centre. */
+  function sampleHeight(cell: number): number {
+    if (cell < 0) return 0;
+    const centre = worldFromCell(world, cell);
+    return heightAt(world, centre.x, centre.z);
+  }
+
+  /**
+   * Sculpt a straight incline between two cells.
+   *
+   * Every corner near the drag is pulled toward the height it would have if
+   * the ground ran linearly from one end to the other. There is no validation
+   * to do: an incline too steep to climb is simply a cliff, which the slope
+   * overlay will show and the nav grid will refuse.
+   */
+  function sculptRamp(fromCell: number, toCell: number): void {
+    if (fromCell < 0 || toCell < 0 || fromCell === toCell) return;
+    const stride = cornerStride(world);
+    const cornerOf = (cell: number): number =>
+      ((cell / world.width) | 0) * stride + (cell % world.width);
+    const fromCorner = cornerOf(fromCell);
+    const toCorner = cornerOf(toCell);
+    const fromHeight = referenceHeight;
+    const toHeight = sampleHeight(toCell);
+
     const command = new TerrainEditCommand(null);
-    if (stageRamp(world, command, plan) === 0) return;
-    const touched = command.touchedCells();
+    // Walk the drag and brush along it, so the incline is as wide as the brush.
+    const steps = Math.max(
+      Math.abs((toCell % world.width) - (fromCell % world.width)),
+      Math.abs(((toCell / world.width) | 0) - ((fromCell / world.width) | 0)),
+    );
+    let changed = 0;
+    for (let step = 0; step <= steps; step++) {
+      const t = steps === 0 ? 0 : step / steps;
+      const x = Math.round(
+        (fromCell % world.width) + ((toCell % world.width) - (fromCell % world.width)) * t,
+      );
+      const z = Math.round(
+        ((fromCell / world.width) | 0) +
+          ((((toCell / world.width) | 0) - ((fromCell / world.width) | 0)) * t),
+      );
+      for (const sample of brushCorners(world, z * stride + x, session.radius)) {
+        const target = rampTarget(world, sample.corner, fromCorner, toCorner, fromHeight, toHeight);
+        changed += stageSculpt(world, command, [sample], { mode: 'ramp', reference: target });
+      }
+    }
+
+    if (changed === 0) return;
+    const touched = command.touchedCells(world);
     history.push(command);
     hooks.rebuildCells(touched);
   }
@@ -241,12 +313,22 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
     const cells = brushCells(world, cell, session.radius);
     let changed = 0;
 
-    if (tool.id === 'raise' || tool.id === 'lower') {
-      const raising = tool.id === 'raise' ? !inverted : inverted;
-      changed = stageTierEdit(world, command, cells, raising ? 1 : -1);
-    } else if (tool.id === 'ramp') {
-      // Right-dragging the ramp tool erases ramp flags.
-      changed = stageRampErase(world, command, cells);
+    const sculptMode = SCULPT_TOOLS[tool.id];
+    if (sculptMode !== undefined) {
+      // Right-dragging inverts: raise becomes lower, and vice versa.
+      const mode: SculptMode =
+        inverted && sculptMode === 'raise'
+          ? 'lower'
+          : inverted && sculptMode === 'lower'
+            ? 'raise'
+            : sculptMode;
+      const stride = cornerStride(world);
+      const centreCorner = ((cell / world.width) | 0) * stride + (cell % world.width);
+      changed = stageSculpt(world, command, brushCorners(world, centreCorner, session.radius), {
+        mode,
+        reference: referenceHeight,
+        seed: strokeSeed,
+      });
     } else {
       const flag = FLAG_TOOLS[tool.id];
       if (flag === undefined) return;
@@ -256,7 +338,7 @@ export function createSession(world: World, hooks: SessionHooks): EditorSession 
     if (changed === 0) return;
     // Capture the touched cells before apply: the command is merged into the
     // stroke's command by push(), after which it is no longer the owner.
-    const touched = command.touchedCells();
+    const touched = command.touchedCells(world);
     history.push(command);
     hooks.rebuildCells(touched);
   }

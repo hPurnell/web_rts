@@ -1,12 +1,15 @@
 /**
- * Cell picking.
+ * Terrain picking.
  *
- * The terrain mesh is never raycast: with thousands of triangles per chunk and
- * a pointer that moves every frame, that cost shows up immediately. Instead the
- * camera ray is intersected with each tier's horizontal plane analytically,
- * which narrows the answer to a handful of candidate cells, and those few cells
- * are then tested exactly against their own quads — which is also what makes
- * sloped ramp surfaces pick correctly rather than snapping to a tier plane.
+ * The tiered version intersected a handful of flat planes, one per tier. A
+ * heightfield has no planes to intersect, so the ray is marched across the
+ * grid with a DDA and the two triangles of each cell it crosses are tested in
+ * order. The first hit wins and the march stops.
+ *
+ * The terrain mesh is still never raycast. A DDA visits a few dozen cells for
+ * a screen-centre ray and is bounded by the map size at its worst, where mesh
+ * picking pays for a full acceleration-structure traversal over a few hundred
+ * thousand triangles — every frame the pointer moves.
  */
 import { Matrix } from '@babylonjs/core/Maths/math.vector';
 import type { Vector3 } from '@babylonjs/core/Maths/math.vector';
@@ -18,16 +21,18 @@ import '@babylonjs/core/Culling/ray';
 import type { Ray } from '@babylonjs/core/Culling/ray';
 
 import type { World } from '../sim/world.ts';
-import { MAX_TIER, cellIndex } from '../sim/world.ts';
+import type { HeightOverrides } from '../sim/terrain.ts';
+import { HEIGHT_MAX, HEIGHT_MIN, cellSlope, cornerHeight, cornerStride } from '../sim/terrain.ts';
 import { toFloat } from '../sim/fixed.ts';
-import type { RampSlopes } from './terrain.ts';
-import { cornerHeights, tierHeight } from './terrain.ts';
 
 export interface PickResult {
   readonly cell: number;
   readonly cx: number;
   readonly cy: number;
-  readonly tier: number;
+  /** Terrain height at the hit, in world units. */
+  readonly height: number;
+  /** The cell's slope, rise over run. */
+  readonly slope: number;
   readonly flags: number;
   /** Exact world-space point on the terrain surface. */
   readonly x: number;
@@ -62,81 +67,174 @@ export function screenRay(scene: Scene, camera: Camera, screenX: number, screenY
 
 /**
  * Nearest terrain cell under a ray, or null if the ray misses the map.
+ *
+ * `out.cells` reports how many cells the march visited, which is the number
+ * that matters: it must stay small and independent of how detailed the terrain
+ * is, or picking becomes a per-frame cost that grows with the map.
  */
 export function pickCell(
   world: World,
-  ramps: RampSlopes,
   ray: PickRay,
-  out?: { candidates: number },
+  out?: { cells: number },
+  overrides?: HeightOverrides | null,
 ): PickResult | null {
   const cellSize = toFloat(world.cellSize);
-  const candidates = new Set<number>();
+  const stride = cornerStride(world);
+  if (out) out.cells = 0;
 
-  // Each tier plane the ray crosses contributes a candidate cell and its
-  // neighbours; the neighbours matter because a ramp surface sits *between*
-  // planes, so the plane hit lands just past the ramp cell itself.
-  for (let tier = MAX_TIER; tier >= 0; tier--) {
-    const planeY = tierHeight(tier);
-    if (Math.abs(ray.dirY) < 1e-9) continue;
-    const s = (planeY - ray.originY) / ray.dirY;
-    if (s <= 0) continue;
-    const px = ray.originX + ray.dirX * s;
-    const pz = ray.originZ + ray.dirZ * s;
-    const cx = Math.floor(px / cellSize);
-    const cy = Math.floor(pz / cellSize);
-    for (let oy = -1; oy <= 1; oy++) {
-      for (let ox = -1; ox <= 1; ox++) {
-        const cell = cellIndex(world, cx + ox, cy + oy);
-        if (cell >= 0) candidates.add(cell);
+  // Clip the ray to the slab the terrain can occupy, so a ray aimed at the
+  // horizon does not march the whole map before finding nothing.
+  const lowest = toFloat(HEIGHT_MIN) - 8;
+  const highest = toFloat(HEIGHT_MAX) + 8;
+  let tEnter = 0;
+  let tExit = Number.POSITIVE_INFINITY;
+  if (Math.abs(ray.dirY) > 1e-9) {
+    const t0 = (highest - ray.originY) / ray.dirY;
+    const t1 = (lowest - ray.originY) / ray.dirY;
+    tEnter = Math.max(tEnter, Math.min(t0, t1));
+    tExit = Math.min(tExit, Math.max(t0, t1));
+  } else if (ray.originY > highest || ray.originY < lowest) {
+    return null;
+  }
+  if (tExit < tEnter) return null;
+
+  let x = ray.originX + ray.dirX * tEnter;
+  let z = ray.originZ + ray.dirZ * tEnter;
+
+  let cx = Math.floor(x / cellSize);
+  let cz = Math.floor(z / cellSize);
+
+  const stepX = ray.dirX > 0 ? 1 : ray.dirX < 0 ? -1 : 0;
+  const stepZ = ray.dirZ > 0 ? 1 : ray.dirZ < 0 ? -1 : 0;
+
+  // Parametric distance to the next cell boundary on each axis, and between
+  // boundaries — the standard grid DDA.
+  const invDirX = ray.dirX !== 0 ? 1 / ray.dirX : Number.POSITIVE_INFINITY;
+  const invDirZ = ray.dirZ !== 0 ? 1 / ray.dirZ : Number.POSITIVE_INFINITY;
+  const deltaX = Math.abs(cellSize * invDirX);
+  const deltaZ = Math.abs(cellSize * invDirZ);
+
+  const boundaryX = (cx + (stepX > 0 ? 1 : 0)) * cellSize;
+  const boundaryZ = (cz + (stepZ > 0 ? 1 : 0)) * cellSize;
+  let nextX = stepX === 0 ? Number.POSITIVE_INFINITY : tEnter + (boundaryX - x) * invDirX;
+  let nextZ = stepZ === 0 ? Number.POSITIVE_INFINITY : tEnter + (boundaryZ - z) * invDirZ;
+
+  const limit = world.width + world.height + 2;
+  for (let visited = 0; visited < limit; visited++) {
+    if (out) out.cells = visited + 1;
+
+    if (cx >= 0 && cz >= 0 && cx < world.width && cz < world.height) {
+      const hit = hitCell(world, ray, cx, cz, stride, cellSize, overrides);
+      if (hit) {
+        const cell = cz * world.width + cx;
+        return {
+          cell,
+          cx,
+          cy: cz,
+          height: hit.y,
+          slope: toFloat(cellSlope(world, cell, overrides)),
+          flags: world.flags[cell] as number,
+          x: hit.x,
+          y: hit.y,
+          z: hit.z,
+        };
       }
+    } else if (visited > 0 && outsideForGood(cx, cz, stepX, stepZ, world)) {
+      return null;
     }
-  }
 
-  if (out) out.candidates = candidates.size;
-  if (candidates.size === 0) return null;
-
-  let bestDistance = Infinity;
-  let best: PickResult | null = null;
-
-  for (const cell of candidates) {
-    const cx = cell % world.width;
-    const cy = (cell / world.width) | 0;
-    const h = cornerHeights(world, ramps, cell);
-    const x0 = cx * cellSize;
-    const x1 = (cx + 1) * cellSize;
-    const z0 = cy * cellSize;
-    const z1 = (cy + 1) * cellSize;
-
-    // Same two triangles the mesh builds, in the same winding.
-    const sw: Point = [x0, h[3], z1];
-    const se: Point = [x1, h[2], z1];
-    const ne: Point = [x1, h[1], z0];
-    const nw: Point = [x0, h[0], z0];
-
-    for (const tri of [
-      [sw, ne, se],
-      [sw, nw, ne],
-    ] as const) {
-      const s = rayTriangle(ray, tri[0], tri[1], tri[2]);
-      if (s === null || s >= bestDistance) continue;
-      bestDistance = s;
-      best = {
-        cell,
-        cx,
-        cy,
-        tier: world.tier[cell] as number,
-        flags: world.flags[cell] as number,
-        x: ray.originX + ray.dirX * s,
-        y: ray.originY + ray.dirY * s,
-        z: ray.originZ + ray.dirZ * s,
-      };
+    if (nextX < nextZ) {
+      if (nextX > tExit) return null;
+      cx += stepX;
+      x = ray.originX + ray.dirX * nextX;
+      nextX += deltaX;
+    } else {
+      if (nextZ > tExit) return null;
+      cz += stepZ;
+      z = ray.originZ + ray.dirZ * nextZ;
+      nextZ += deltaZ;
     }
+    if (stepX === 0 && stepZ === 0) return null;
   }
+  return null;
+}
 
-  return best;
+/** True once the march has left the map and is heading further away. */
+function outsideForGood(
+  cx: number,
+  cz: number,
+  stepX: number,
+  stepZ: number,
+  world: World,
+): boolean {
+  if (cx < 0 && stepX <= 0) return true;
+  if (cz < 0 && stepZ <= 0) return true;
+  if (cx >= world.width && stepX >= 0) return true;
+  if (cz >= world.height && stepZ >= 0) return true;
+  return false;
 }
 
 type Point = readonly [number, number, number];
+
+/** Test a ray against one cell's two triangles, nearest hit first. */
+function hitCell(
+  world: World,
+  ray: PickRay,
+  cx: number,
+  cz: number,
+  stride: number,
+  cellSize: number,
+  overrides?: HeightOverrides | null,
+): { x: number; y: number; z: number } | null {
+  const top = cz * stride + cx;
+  const nw: Point = [cx * cellSize, toFloat(cornerHeight(world, top, overrides)), cz * cellSize];
+  const ne: Point = [(cx + 1) * cellSize, toFloat(cornerHeight(world, top + 1, overrides)), cz * cellSize];
+  const se: Point = [
+    (cx + 1) * cellSize,
+    toFloat(cornerHeight(world, top + stride + 1, overrides)),
+    (cz + 1) * cellSize,
+  ];
+  const sw: Point = [cx * cellSize, toFloat(cornerHeight(world, top + stride, overrides)), (cz + 1) * cellSize];
+
+  let best = Number.POSITIVE_INFINITY;
+  // The same NW-SE split heightAt uses, wound the same way as the mesh.
+  for (const tri of [
+    [sw, se, nw],
+    [se, ne, nw],
+  ] as const) {
+    const s = rayTriangle(ray, tri[0], tri[1], tri[2]);
+    if (s === null || s >= best) continue;
+    best = s;
+  }
+  if (!Number.isFinite(best)) return null;
+  return {
+    x: ray.originX + ray.dirX * best,
+    y: ray.originY + ray.dirY * best,
+    z: ray.originZ + ray.dirZ * best,
+  };
+}
+
+/** Human-readable flag list, for the dev overlay. */
+export function describeFlags(flags: number): string {
+  const names: string[] = [];
+  if (flags & 1) names.push('walk');
+  if (flags & 2) names.push('build');
+  if (flags & 8) names.push('blocker');
+  return names.length > 0 ? names.join('+') : 'none';
+}
+
+/** Exposed so the picker can be exercised without a Babylon camera. */
+export function makeRay(origin: Vector3, direction: Vector3): PickRay {
+  const d = direction.normalizeToNew();
+  return {
+    originX: origin.x,
+    originY: origin.y,
+    originZ: origin.z,
+    dirX: d.x,
+    dirY: d.y,
+    dirZ: d.z,
+  };
+}
 
 /** Moller-Trumbore, double-sided. Returns the ray parameter, or null. */
 function rayTriangle(ray: PickRay, a: Point, b: Point, c: Point): number | null {
@@ -171,27 +269,4 @@ function rayTriangle(ray: PickRay, a: Point, b: Point, c: Point): number | null 
 
   const s = (e2x * qx + e2y * qy + e2z * qz) * invDet;
   return s > 1e-6 ? s : null;
-}
-
-/** Human-readable flag list, for the dev overlay. */
-export function describeFlags(flags: number): string {
-  const names: string[] = [];
-  if (flags & 1) names.push('walk');
-  if (flags & 2) names.push('build');
-  if (flags & 4) names.push('ramp');
-  if (flags & 8) names.push('blocker');
-  return names.length > 0 ? names.join('+') : 'none';
-}
-
-/** Exposed so the picker can be exercised without a Babylon camera. */
-export function makeRay(origin: Vector3, direction: Vector3): PickRay {
-  const d = direction.normalizeToNew();
-  return {
-    originX: origin.x,
-    originY: origin.y,
-    originZ: origin.z,
-    dirX: d.x,
-    dirY: d.y,
-    dirZ: d.z,
-  };
 }

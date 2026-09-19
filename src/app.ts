@@ -7,7 +7,9 @@ import type { Scene } from '@babylonjs/core/scene';
 import { createTestMap } from './sim/fixtures/testmap.ts';
 import { toFloat } from './sim/fixed.ts';
 import type { World } from './sim/world.ts';
-import { MAX_TIER, hashWorld, worldFromCell } from './sim/world.ts';
+import { hashWorld, worldFromCell } from './sim/world.ts';
+import type { HeightOverrides } from './sim/terrain.ts';
+import { MAX_TRAVERSABLE_SLOPE } from './sim/terrain.ts';
 import { createMatchFromWorld } from './sim/matchinit.ts';
 import { stepMatch } from './sim/tick.ts';
 import { hashMatch } from './sim/statehash.ts';
@@ -27,7 +29,7 @@ import { connect } from './net/transport.ts';
 import { createRenderer } from './render/engine.ts';
 import { RtsCamera } from './render/camera.ts';
 import { attachInput } from './render/input.ts';
-import { TIER_HEIGHT, createTerrain } from './render/terrain.ts';
+import { createTerrain, maxTerrainHeight } from './render/terrain.ts';
 import { describeFlags, pickCell, screenRay } from './render/pick.ts';
 import { FLAG_LAYERS, createFlagOverlay } from './render/flagoverlay.ts';
 import { createGizmos } from './render/gizmos.ts';
@@ -110,17 +112,34 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     bounds: { minX: 0, maxX: widthUnits, minZ: 0, maxZ: depthUnits },
   });
 
+  /**
+   * The height changes the running match has made, or null in the editor.
+   *
+   * Invariant 5 keeps a match's terrain edits out of the world, which means
+   * every consumer that reads the ground — picking, decals, the overlay — has
+   * to be handed them explicitly. This is the one place that knows where they
+   * live.
+   */
+  const heightOverrides = (): HeightOverrides | null => driver?.match.terrain ?? null;
+
+  /** Slope as a word, for the debug overlay. */
+  const describeSlope = (slope: number): string => {
+    const limit = toFloat(MAX_TRAVERSABLE_SLOPE);
+    if (slope >= limit) return `${slope.toFixed(2)} cliff`;
+    if (slope >= limit / 2) return `${slope.toFixed(2)} steep`;
+    return slope.toFixed(2);
+  };
+
   const terrainMaterial = createTerrainMaterial(renderer.scene, {
-    tierHeight: TIER_HEIGHT,
-    maxTier: MAX_TIER,
+    heightRange: maxTerrainHeight(world),
+    cliffSlope: toFloat(MAX_TRAVERSABLE_SLOPE),
     lightDirection: renderer.sun.direction,
   });
   let terrain = createTerrain(renderer.scene, world, terrainMaterial);
-  let ramps = terrain.ramps();
   let flagOverlay = createFlagOverlay(renderer.scene, world);
-  flagOverlay.rebuild(ramps);
+  flagOverlay.rebuild(null);
   const gizmos = createGizmos(renderer.scene, () => world);
-  gizmos.rebuild(ramps);
+  gizmos.rebuild(null);
 
   // Pathfinding lives in a worker: a 256x256 field is several milliseconds,
   // which is a visible hitch if it lands inside a frame.
@@ -241,11 +260,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     terrain.dispose();
     world = next;
     terrain = createTerrain(renderer.scene, world, terrainMaterial);
-    ramps = terrain.ramps();
     flagOverlay = createFlagOverlay(renderer.scene, world);
-    flagOverlay.rebuild(ramps);
+    flagOverlay.rebuild(heightOverrides());
     flagOverlay.show(layer);
-    gizmos.rebuild(ramps);
+    gizmos.rebuild(heightOverrides());
     fogTexture.dispose();
     fogTexture = createFogTexture(renderer.scene, world.width, world.height);
     setTerrainFog(terrainMaterial, null, world.width, world.height, EXPLORED_DIM);
@@ -271,6 +289,23 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   let lockstep: Lockstep | null = null;
   /** The player this client controls in a networked match. */
   let netPlayer = LOCAL_PLAYER;
+  /**
+   * How many height overrides the terrain mesh was last built against.
+   *
+   * A building levels the ground under its footprint, which changes the mesh.
+   * Overrides are only ever added during a match, so the count is enough to
+   * notice — and checking one integer per frame is cheaper than diffing.
+   */
+  let terrainOverrideCount = 0;
+
+  /** Rebuild the terrain, overlay and gizmos against the current overrides. */
+  function refreshTerrainSurface(): void {
+    const overrides = heightOverrides();
+    terrainOverrideCount = overrides?.count ?? 0;
+    terrain.setOverrides(overrides);
+    flagOverlay.rebuild(overrides);
+    gizmos.rebuild(overrides);
+  }
 
   function startMatch(seed = 1): void {
     stopPlayback();
@@ -289,8 +324,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       if (player !== LOCAL_PLAYER) setAiPlayer(match, player, true);
     }
     driver = createDriver(match, { world });
+    refreshTerrainSurface();
     unitRenderer.captureTick(driver.match);
-    unitRenderer.update(driver.match, world, ramps, 1, LOCAL_PLAYER);
+    unitRenderer.update(driver.match, world, driver.match.terrain, 1, LOCAL_PLAYER);
     setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
 
     // Open on the local player's base, the way an RTS does.
@@ -318,7 +354,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       return;
     }
     unitRenderer.captureTick(playback.match);
-    unitRenderer.update(playback.match, world, ramps, 1, LOCAL_PLAYER);
+    unitRenderer.update(playback.match, world, playback.match.terrain, 1, LOCAL_PLAYER);
     setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
     overlay.set('match', 'replay');
     overlay.set('replay', describeReplay(replay));
@@ -423,7 +459,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     });
 
     unitRenderer.captureTick(match);
-    unitRenderer.update(match, world, ramps, 1, netPlayer);
+    unitRenderer.update(match, world, match.terrain, 1, netPlayer);
     setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
     const home = world.startLocations[playerId] ?? world.startLocations[0];
     if (home) {
@@ -441,6 +477,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     }
     recorder = null;
     driver = null;
+    // Back to the map's own ground: the match's levelling was never the map's.
+    refreshTerrainSurface();
     lockstep?.dispose();
     lockstep = null;
     netPlayer = LOCAL_PLAYER;
@@ -494,14 +532,14 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     if (playback) {
       const showing = playback;
       showing.advance(dt, () => unitRenderer.captureTick(showing.match));
-      unitRenderer.update(showing.match, world, ramps, showing.driver.alpha(), LOCAL_PLAYER);
+      unitRenderer.update(showing.match, world, showing.match.terrain, showing.driver.alpha(), LOCAL_PLAYER);
       if (showing.match.tick !== lastFogTick) {
         lastFogTick = showing.match.tick;
-        ghostRenderer.update(showing.match, world, ramps, LOCAL_PLAYER);
+        ghostRenderer.update(showing.match, world, showing.match.terrain, LOCAL_PLAYER);
         fogTexture.update(showing.match.fog, LOCAL_PLAYER);
       }
       selection.prune(showing.match.units);
-      selectionRings.update(selection.selection.list(), showing.match.units, world, ramps);
+      selectionRings.update(selection.selection.list(), showing.match.units, world, showing.match.terrain);
       if (frameStarted >= nextUiUpdate) {
         nextUiUpdate = frameStarted + UI_INTERVAL_MS;
         hud.update(showing.match, selection.selection.list());
@@ -560,20 +598,20 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
           () => recording?.checkpoint(running.match),
         );
       }
-      unitRenderer.update(running.match, world, ramps, running.alpha(), LOCAL_PLAYER);
+      unitRenderer.update(running.match, world, running.match.terrain, running.alpha(), LOCAL_PLAYER);
 
       // Fog is recomputed every few ticks and remembered structures change
       // rarely, so neither needs touching on a frame where nothing moved.
       // The ghost pass in particular walks every cell of the map.
       if (running.match.tick !== lastFogTick) {
         lastFogTick = running.match.tick;
-        ghostRenderer.update(running.match, world, ramps, LOCAL_PLAYER);
+        ghostRenderer.update(running.match, world, running.match.terrain, LOCAL_PLAYER);
         fogTexture.update(running.match.fog, LOCAL_PLAYER);
         overlay.set('fog', `${fogTexture.lastUploadMs().toFixed(2)} ms`);
       }
 
       selection.prune(running.match.units);
-      selectionRings.update(selection.selection.list(), running.match.units, world, ramps);
+      selectionRings.update(selection.selection.list(), running.match.units, world, running.match.terrain);
 
       const box = selection.dragBox();
       if (box) {
@@ -622,13 +660,15 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
 
     if (input.pointer.inside) {
       const ray = screenRay(renderer.scene, camera.camera, input.pointer.x, input.pointer.y);
-      const hit = pickCell(world, ramps, ray);
+      const hit = pickCell(world, ray, undefined, heightOverrides());
       overlay.set('cell', hit ? `${hit.cell} (${hit.cx},${hit.cy})` : '-');
-      overlay.set('tier', hit ? String(hit.tier) : '-');
+      overlay.set('ground', hit ? hit.height.toFixed(2) : '-');
+      overlay.set('slope', hit ? describeSlope(hit.slope) : '-');
       overlay.set('flags', hit ? describeFlags(hit.flags) : '-');
     } else {
       overlay.set('cell', '-');
-      overlay.set('tier', '-');
+      overlay.set('ground', '-');
+      overlay.set('slope', '-');
       overlay.set('flags', '-');
     }
 
@@ -636,6 +676,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     const renderStarted = performance.now();
     renderer.scene.render();
     const gpuMs = performance.now() - renderStarted;
+
+    // A building that finished levelling its footprint changed the ground.
+    if ((heightOverrides()?.count ?? 0) !== terrainOverrideCount) refreshTerrainSurface();
 
     smoothedCpuMs += (cpuMs - smoothedCpuMs) * 0.1;
     smoothedGpuMs += (gpuMs - smoothedGpuMs) * 0.1;
@@ -649,7 +692,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     sessionHooks: {
       pick: (screenX, screenY) => {
         const ray = screenRay(renderer.scene, camera.camera, screenX, screenY);
-        return pickCell(world, ramps, ray)?.cell ?? -1;
+        return pickCell(world, ray, undefined, heightOverrides())?.cell ?? -1;
       },
       rebuildCells: (cells) => {
         if (cells.length === 0) return;
@@ -667,21 +710,20 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
           if (cy > y1) y1 = cy;
         }
         terrain.rebuildChunks(terrain.chunksForRect(x0, y0, x1, y1));
-        ramps = terrain.ramps();
-        flagOverlay.rebuild(ramps);
-        gizmos.rebuild(ramps);
+        flagOverlay.rebuild(heightOverrides());
+        gizmos.rebuild(heightOverrides());
         // Only the edited region is recomputed; the worker gets the result.
         rebuildRegion(costGrid, world, x0, y0, x1, y1);
         nav.setGrid(costGrid);
       },
       // Any session change can move a marker: a placed patch, an undo, a load.
-      onChange: () => gizmos.rebuild(ramps),
+      onChange: () => gizmos.rebuild(heightOverrides()),
     },
     onChange: (next) => {
       overlay.set('mode', next);
       // Node and start markers are an authoring aid, not part of the game.
       gizmos.setVisible(next === 'editor');
-      gizmos.rebuild(ramps);
+      gizmos.rebuild(heightOverrides());
     },
     onToggleTestMatch: () => {
       if (driver) stopMatch();
@@ -729,7 +771,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     if (e.button === 0) {
       if (pendingBuild >= 0) {
         const ray = screenRay(renderer.scene, camera.camera, x, y);
-        const hit = pickCell(world, ramps, ray);
+        const hit = pickCell(world, ray, undefined, heightOverrides());
         if (hit) {
           pendingCommands.push({
             kind: CommandKind.PlaceBuilding,
@@ -754,7 +796,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       }
       // Right-click issues an order to whatever is selected.
       const ray = screenRay(renderer.scene, camera.camera, x, y);
-      const hit = pickCell(world, ramps, ray);
+      const hit = pickCell(world, ray, undefined, heightOverrides());
       const command = dispatchOrder(driver.match.units, world, LOCAL_PLAYER, selection.selection.list(), {
         cell: hit?.cell ?? -1,
         screenX: x,

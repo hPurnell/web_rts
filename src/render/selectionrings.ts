@@ -18,7 +18,7 @@ import { resolve } from '../sim/units.ts';
 import { UNIT_TYPES } from '../sim/unittypes.ts';
 import { toFloat } from '../sim/fixed.ts';
 import type { World } from '../sim/world.ts';
-import type { RampSlopes } from './terrain.ts';
+import type { HeightOverrides } from '../sim/terrain.ts';
 import { groundHeightAt } from './units.ts';
 
 /** Height above the terrain, enough to clear it without visibly floating. */
@@ -30,7 +30,7 @@ export interface SelectionRings {
     handles: readonly UnitHandle[],
     store: UnitStore,
     world: World,
-    ramps: RampSlopes,
+    overrides: HeightOverrides | null,
   ): void;
   count(): number;
   /** Hide every ring, e.g. when a match ends. */
@@ -68,7 +68,7 @@ export function createSelectionRings(scene: Scene): SelectionRings {
   return {
     count: () => written,
 
-    update(handles, store, world, ramps) {
+    update(handles, store, world, overrides) {
       const needed = handles.length;
       if (needed === 0) {
         written = 0;
@@ -87,7 +87,7 @@ export function createSelectionRings(scene: Scene): SelectionRings {
         if (index < 0) continue;
         const x = toFloat(store.posX[index] as number);
         const z = toFloat(store.posZ[index] as number);
-        const y = groundHeightAt(world, ramps, x, z) + LIFT;
+        const y = groundHeightAt(world, overrides, x, z) + LIFT;
         // Comfortably outside the hull, so the ring reads as a ring.
         const radius = toFloat(UNIT_TYPES[store.typeId[index] as number]?.radius ?? 0) * 2.1;
 

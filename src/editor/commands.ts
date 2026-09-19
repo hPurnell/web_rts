@@ -20,91 +20,137 @@ export interface EditorCommand {
   /** True when the command would change nothing; such commands are dropped. */
   isEmpty(): boolean;
   /** Terrain cells this command moved, so the right chunks get rebuilt. */
-  touchedCells?(): number[];
+  touchedCells?(world?: World): number[];
   /** For status readouts and tests. */
   describe(): string;
 }
 
 interface CellChange {
-  beforeTier: number;
   beforeFlags: number;
-  afterTier: number;
   afterFlags: number;
 }
 
+interface CornerChange {
+  beforeHeight: number;
+  afterHeight: number;
+}
+
 /**
- * A terrain edit: any number of cells changing tier and/or flags.
+ * A terrain edit: corner heights, cell flags, or both.
  *
- * One brush stroke is one command. Cells are recorded the first time they are
- * touched, so dragging back over a cell does not stack up redundant history.
+ * One brush stroke is one command. A corner or cell is recorded the first time
+ * the stroke touches it and updated in place afterwards, so a sculpt stroke
+ * that passes back over the same ground four hundred times stores one original
+ * height, not four hundred copies of it — and undo restores the height the
+ * ground had before the stroke, not before the last sample.
  */
 export class TerrainEditCommand implements EditorCommand {
   readonly kind = 'terrain';
-  private readonly changes = new Map<number, CellChange>();
+  private readonly cells = new Map<number, CellChange>();
+  private readonly corners = new Map<number, CornerChange>();
 
   constructor(readonly coalesceKey: string | null = null) {}
 
-  /** Stage a cell's new tier and flags, capturing its current values once. */
-  record(world: World, cell: number, tier: number, flags: number): void {
-    if (cell < 0 || cell >= world.tier.length) return;
-    const existing = this.changes.get(cell);
+  /** Stage a corner's new height, capturing its current one once. */
+  recordCorner(world: World, corner: number, height: number): void {
+    if (corner < 0 || corner >= world.heights.length) return;
+    const existing = this.corners.get(corner);
     if (existing) {
-      existing.afterTier = tier;
+      existing.afterHeight = height;
+      return;
+    }
+    this.corners.set(corner, {
+      beforeHeight: world.heights[corner] as number,
+      afterHeight: height,
+    });
+  }
+
+  /** Stage a cell's new flags, capturing its current ones once. */
+  recordFlags(world: World, cell: number, flags: number): void {
+    if (cell < 0 || cell >= world.flags.length) return;
+    const existing = this.cells.get(cell);
+    if (existing) {
       existing.afterFlags = flags;
       return;
     }
-    this.changes.set(cell, {
-      beforeTier: world.tier[cell] as number,
+    this.cells.set(cell, {
       beforeFlags: world.flags[cell] as number,
-      afterTier: tier,
       afterFlags: flags,
     });
   }
 
-  /** Cells this command touches, for deciding which chunks to rebuild. */
-  touchedCells(): number[] {
-    return [...this.changes.keys()];
+  /**
+   * Cells this command touches, for deciding which chunks to rebuild.
+   *
+   * A corner belongs to up to four cells, and moving it changes all of them,
+   * so every cell around a touched corner is reported.
+   */
+  touchedCells(world?: World): number[] {
+    const touched = new Set<number>(this.cells.keys());
+    if (world) {
+      const stride = world.width + 1;
+      for (const corner of this.corners.keys()) {
+        const cx = corner % stride;
+        const cz = (corner / stride) | 0;
+        for (const [dx, dz] of [
+          [0, 0],
+          [-1, 0],
+          [0, -1],
+          [-1, -1],
+        ] as const) {
+          const x = cx + dx;
+          const z = cz + dz;
+          if (x < 0 || z < 0 || x >= world.width || z >= world.height) continue;
+          touched.add(z * world.width + x);
+        }
+      }
+    }
+    return [...touched];
+  }
+
+  /** Corners this command moved. */
+  touchedCorners(): number[] {
+    return [...this.corners.keys()];
   }
 
   apply(world: World): void {
-    for (const [cell, change] of this.changes) {
-      world.tier[cell] = change.afterTier;
-      world.flags[cell] = change.afterFlags;
-    }
+    for (const [corner, change] of this.corners) world.heights[corner] = change.afterHeight;
+    for (const [cell, change] of this.cells) world.flags[cell] = change.afterFlags;
   }
 
   invert(world: World): void {
-    for (const [cell, change] of this.changes) {
-      world.tier[cell] = change.beforeTier;
-      world.flags[cell] = change.beforeFlags;
-    }
+    for (const [corner, change] of this.corners) world.heights[corner] = change.beforeHeight;
+    for (const [cell, change] of this.cells) world.flags[cell] = change.beforeFlags;
   }
 
   merge(next: EditorCommand): boolean {
     if (!(next instanceof TerrainEditCommand)) return false;
     if (next.coalesceKey === null || next.coalesceKey !== this.coalesceKey) return false;
-    for (const [cell, change] of next.changes) {
-      const existing = this.changes.get(cell);
-      if (existing) {
-        existing.afterTier = change.afterTier;
-        existing.afterFlags = change.afterFlags;
-      } else {
-        this.changes.set(cell, { ...change });
-      }
+    for (const [corner, change] of next.corners) {
+      const existing = this.corners.get(corner);
+      if (existing) existing.afterHeight = change.afterHeight;
+      else this.corners.set(corner, { ...change });
+    }
+    for (const [cell, change] of next.cells) {
+      const existing = this.cells.get(cell);
+      if (existing) existing.afterFlags = change.afterFlags;
+      else this.cells.set(cell, { ...change });
     }
     return true;
   }
 
   isEmpty(): boolean {
-    for (const change of this.changes.values()) {
-      if (change.beforeTier !== change.afterTier) return false;
+    for (const change of this.corners.values()) {
+      if (change.beforeHeight !== change.afterHeight) return false;
+    }
+    for (const change of this.cells.values()) {
       if (change.beforeFlags !== change.afterFlags) return false;
     }
     return true;
   }
 
   describe(): string {
-    return `terrain (${this.changes.size} cells)`;
+    return `terrain (${this.corners.size} corners, ${this.cells.size} cells)`;
   }
 }
 
@@ -141,8 +187,8 @@ export class CompositeCommand implements EditorCommand {
     return this.parts.map((part) => part.describe()).join(' + ');
   }
 
-  touchedCells(): number[] {
-    return this.parts.flatMap((part) => part.touchedCells?.() ?? []);
+  touchedCells(world?: World): number[] {
+    return this.parts.flatMap((part) => part.touchedCells?.(world) ?? []);
   }
 }
 

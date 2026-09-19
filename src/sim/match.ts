@@ -24,6 +24,8 @@ import type { NodeState } from './economy.ts';
 import { nodeHashableArrays } from './economy.ts';
 import type { AiState } from './ai.ts';
 import { aiHashableArrays, createAiState } from './ai.ts';
+import { createHeightOverrides, overrideHashableArrays } from './terrain.ts';
+import type { HeightOverrides } from './terrain.ts';
 
 export const MAX_PLAYERS = 8;
 
@@ -59,6 +61,17 @@ export interface Match {
   nodes: NodeState;
   /** Which players the skirmish bot controls, and what it is doing. */
   readonly ai: AiState;
+  /**
+   * Terrain heights this match has changed, as corner/height pairs.
+   *
+   * Invariant 5: a match never writes to the world's heightfield, because the
+   * world is shared and `hashWorld` must not move while a match runs. When a
+   * structure levels the ground under its footprint the new heights land here,
+   * and every read of the terrain during a match passes this alongside the
+   * world. It is a pair list rather than a second heightfield so that hashing
+   * it costs the size of the edits rather than the size of the map.
+   */
+  readonly terrain: HeightOverrides;
 }
 
 export function createMatch(init: MatchInit): Match {
@@ -79,6 +92,7 @@ export function createMatch(init: MatchInit): Match {
     fog: createFogGrids(init.worldWidth ?? 64, init.worldHeight ?? 64),
     projectiles: createProjectileStore(),
     ai: createAiState(),
+    terrain: createHeightOverrides(),
     nodes: {
       amount: new Int32Array(0),
       harvesters: new Int32Array(0),
@@ -105,6 +119,7 @@ export function hashableArrays(match: Match): { name: string; data: ArrayBufferV
     ...projectileHashableArrays(match.projectiles),
     ...nodeHashableArrays(match.nodes),
     ...aiHashableArrays(match.ai),
+    ...overrideHashableArrays(match.terrain),
   ];
 }
 

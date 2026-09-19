@@ -8,4 +8,12 @@ export { createSession } from './session.ts';
 export type { EditorSession, SessionHooks } from './session.ts';
 export { EditorHistory } from './history.ts';
 export { TerrainEditCommand, ResourceNodeCommand, StartLocationCommand } from './commands.ts';
-export { brushCells, illegalCells, isTerrainLegal, proposeTierEdit } from './brush.ts';
+export {
+  brushCells,
+  brushCorners,
+  describeSlope,
+  rampTarget,
+  stageFlagEdit,
+  stageSculpt,
+} from './sculpt.ts';
+export type { SculptMode } from './sculpt.ts';
