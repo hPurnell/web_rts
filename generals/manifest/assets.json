@@ -1,0 +1,13 @@
+{
+  "note": "Source file NAMES only, never content. A reference to a file on your disk, the way a .gitignore entry is. See ../PLAN.md ground rule 1.",
+  "vehicles": [
+    { "id": "usa_crusader",  "faction": "usa", "model": "avcrusader.W3D" },
+    { "id": "usa_tomahawk",  "faction": "usa", "model": "avtomahawk.W3D" },
+    { "id": "usa_humvee",    "faction": "usa", "model": "CvHumVee.W3D" },
+    { "id": "gla_scorpion",  "faction": "gla", "model": "UVLiteTank.W3D" },
+    { "id": "gla_marauder",  "faction": "gla", "model": "UVMarauder.W3D" },
+    { "id": "gla_quadcannon","faction": "gla", "model": "UVQuadCann.W3D" },
+    { "id": "gla_rocketbuggy","faction": "gla","model": "UVRockBug.W3D" },
+    { "id": "gla_scud",      "faction": "gla", "model": "UVScudLchr.W3D" }
+  ]
+}
