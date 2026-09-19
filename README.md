@@ -97,6 +97,22 @@ with `pnpm gen:golden-sim`, and says so in the commit. A golden hash that
 changes without a matching script change is a desync introduced by that commit,
 not a test that needs updating.
 
+## VS Code
+
+`.vscode/` has run profiles and tasks. Nothing launches a browser — start the
+dev server and open it yourself.
+
+- **Run and Debug** (Ctrl+Shift+D): *Dev server*, *Match relay*, *Debug all
+  tests*, *Debug current test file*, *Debug performance budgets*, and *Debug
+  current script (tsx)* for anything in `tools/`.
+- **Run Task** (Terminal → Run Task): the same server plus `build`, `lint`,
+  `typecheck`, the checks (`bundle`, `browser`, `multiplayer`), the stress
+  profile and a screenshot task. Ctrl+Shift+B builds; the default test task is
+  the full suite.
+
+The dev server serves **http://localhost:5173/web_rts/** — Vite's `base`
+matches the GitHub Pages path, so the bare root 404s.
+
 ## Multiplayer
 
 Lockstep: only commands cross the wire, never state, so the traffic does not

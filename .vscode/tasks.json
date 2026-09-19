@@ -1,0 +1,140 @@
+{
+  // Terminal -> Run Task, or Ctrl+Shift+B for the default build.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // The one you want most of the time: serves http://localhost:5173/web_rts/
+      // Note the /web_rts/ path — Vite's `base` matches the GitHub Pages URL,
+      // so the bare root 404s.
+      "label": "dev server",
+      "type": "shell",
+      "command": "pnpm dev",
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": {
+        // Vite prints nothing a problem matcher can use, but a background task
+        // needs one to know when it has started. This watches for "ready in".
+        "owner": "vite",
+        "pattern": {
+          "regexp": "^\\s*(ERROR|error)\\s+(.*)$",
+          "severity": 1,
+          "message": 2
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE v",
+          "endsPattern": "ready in"
+        }
+      }
+    },
+    {
+      "label": "relay",
+      "detail": "Match relay on ws://localhost:8787 for local multiplayer",
+      "type": "shell",
+      "command": "pnpm relay",
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": {
+        "pattern": { "regexp": "^(ERROR)\\s+(.*)$", "severity": 1, "message": 2 },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "relay listening",
+          "endsPattern": "relay listening"
+        }
+      }
+    },
+
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "pnpm build",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "typecheck",
+      "type": "shell",
+      "command": "pnpm typecheck",
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "lint",
+      "type": "shell",
+      "command": "pnpm lint",
+      "problemMatcher": ["$eslint-stylish"]
+    },
+
+    {
+      "label": "test",
+      "detail": "Full suite, then the serial performance budgets",
+      "type": "shell",
+      "command": "pnpm test",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "test (watch)",
+      "type": "shell",
+      "command": "pnpm test:watch",
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "test: performance budgets",
+      "type": "shell",
+      "command": "pnpm test:perf",
+      "problemMatcher": []
+    },
+    {
+      "label": "test: determinism only",
+      "type": "shell",
+      "command": "pnpm test:determinism",
+      "problemMatcher": []
+    },
+
+    {
+      "label": "check: bundle",
+      "detail": "Editor stays code-split, Inspector never ships (needs a build first)",
+      "type": "shell",
+      "command": "pnpm check:bundle",
+      "problemMatcher": []
+    },
+    {
+      "label": "check: browser",
+      "detail": "Production build loaded in headless Chromium; fails on any console error",
+      "type": "shell",
+      "command": "pnpm check:browser",
+      "problemMatcher": []
+    },
+    {
+      "label": "check: multiplayer",
+      "detail": "Two headless browsers against a local relay; asserts no desync",
+      "type": "shell",
+      "command": "pnpm check:multiplayer",
+      "problemMatcher": []
+    },
+
+    {
+      "label": "stress profile",
+      "detail": "M33 performance profile. Add --write to update the committed baseline.",
+      "type": "shell",
+      "command": "pnpm stress",
+      "problemMatcher": []
+    },
+    {
+      "label": "screenshot the game",
+      "detail": "Starts a match, plays for 20s, writes shot.png",
+      "type": "shell",
+      "command": "pnpm shot shot.png --keys \"F5:300\" --after 20000",
+      "problemMatcher": []
+    },
+    {
+      "label": "regenerate determinism golden hash",
+      "detail": "Deliberate act only — see CLAUDE.md",
+      "type": "shell",
+      "command": "pnpm gen:golden-sim",
+      "problemMatcher": []
+    }
+  ]
+}

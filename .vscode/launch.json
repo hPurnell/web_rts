@@ -1,0 +1,108 @@
+{
+  // Run and Debug (Ctrl+Shift+D). Nothing here launches a browser — open
+  // http://localhost:5173/web_rts/ in your own once the dev server is up.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Starts Vite in the debugger. Runs the same as `pnpm dev`, but you can
+      // breakpoint vite.config.ts and anything that runs on the server side.
+      // The URL is printed in the terminal and is Ctrl-clickable.
+      "name": "Dev server",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/vite/bin/vite.js",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Match relay",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/relay.ts",
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+
+    {
+      // Breakpoints in test files and in src both work. --no-file-parallelism
+      // keeps everything in one process so they land reliably.
+      "name": "Debug all tests",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": ["run", "--no-file-parallelism"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"]
+    },
+    {
+      "name": "Debug current test file",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": ["run", "--no-file-parallelism", "${relativeFile}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"]
+    },
+    {
+      "name": "Debug performance budgets",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": ["run", "--config", "vitest.perf.config.ts"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"]
+    },
+
+    {
+      // Whatever .ts file is open in the editor. Handy for anything in tools/:
+      // stress.ts, check-bundle.ts, gen-sim-golden.ts, screenshot.ts.
+      "name": "Debug current script (tsx)",
+      "type": "node",
+      "request": "launch",
+      "program": "${file}",
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Debug stress profile",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/stress.ts",
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Debug multiplayer check",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/check-multiplayer.ts",
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ],
+  "compounds": [
+    {
+      // For playing against yourself: relay plus the game server. Open two
+      // browser windows on
+      //   http://localhost:5173/web_rts/?relay=ws://localhost:8787/?match=demo&match=demo
+      "name": "Multiplayer (relay + dev server)",
+      "configurations": ["Match relay", "Dev server"],
+      "stopAll": true
+    }
+  ]
+}
