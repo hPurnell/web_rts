@@ -178,8 +178,16 @@ export function buildChunkVertexData(
       push(cx + 1, cz + 1, cx + 1, cz + 1);
       push(cx, cz + 1, cx, cz + 1);
 
-      // Split NW-SE, matching heightAt. Wound so the faces point up.
-      buf.indices.push(base + 3, base + 2, base, base + 2, base + 1, base);
+      // Split NW-SE, matching heightAt.
+      //
+      // Wound so these faces survive back-face culling. Babylon's default is
+      // left-handed, where a front face is clockwise as seen from the front —
+      // which means the right-hand-rule cross product of a visible top face
+      // points *down*, not up. Reversing these six indices makes the whole
+      // terrain vanish and leaves only the skirt, which is not obvious from
+      // looking at the code, so `emits top faces that survive back-face
+      // culling` in test/terrain.test.ts asserts it directly.
+      buf.indices.push(base, base + 2, base + 3, base, base + 1, base + 2);
     }
   }
 

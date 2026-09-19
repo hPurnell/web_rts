@@ -282,3 +282,37 @@ describe('terrain meshes', () => {
     terrain.dispose();
   });
 });
+
+describe('back-face culling', () => {
+  it('emits top faces that survive back-face culling', () => {
+    // This is the assertion that would have caught a whole map rendering as
+    // nothing but its skirt. Babylon's default is left-handed, where a front
+    // face is clockwise as seen from the front; for ground viewed from above
+    // that makes the right-hand-rule cross product of every top triangle
+    // point down. Reversing the winding typechecks, passes every other test,
+    // and renders an empty screen.
+    const world = w.createWorld({ width: 4, height: 4 });
+    raise(world, 2, 2, fromInt(3)); // some relief, so this is not a flat case
+    const normals = buildCornerNormals(world);
+    const data = buildChunkVertexData(world, normals, { cx0: 0, cy0: 0, cx1: 4, cy1: 4 });
+    const positions = data.positions as number[];
+    const indices = data.indices as number[];
+
+    const topTriangles = 4 * 4 * 2;
+    for (let t = 0; t < topTriangles; t++) {
+      const [ia, ib, ic] = [indices[t * 3] as number, indices[t * 3 + 1] as number, indices[t * 3 + 2] as number];
+      const at = (i: number): [number, number, number] => [
+        positions[i * 3] as number,
+        positions[i * 3 + 1] as number,
+        positions[i * 3 + 2] as number,
+      ];
+      const a = at(ia);
+      const b = at(ib);
+      const c = at(ic);
+      const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+      const crossY = (e1[2] as number) * (e2[0] as number) - (e1[0] as number) * (e2[2] as number);
+      expect(crossY, `triangle ${t}`).toBeLessThan(0);
+    }
+  });
+});

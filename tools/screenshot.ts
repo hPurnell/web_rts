@@ -3,6 +3,12 @@
  * right rather than only that it typechecks.
  *
  * Usage: pnpm shot [out.png] [--wait ms] [--keys KeyD,KeyW] [--wheel N]
+ *                   [--path "?mode=editor"]
+ *
+ * `--path` is appended to the page URL. Mostly it is worth it for
+ * `?mode=editor`, which is the only way to look at terrain with no fog of war
+ * over it — in game mode everything outside a unit's sight is black, which
+ * hides exactly the thing you are usually trying to see.
  *
  * Runs against the dev server, so it does not pay for a production build.
  */
@@ -73,7 +79,7 @@ async function main(): Promise<void> {
     if (m.type() === 'error') record(m.text());
   });
 
-  await page.goto('http://localhost:5199/web_rts/', { waitUntil: 'networkidle' });
+  await page.goto(`http://localhost:5199/web_rts/${arg('path', '')}`, { waitUntil: 'networkidle' });
   await page.mouse.move(mouseX, mouseY);
   await page.waitForTimeout(waitMs);
 

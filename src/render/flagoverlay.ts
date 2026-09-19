@@ -134,7 +134,7 @@ export function createFlagOverlay(scene: Scene, world: World): FlagOverlay {
       for (let i = 0; i < 4; i++) {
         colors.push(color.r, color.g, color.b, color.a);
       }
-      indices.push(base + 3, base + 2, base, base + 2, base + 1, base);
+      indices.push(base, base + 2, base + 3, base, base + 1, base + 2);
     }
 
     if (positions.length === 0) return;

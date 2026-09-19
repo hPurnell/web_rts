@@ -27,6 +27,25 @@ when you meant to change simulation behaviour. Extend `SCRIPT` in
 say so in the commit. A hash that changed without a matching script change is a
 desync introduced by that commit.
 
+## Terrain is a heightfield, not tiers
+
+Heights live on cell **corners** as Q16.16 (`src/sim/terrain.ts`), not on
+cells, so neighbouring cells share their corners and cannot crack. A cell is
+two triangles split NW-SE, and `heightAt` interpolates within that triangle
+rather than bilinearly, so the simulation and the mesh agree exactly about
+where the ground is.
+
+Connectivity is **two** rules, not one. `cellsConnect` checks that each cell's
+own slope is traversable *and* that the step between them is: two cells can
+both be perfectly flat with a cliff face between them, and checking only the
+cells lets units walk off a ledge.
+
+A match never writes to `world.heights` (invariant 3). Levelling a building's
+footprint writes to `match.terrain`, a corner/height pair list that is part of
+match state and is hashed. Every read of the terrain during a match has to be
+passed those overrides, which is why so many signatures end in an optional
+`overrides` parameter.
+
 ## Babylon's tree-shaken build
 
 Some methods only exist if you import a module for its side effect. This has
@@ -36,6 +55,14 @@ bitten twice and fails silently — nothing throws, the thing just does nothing:
 - `mesh.thinInstance*` needs `@babylonjs/core/Meshes/thinInstanceMesh`
 
 If a renderer change makes nothing appear, check the side-effect import first.
+
+## Triangle winding
+
+Babylon's default is left-handed, so a front face is clockwise as seen from the
+front — which means the right-hand-rule cross product of a **visible ground
+triangle points down**. Getting this backwards renders the entire map as
+nothing but its edge skirt, silently, with every test still passing. It has
+cost one debugging session. `test/terrain.test.ts` asserts it directly now.
 
 ## Verifying
 
@@ -47,6 +74,7 @@ Looking at the thing matters — several bugs here typechecked and passed tests:
 
 ```
 pnpm shot out.png --keys "F5:300" --after 20000   # screenshot the running game
+pnpm shot out.png --path "?mode=editor" --wheel 1200   # the map with no fog over it
 pnpm check:browser        # production build in a real browser, fails on any console error
 pnpm check:multiplayer    # two browsers against a local relay, asserts no desync
 pnpm check:bundle         # editor stays code-split, Inspector never ships
@@ -63,3 +91,6 @@ pnpm stress               # M33 performance profile
   frame separately and says so.
 - **Over-saturated mining degrades**, rather than merely flattening. Measured
   and documented at `HARVEST_SLOTS` in `src/sim/economy.ts`.
+- **Fog costs 3.3ms**, against a budget the plan raised from 2ms to 6ms when
+  the disc stamp became a horizon sweep. It is the largest single item in a
+  tick, and it is what buys terrain that genuinely occludes.

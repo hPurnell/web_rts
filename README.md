@@ -1,8 +1,9 @@
 # web_rts
 
 A 3D real-time strategy game in the browser. TypeScript, deterministic lockstep
-simulation, SC2-style discrete cliff terrain, fog of war with high-ground
-vision, and an in-game map editor.
+simulation, continuous heightfield terrain in the vein of Generals or Tiberium
+Wars, fog of war computed by a radial horizon sweep, and an in-game map editor
+with sculpting brushes.
 
 See [PLAN.md](PLAN.md) for the architecture invariants and milestone plan.
 
@@ -51,7 +52,7 @@ PLAN.md's: ~700 live units with 600 of them engaged, on a 256×256 map.
 |---|---|
 | Simulation tick | 2.4 ms (budget: 8 ms) |
 | — of which movement | 2.2 ms |
-| — of which fog, every 4th tick | 1.6 ms |
+| — of which fog, every 4th tick | 3.3 ms (budget: 6 ms) |
 | Browser CPU per frame, ~850 units | ~7 ms |
 | Terrain + units + rings | 11 draw calls |
 
