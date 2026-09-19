@@ -9,13 +9,17 @@ This document is written for a coding agent. Each milestone is atomic,
 independently verifiable, and ends with something demonstrable. Work them in
 order unless a milestone explicitly says otherwise.
 
-> **Terrain model.** An earlier revision of this plan used SC2-style discrete
-> cliff tiers: a small integer height per cell, cliffs as hard tier boundaries,
-> and ramps as authored objects bridging exactly one tier. This revision
-> replaces that with a continuous heightfield. The consequences are not
-> cosmetic — connectivity, vision, picking, the editor's whole toolset and the
-> terrain mesh all change. See **Migration** at the end for what that means for
-> a build that already implements the tiered version.
+> **Terrain model.** The ground is a **continuous heightfield**: a fixed-point
+> height on every cell *corner*, with a cell drawn as two triangles. There are
+> no tiers, no tier boundaries and no ramp objects — a cliff is ground too
+> steep to walk up, and a ramp is ground someone sculpted gently enough that
+> you can.
+>
+> An earlier revision of this plan used SC2-style discrete cliff tiers, and
+> much of the text below still explains a decision by contrast with it, because
+> that is usually the clearest way to say why the heightfield does what it
+> does. Those passages are history, not pending work: the migration is
+> **complete**, and the table at the end records what it touched.
 
 ---
 
@@ -816,11 +820,11 @@ regression comparison.
 
 ---
 
-## Migration from the tiered build
+## Migration from the tiered build — complete
 
-If a build already implements the tiered model, these are the milestones whose
-work is genuinely redone rather than extended. Everything not listed is
-unaffected.
+A record of what moving from discrete tiers to the heightfield actually
+touched. Every row here is **done** except M29, which is blocked on art assets
+that are not in this repository. Everything not listed was unaffected.
 
 | Milestone | What changes |
 |---|---|
@@ -838,14 +842,28 @@ unaffected.
 | M26 | Footprint slope check; footprint levelling into the override layer |
 | M29 | Cliff-wall materials → splat maps, slope blending, triplanar projection |
 
-Two things are worth doing in this order specifically: **M4 and M18 before
+The order mattered in two places, and would again: **M4 and M18 before
 anything else**, because the nav grid is what tells you whether your terrain
 model is coherent; and **M22 after M18**, because the horizon sweep and the
-slope rules should agree about what a cliff is.
+slope rules have to agree about what a cliff is.
 
-The determinism golden hash changes at M4 and again at every milestone in this
-table that touches sim state. That is expected and deliberate — regenerate it
-with the milestone that causes it, and say so in the commit.
+The determinism golden hash changed at M4 and again at every milestone in this
+table that touches sim state. That was expected and deliberate — it is
+regenerated with the milestone that causes it, and said so in the commit.
+
+Three things the migration got wrong on the first attempt, all of them found by
+looking at the running game rather than by a test:
+
+- **Triangle winding.** Babylon's default is left-handed, so a visible ground
+  triangle's right-hand-rule normal points *down*. Reversing it renders the map
+  as nothing but its edge skirt — silently, with every test passing.
+- **Screen-space projection.** Selection projected units at `y = 0`, which is
+  nearly harmless over flat tiers and badly wrong over a heightfield: a unit on
+  a six-unit plateau projects most of a screen below itself.
+- **Brush falloff.** `sqrt` and `isqrt` take differently scaled arguments;
+  using the wrong one made every brush weight round to 1, so the sculpt brush
+  had no falloff at all — a hard-edged disc, which is the exact artefact this
+  terrain model exists to avoid.
 
 ---
 

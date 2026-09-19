@@ -7,6 +7,44 @@ sculpting brushes, and a Quake-style console.
 
 See [PLAN.md](PLAN.md) for the architecture invariants and milestone plan.
 
+## Terrain
+
+The ground is a **continuous heightfield**, not the discrete cliff tiers an
+earlier revision used. Heights live on cell *corners* as Q16.16 fixed-point, so
+neighbouring cells share their corners and the surface cannot crack; a cell is
+two triangles split NW–SE, and the simulation interpolates within that triangle
+rather than bilinearly, so `heightAt` and the rendered mesh agree exactly about
+where the ground is.
+
+Everything that used to ask "what tier is this?" asks about **slope**:
+
+| | |
+|---|---|
+| Walkable | slope ≤ 0.55 |
+| Buildable | slope ≤ 0.12 |
+| Above that | a cliff, and nothing more needs saying |
+
+There is no ramp flag and no ramp tool. A ramp is ground sculpted gently enough
+to walk up, which is how it works in Generals, and it means the editor needs
+only a brush. The map editor's tools are raise, lower, smooth, flatten, ramp
+and noise.
+
+Two consequences worth knowing:
+
+- **Connectivity is two rules, not one.** A cell's own slope must be traversable
+  *and* the step between two cells must be. Two cells can both be perfectly flat
+  with a cliff face between them, and checking only the cells lets units walk
+  off a ledge.
+- **A match never writes to the world's heightfield.** Levelling a building's
+  footprint writes to a match-owned override layer that is part of match state
+  and is hashed, so `hashWorld` cannot move while a match runs and a replay
+  reproduces the levelling from its commands.
+
+Fog of war follows from the same model: a radial horizon sweep, so high ground
+sees further because of the shape of the ground rather than because of a rule,
+and a ridge casts a real shadow. Units tilt to the terrain normal and selection
+rings lie on the surface.
+
 ## Commands
 
 | Command | Does |
@@ -39,8 +77,13 @@ it with the `VITE_BASE` environment variable when serving from elsewhere.
 Milestones M0–M27 and M30–M33 of [PLAN.md](PLAN.md) are done: foundation, world
 state, renderer, editor, simulation core, movement, fog of war, combat,
 economy, buildings and the HUD, plus replays, lockstep multiplayer, a skirmish
-bot and a performance baseline. M28–M29 (art) are blocked on an asset collection that is not in the
-repository.
+bot and a performance baseline. The migration from discrete tiers to the
+heightfield is complete across all of them. A main menu and a Quake-style
+console were added afterwards and are not in PLAN.md.
+
+M28–M29 (art) are blocked on an asset collection that is not in the repository,
+which is also why M29's terrain texturing — splat maps, slope blending,
+triplanar projection — is still the placeholder shader.
 
 ### Performance
 
@@ -65,7 +108,9 @@ report.
 | Key | Does |
 |---|---|
 | F2 | Toggle the map editor |
-| F3 | Cycle the flag debug overlay |
+| ` | Open the console |
+| Esc | Open the main menu |
+| F3 | Cycle the debug overlay (unwalkable, buildable, blockers, slope) |
 | F5 | Start or stop a test match, or stop a replay |
 | F6 / F7 | Save the last match's replay / open a replay |
 | Space, `[`, `]` | Pause a replay, slower, faster |
