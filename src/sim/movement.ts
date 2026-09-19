@@ -22,7 +22,9 @@ import type { Match } from './match.ts';
 import { UnitState } from './units.ts';
 import { unitType } from './unittypes.ts';
 import type { World } from './world.ts';
-import { cellFromWorld } from './world.ts';
+import { cellFromWorld, cellIndex } from './world.ts';
+import { slopeSpeedScale } from './terrain.ts';
+import type { HeightOverrides } from './terrain.ts';
 import type { CostGrid } from '../nav/grid.ts';
 import { DIRECTIONS } from '../nav/grid.ts';
 import type { FlowField } from '../nav/flowfield.ts';
@@ -36,6 +38,20 @@ const DIAGONAL = 46341;
 /** Unit direction vectors per DIRECTIONS index, already normalised. */
 const STEP_X: readonly Fixed[] = [0, DIAGONAL, ONE, DIAGONAL, 0, -DIAGONAL, -ONE, -DIAGONAL];
 const STEP_Z: readonly Fixed[] = [-ONE, -DIAGONAL, 0, DIAGONAL, ONE, DIAGONAL, 0, -DIAGONAL];
+
+/** The same directions as whole cell offsets, for sampling the ground ahead. */
+const STEP_CX: readonly number[] = [0, 1, 1, 1, 0, -1, -1, -1];
+const STEP_CZ: readonly number[] = [-1, -1, 0, 1, 1, 1, 0, -1];
+
+/** The cell one step along a flow direction, or the cell itself at the edge. */
+function neighbourCell(world: World, cell: number, direction: number): number {
+  const next = cellIndex(
+    world,
+    (cell % world.width) + (STEP_CX[direction] as number),
+    ((cell / world.width) | 0) + (STEP_CZ[direction] as number),
+  );
+  return next < 0 ? cell : next;
+}
 
 /** How hard neighbours push each other apart, as a fraction of top speed. */
 const SEPARATION_STRENGTH = ONE; // 1.0
@@ -74,6 +90,8 @@ export interface MovementContext {
   /** Resolves the field for a goal cell, computing it if need be. */
   field(goalCell: number): FlowField | null;
   readonly hash: SpatialHash;
+  /** The match's terrain changes, so units walk on the ground buildings left. */
+  readonly overrides?: HeightOverrides | null;
 }
 
 /**
@@ -161,10 +179,18 @@ export function stepMovement(match: Match, context: MovementContext): SpatialHas
       continue;
     }
 
+    // Terrain tax: climbing is slow and descending is a little quick. The
+    // gradient is measured toward the cell the flow field is sending the unit
+    // into, not toward wherever separation has shoved it, so a unit crossing a
+    // ridge slows down for the ridge rather than for its neighbours.
+    const aheadCell = neighbourCell(context.world, cell, direction);
+    const terrain = slopeSpeedScale(context.world, cell, aheadCell, context.overrides);
+
     // Normalise, then scale to this unit's speed: steering must never make a
     // unit faster than its type says it is.
-    const velX = mul(div(dirX, length), type.speed);
-    const velZ = mul(div(dirZ, length), type.speed);
+    const speed = mul(type.speed, terrain);
+    const velX = mul(div(dirX, length), speed);
+    const velZ = mul(div(dirZ, length), speed);
 
     const nextX = add(x, velX);
     const nextZ = add(z, velZ);

@@ -19,7 +19,7 @@ import { UNIT_TYPES } from '../sim/unittypes.ts';
 import { toFloat } from '../sim/fixed.ts';
 import type { World } from '../sim/world.ts';
 import type { HeightOverrides } from '../sim/terrain.ts';
-import { groundHeightAt } from './units.ts';
+import { groundHeightAt, terrainNormalAt } from './units.ts';
 
 /** Height above the terrain, enough to clear it without visibly floating. */
 const LIFT = 0.05;
@@ -87,19 +87,41 @@ export function createSelectionRings(scene: Scene): SelectionRings {
         if (index < 0) continue;
         const x = toFloat(store.posX[index] as number);
         const z = toFloat(store.posZ[index] as number);
-        const y = groundHeightAt(world, overrides, x, z) + LIFT;
+        const ground = groundHeightAt(world, overrides, x, z);
         // Comfortably outside the hull, so the ring reads as a ring.
         const radius = toFloat(UNIT_TYPES[store.typeId[index] as number]?.radius ?? 0) * 2.1;
 
-        // Scale on X and Z, no rotation: a ring has none to speak of.
+        // A flat ring on sloped ground buries its uphill edge and floats its
+        // downhill one, and the wider the ring the worse it looks. Tilting it
+        // into the surface is what makes it read as painted on the ground
+        // rather than hovering over it, and the lift goes along the normal for
+        // the same reason.
+        const up = terrainNormalAt(world, overrides, x, z);
+        const dot = up.z;
+        let fx = -up.x * dot;
+        let fy = -up.y * dot;
+        let fz = 1 - up.z * dot;
+        const flen = Math.hypot(fx, fy, fz) || 1;
+        fx /= flen;
+        fy /= flen;
+        fz /= flen;
+
         const offset = written * FLOATS_PER_MATRIX;
-        data.fill(0, offset, offset + FLOATS_PER_MATRIX);
-        data[offset] = radius;
-        data[offset + 5] = 1;
-        data[offset + 10] = radius;
-        data[offset + 12] = x;
-        data[offset + 13] = y;
-        data[offset + 14] = z;
+        data[offset] = (up.y * fz - up.z * fy) * radius;
+        data[offset + 1] = (up.z * fx - up.x * fz) * radius;
+        data[offset + 2] = (up.x * fy - up.y * fx) * radius;
+        data[offset + 3] = 0;
+        data[offset + 4] = up.x;
+        data[offset + 5] = up.y;
+        data[offset + 6] = up.z;
+        data[offset + 7] = 0;
+        data[offset + 8] = fx * radius;
+        data[offset + 9] = fy * radius;
+        data[offset + 10] = fz * radius;
+        data[offset + 11] = 0;
+        data[offset + 12] = x + up.x * LIFT;
+        data[offset + 13] = ground + up.y * LIFT;
+        data[offset + 14] = z + up.z * LIFT;
         data[offset + 15] = 1;
         written++;
       }

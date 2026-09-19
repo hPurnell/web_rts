@@ -45,7 +45,19 @@ export const MAX_BUILD_SLOPE: Fixed = 7864; // 0.12
  * base cost at maximum traversable slope. This is what makes paths curve
  * around hills instead of marching over them.
  */
-export const SLOPE_COST_SCALE: Fixed = 196608; // 3.0
+export const SLOPE_COST_SCALE: Fixed = 196608;
+
+/**
+ * How much an uphill gradient costs in speed, as a fraction per unit of rise
+ * over run. One means the steepest walkable climb lands exactly on the floor
+ * below, which is a tidier thing to explain than an arbitrary constant.
+ */
+export const UPHILL_PENALTY: Fixed = 65536; // 1.0
+/** The downhill equivalent. Far smaller: gravity helps less than it hinders. */
+export const DOWNHILL_BONUS: Fixed = 16384; // 0.25
+/** Clamps, so terrain can never make a unit faster than its type says. */
+export const MIN_SPEED_SCALE: Fixed = 29491; // 0.45
+export const MAX_SPEED_SCALE: Fixed = 75366; // 1.15 // 3.0
 
 /** Range the editor may sculpt within, kept well inside Q16.16. */
 export const HEIGHT_MIN: Fixed = 0;
@@ -315,6 +327,42 @@ export function cellCentreHeight(
  * it is computed the same way on every machine. The renderer builds its own
  * smoothed per-vertex normals; this is the flat one for a single cell.
  */
+/**
+ * How much slower a unit moves going from one cell to the next.
+ *
+ * At the steepest walkable gradient a unit crawls at `MIN_SPEED_SCALE`, and
+ * the same gradient downhill earns a much smaller bonus — falling down a hill
+ * is easier than climbing it, but not four times easier. Both directions are
+ * clamped, so no amount of terrain makes a unit faster than a unit is.
+ *
+ * Returns a Q16.16 multiplier. Flat ground returns exactly ONE, which means
+ * the overwhelmingly common case costs one comparison.
+ */
+export function slopeSpeedScale(
+  world: HeightfieldWorld,
+  fromCell: number,
+  toCell: number,
+  overrides?: HeightOverrides | null,
+): Fixed {
+  if (fromCell === toCell || fromCell < 0 || toCell < 0) return ONE;
+
+  const rise = sub(
+    cellCentreHeight(world, toCell, overrides),
+    cellCentreHeight(world, fromCell, overrides),
+  );
+  if (rise === 0) return ONE;
+
+  // Rise over run. The run is one cell orthogonally and a little more
+  // diagonally; using the cell size for both overstates a diagonal's gradient
+  // by 40%, which is not worth a square root in this loop.
+  const gradient = div(rise, world.cellSize);
+  const scale = sub(ONE, mul(gradient, gradient > 0 ? UPHILL_PENALTY : DOWNHILL_BONUS));
+
+  if (scale < MIN_SPEED_SCALE) return MIN_SPEED_SCALE;
+  if (scale > MAX_SPEED_SCALE) return MAX_SPEED_SCALE;
+  return scale;
+}
+
 export function cellNormal(
   world: HeightfieldWorld,
   cell: number,

@@ -229,3 +229,86 @@ describe('instanced unit rendering', () => {
     renderer.dispose();
   });
 });
+
+describe('terrain-normal tilt', () => {
+  let scene: Scene;
+  beforeEach(() => {
+    scene = new Scene(new NullEngine());
+  });
+
+  /** The instance matrix's second row, which is the model's up axis. */
+  function upAxis(mesh: Mesh, instance = 0): [number, number, number] {
+    const data = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
+      ._thinInstanceDataStorage.matrixData;
+    const o = instance * 16;
+    return [data[o + 4] as number, data[o + 5] as number, data[o + 6] as number];
+  }
+
+  function hull(): Mesh {
+    return scene.meshes.find((m) => m.name === 'hull_t1') as Mesh;
+  }
+
+  it('stands a unit upright on flat ground', () => {
+    const renderer = createUnitRenderer(scene);
+    const match = createMatch({ seed: 1, playerCount: 2 });
+    // The middle of the plateau, where the ground is genuinely level.
+    spawnUnit(match.units, {
+      type: unitTypeById('soldier'),
+      ownerId: 0,
+      x: fromInt(20),
+      z: fromInt(20),
+    });
+    for (let i = 0; i < 40; i++) renderer.update(match, world, overrides, 1);
+
+    const [x, y, z] = upAxis(hull());
+    expect(y).toBeCloseTo(1, 4);
+    expect(x).toBeCloseTo(0, 4);
+    expect(z).toBeCloseTo(0, 4);
+    renderer.dispose();
+  });
+
+  it('leans a unit into a hillside', () => {
+    const renderer = createUnitRenderer(scene);
+    const match = createMatch({ seed: 1, playerCount: 2 });
+    // Partway up the western incline, which falls away to the east.
+    spawnUnit(match.units, {
+      type: unitTypeById('soldier'),
+      ownerId: 0,
+      x: fromInt(54),
+      z: fromInt(26),
+    });
+    // The normal is blended over several frames rather than snapped to, so a
+    // unit cresting a ridge leans rather than flicking. Run it to settle.
+    for (let i = 0; i < 80; i++) renderer.update(match, world, overrides, 1);
+
+    const [x, y, z] = upAxis(hull());
+    expect(y).toBeLessThan(0.99); // genuinely tilted
+    expect(y).toBeGreaterThan(0.8); // but not lying on its side
+    // The incline descends to the east, so the normal leans east.
+    expect(x).toBeGreaterThan(0.05);
+    expect(Math.abs(z)).toBeLessThan(0.05); // nothing changes north-south
+    // Still a unit vector: the matrix stays orthonormal.
+    expect(Math.hypot(x, y, z)).toBeCloseTo(1, 5);
+    renderer.dispose();
+  });
+
+  it('blends toward the ground rather than snapping to it', () => {
+    const renderer = createUnitRenderer(scene);
+    const match = createMatch({ seed: 1, playerCount: 2 });
+    spawnUnit(match.units, {
+      type: unitTypeById('soldier'),
+      ownerId: 0,
+      x: fromInt(54),
+      z: fromInt(26),
+    });
+
+    renderer.update(match, world, overrides, 1);
+    const afterOne = upAxis(hull())[1];
+    for (let i = 0; i < 80; i++) renderer.update(match, world, overrides, 1);
+    const settled = upAxis(hull())[1];
+
+    // One frame gets partway there; many frames arrive.
+    expect(afterOne).toBeGreaterThan(settled);
+    expect(afterOne).toBeLessThan(1);
+  });
+});

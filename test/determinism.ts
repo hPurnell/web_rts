@@ -181,6 +181,23 @@ export const SCRIPT: readonly ScheduledCommand[] = [
       cell: cellIndex(SCRIPT_WORLD, 70, 60),
     },
   },
+
+  // A march that actually leaves the plateau. Every other order in this script
+  // moves units across flat ground, which meant slope-scaled speed and
+  // slope-rejected steps reached the hash not at all: adding the speed rule
+  // left the golden hash byte-identical, which is exactly the kind of silence
+  // this harness exists to break. This squad descends the western incline into
+  // the basin, so the descent is in the hash and a change to the slope rules
+  // cannot pass unnoticed.
+  {
+    tick: 330,
+    command: {
+      kind: CommandKind.MoveUnits,
+      player: 0,
+      handles: handleRange(0, 6),
+      goalCell: cellIndex(SCRIPT_WORLD, 70, 64),
+    },
+  },
 ];
 
 /** Handles for slots [from, to), all at generation 1. */

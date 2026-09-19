@@ -31,6 +31,14 @@ import type { HeightOverrides } from '../sim/terrain.ts';
 import { cellCornerY } from './terrain.ts';
 
 /** Player colours, indexed by owner id. */
+/**
+ * How far a unit's footing moves toward the ground beneath it each frame.
+ *
+ * Low enough that cresting a ridge is a lean rather than a flick, high enough
+ * that a unit does not visibly lag the ground it is standing on.
+ */
+const NORMAL_BLEND = 0.18;
+
 export const PLAYER_COLORS: readonly Color3[] = [
   new Color3(0.29, 0.56, 0.93),
   new Color3(0.91, 0.35, 0.31),
@@ -154,6 +162,29 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
   let prevTick = -1;
   let written = 0;
 
+  // Smoothed terrain normals, one per unit slot. Render-only state, so plain
+  // floats: nothing here reaches the simulation or the state hash.
+  let normalX = new Float32Array(0);
+  let normalY = new Float32Array(0);
+  let normalZ = new Float32Array(0);
+
+  /** Grow the normal arrays, starting new slots upright rather than at zero. */
+  const growNormals = (count: number): void => {
+    const size = Math.max(16, count * 2);
+    const nx = new Float32Array(size);
+    const ny = new Float32Array(size).fill(1);
+    const nz = new Float32Array(size);
+    nx.set(normalX);
+    ny.set(normalY.subarray(0, Math.min(normalY.length, size)));
+    nz.set(normalZ);
+    // A slot that has never been written must start upright, not flat-zero,
+    // or a newly spawned unit's first frame has no basis at all.
+    for (let i = normalY.length; i < size; i++) ny[i] = 1;
+    normalX = nx;
+    normalY = ny;
+    normalZ = nz;
+  };
+
   const ensure = (group: InstanceGroup, needed: number): void => {
     const floats = needed * FLOATS_PER_MATRIX;
     if (group.hullData.length >= floats) return;
@@ -173,6 +204,15 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
    * arithmetic does; a unit only ever yaws, so eight of the sixteen entries
    * are constant.
    */
+  /**
+   * One instance matrix: a yaw about the terrain normal rather than about Y.
+   *
+   * On flat ground `up` is (0,1,0) and this reduces exactly to the yaw-only
+   * matrix it replaces. On a hillside the unit leans into the slope, which is
+   * the single largest visual difference continuous terrain makes: a box
+   * standing bolt upright on a 30-degree hill is immediately wrong in a way
+   * that nothing else about the terrain is.
+   */
   const writeMatrix = (
     out: Float32Array,
     offset: number,
@@ -181,18 +221,38 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
     z: number,
     sin: number,
     cos: number,
+    upX: number,
+    upY: number,
+    upZ: number,
   ): void => {
-    out[offset] = cos;
-    out[offset + 1] = 0;
-    out[offset + 2] = -sin;
+    // Forward is the heading with the component along `up` removed, so the
+    // unit still faces where it is going after being tilted.
+    const dot = sin * upX + cos * upZ;
+    let fx = sin - upX * dot;
+    let fy = -upY * dot;
+    let fz = cos - upZ * dot;
+    const flen = Math.hypot(fx, fy, fz) || 1;
+    fx /= flen;
+    fy /= flen;
+    fz /= flen;
+
+    // Right = up x forward, which on flat ground gives (cos, 0, -sin) — the
+    // first row of the matrix this replaced.
+    const rx = upY * fz - upZ * fy;
+    const ry = upZ * fx - upX * fz;
+    const rz = upX * fy - upY * fx;
+
+    out[offset] = rx;
+    out[offset + 1] = ry;
+    out[offset + 2] = rz;
     out[offset + 3] = 0;
-    out[offset + 4] = 0;
-    out[offset + 5] = 1;
-    out[offset + 6] = 0;
+    out[offset + 4] = upX;
+    out[offset + 5] = upY;
+    out[offset + 6] = upZ;
     out[offset + 7] = 0;
-    out[offset + 8] = sin;
-    out[offset + 9] = 0;
-    out[offset + 10] = cos;
+    out[offset + 8] = fx;
+    out[offset + 9] = fy;
+    out[offset + 10] = fz;
     out[offset + 11] = 0;
     out[offset + 12] = x;
     out[offset + 13] = y;
@@ -275,13 +335,42 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
         const cos = Math.cos(facing);
 
         const y = groundHeightAt(world, overrides, x, z);
+
+        // Blend the normal toward the ground rather than snapping to it. A
+        // unit crossing a ridge changes its footing over one frame, and
+        // without this the model visibly flicks over as it crests.
+        const sampled = terrainNormalAt(world, overrides, x, z);
+        if (normalX.length <= i) growNormals(units.count);
+        let upX = (normalX[i] as number) + (sampled.x - (normalX[i] as number)) * NORMAL_BLEND;
+        let upY = (normalY[i] as number) + (sampled.y - (normalY[i] as number)) * NORMAL_BLEND;
+        let upZ = (normalZ[i] as number) + (sampled.z - (normalZ[i] as number)) * NORMAL_BLEND;
+        const upLen = Math.hypot(upX, upY, upZ) || 1;
+        upX /= upLen;
+        upY /= upLen;
+        upZ /= upLen;
+        normalX[i] = upX;
+        normalY[i] = upY;
+        normalZ[i] = upZ;
+
         const offset = group.count * FLOATS_PER_MATRIX;
         const unitKind = UNIT_TYPES[units.typeId[i] as number];
         const radius = toFloat(unitKind?.radius ?? 0);
         const lift = hullShape(radius, unitKind?.footprint ?? 0).lift;
-        writeMatrix(group.hullData, offset, x, y + lift, z, sin, cos);
+        writeMatrix(group.hullData, offset, x, y + lift, z, sin, cos, upX, upY, upZ);
         if (group.turret) {
-          writeMatrix(group.turretData, offset, x, y + turretShape(radius).lift, z, sin, cos);
+          // The turret shares the hull's footing, so it leans with it.
+          writeMatrix(
+            group.turretData,
+            offset,
+            x,
+            y + turretShape(radius).lift,
+            z,
+            sin,
+            cos,
+            upX,
+            upY,
+            upZ,
+          );
         }
 
         const color = PLAYER_COLORS[units.ownerId[i] as number] ?? PLAYER_COLORS[0];
@@ -332,6 +421,30 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
       material.dispose();
     },
   };
+}
+
+/**
+ * Terrain normal under a world-space point.
+ *
+ * Central differences over the rendered surface rather than the per-corner
+ * normal table, because a unit stands between corners and sampling the table
+ * would step at each cell boundary. Half a cell either side is wide enough to
+ * ignore the triangle split and narrow enough to follow a hillside.
+ */
+export function terrainNormalAt(
+  world: World,
+  overrides: HeightOverrides | null,
+  x: number,
+  z: number,
+): { x: number; y: number; z: number } {
+  const e = toFloat(world.cellSize) / 2;
+  const dx = groundHeightAt(world, overrides, x + e, z) - groundHeightAt(world, overrides, x - e, z);
+  const dz = groundHeightAt(world, overrides, x, z + e) - groundHeightAt(world, overrides, x, z - e);
+  const nx = -dx;
+  const ny = 2 * e;
+  const nz = -dz;
+  const length = Math.hypot(nx, ny, nz) || 1;
+  return { x: nx / length, y: ny / length, z: nz / length };
 }
 
 /** Terrain height under a world-space point, following ramp slopes. */

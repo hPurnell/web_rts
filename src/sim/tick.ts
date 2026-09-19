@@ -57,6 +57,7 @@ export function stepMatch(
       world: context.world,
       grid,
       hash: match.spatialHash,
+      overrides: match.terrain,
       field: (goalCell) => ensureField(match.fields, grid, goalCell),
     });
 
