@@ -54,6 +54,8 @@ export interface ConsoleGame {
   setOverlayLayer(id: string | null): void;
   overlayLayers(): readonly string[];
   setWireframe(enabled: boolean): void;
+  /** Blur radius the fog edge is sampled with, in cells. */
+  setFogSoftness(texels: number): void;
   setStatsVisible(visible: boolean): void;
   setCameraSpeed(scale: number): void;
 }
@@ -83,6 +85,16 @@ export function registerGameCommands(console: GameConsole, game: ConsoleGame): v
     help: `Debug terrain overlay: off, or one of ${game.overlayLayers().join(', ')}.`,
     value: 'off',
     onChange: (value) => game.setOverlayLayer(value === 'off' ? null : String(value)),
+  });
+
+  console.cvar({
+    name: 'r_fogsoftness',
+    help: 'How far the fog edge is blurred, in cells. 0.5 is crisp, 2 is hazy.',
+    value: 0.9,
+    min: 0,
+    max: 4,
+    archive: true,
+    onChange: (value) => game.setFogSoftness(Number(value)),
   });
 
   console.cvar({

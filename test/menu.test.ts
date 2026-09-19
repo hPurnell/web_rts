@@ -51,6 +51,7 @@ function fakeGame(overrides: Partial<ConsoleGame> = {}): {
     setOverlayLayer: () => {},
     overlayLayers: () => ['walkable', 'slope'],
     setWireframe: () => {},
+    setFogSoftness: () => {},
     setStatsVisible: () => {},
     setCameraSpeed: () => {},
     ...overrides,

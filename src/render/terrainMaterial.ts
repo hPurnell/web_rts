@@ -52,6 +52,7 @@ uniform sampler2D fogSampler;
 uniform vec2 fogTexel;
 uniform float fogEnabled;
 uniform float exploredDim;
+uniform float fogSoftness;
 
 /** Cheap value noise, enough to break up flat colour until real textures land. */
 float hash(vec2 p) {
@@ -100,15 +101,25 @@ void main(void) {
   color *= mix(1.0, 0.84, cliffness);
 
   if (fogEnabled > 0.5) {
-    // A small cross blur on top of the texture's own bilinear filtering. One
-    // texel per cell is coarse, and without this the fog boundary reads as a
-    // staircase of squares rather than an edge.
-    vec2 fog = texture2D(fogSampler, vMapUv).rg;
-    fog += texture2D(fogSampler, vMapUv + vec2(fogTexel.x, 0.0)).rg;
-    fog += texture2D(fogSampler, vMapUv - vec2(fogTexel.x, 0.0)).rg;
-    fog += texture2D(fogSampler, vMapUv + vec2(0.0, fogTexel.y)).rg;
-    fog += texture2D(fogSampler, vMapUv - vec2(0.0, fogTexel.y)).rg;
-    fog /= 5.0;
+    // Five taps: the centre, and four on the diagonals.
+    //
+    // The old kernel was a five-tap cross, which samples along the axes and so
+    // reinforces exactly the horizontal and vertical edges the cell grid is
+    // made of — the boundary came out as a staircase. Diagonal taps do the
+    // opposite, and each one is a bilinear fetch already averaging a 2x2
+    // neighbourhood, so four of them cover a rounded 3x3 area for the same
+    // cost the cross paid to cover a plus.
+    //
+    // Worth knowing what this cannot do: the simulation's visibility is per
+    // cell and binary, so there is no sub-cell detail to recover. This makes
+    // the transition smooth and wide; it does not add information.
+    vec2 o = fogTexel * fogSoftness;
+    vec2 fog = texture2D(fogSampler, vMapUv).rg * 2.0;
+    fog += texture2D(fogSampler, vMapUv + o).rg;
+    fog += texture2D(fogSampler, vMapUv - o).rg;
+    fog += texture2D(fogSampler, vMapUv + vec2(o.x, -o.y)).rg;
+    fog += texture2D(fogSampler, vMapUv + vec2(-o.x, o.y)).rg;
+    fog /= 6.0;
 
     // Visible is full brightness, explored-only is dimmed, unexplored is black.
     float brightness = max(fog.r, fog.g * exploredDim);
@@ -128,6 +139,20 @@ export interface TerrainMaterialOptions {
 }
 
 /** Point the terrain shader at a fog texture, or pass null to disable fog. */
+/**
+ * How far the fog blur reaches, in texels (one texel is one cell).
+ *
+ * Under about 0.5 the cell lattice starts showing through again; much over 1
+ * and unit vision starts bleeding through thin walls, because the blur does
+ * not know what a wall is.
+ */
+export const DEFAULT_FOG_SOFTNESS = 0.9;
+
+/** Set the blur radius the fog is sampled with, in texels. */
+export function setTerrainFogSoftness(material: ShaderMaterial, texels: number): void {
+  material.setFloat('fogSoftness', texels);
+}
+
 export function setTerrainFog(
   material: ShaderMaterial,
   texture: BaseTexture | null,
@@ -161,6 +186,7 @@ export function createTerrainMaterial(
       'fogTexel',
       'fogEnabled',
       'exploredDim',
+      'fogSoftness',
     ],
     samplers: ['fogSampler'],
   });
@@ -174,6 +200,7 @@ export function createTerrainMaterial(
   material.setFloat('cliffSlope', options.cliffSlope);
   material.setFloat('fogEnabled', 0);
   material.setFloat('exploredDim', 0);
+  material.setFloat('fogSoftness', DEFAULT_FOG_SOFTNESS);
   material.setVector2('fogTexel', new Vector2(0, 0));
   material.backFaceCulling = true;
   return material;

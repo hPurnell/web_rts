@@ -36,7 +36,7 @@ import { createGizmos } from './render/gizmos.ts';
 import { createUnitRenderer, groundHeightAt } from './render/units.ts';
 import { createGhostRenderer } from './render/ghosts.ts';
 import { EXPLORED_DIM, createFogTexture } from './render/fogtexture.ts';
-import { setTerrainFog } from './render/terrainMaterial.ts';
+import { setTerrainFog, setTerrainFogSoftness } from './render/terrainMaterial.ts';
 import { createSelectionRings } from './render/selectionrings.ts';
 import { SelectionController } from './game/selectioncontroller.ts';
 import { dispatchOrder } from './game/orderdispatch.ts';
@@ -924,6 +924,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     setWireframe: (enabled) => {
       terrainMaterial.wireframe = enabled;
     },
+    setFogSoftness: (texels) => setTerrainFogSoftness(terrainMaterial, texels),
     setStatsVisible: (visible) => overlay.setVisible(visible),
     setCameraSpeed: (scale) => {
       camera.panScale = scale;

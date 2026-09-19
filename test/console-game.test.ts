@@ -47,6 +47,7 @@ function setup(overrides: Partial<ConsoleGame> = {}): {
     setOverlayLayer: record('setOverlayLayer'),
     overlayLayers: () => ['walkable', 'slope'],
     setWireframe: record('setWireframe'),
+    setFogSoftness: record('setFogSoftness'),
     setStatsVisible: record('setStatsVisible'),
     setCameraSpeed: record('setCameraSpeed'),
     ...overrides,
