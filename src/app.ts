@@ -50,6 +50,11 @@ import { createNavClient, createWorkerTransport } from './nav/client.ts';
 import type { FlowField } from './nav/flowfield.ts';
 import { createTerrainMaterial } from './render/terrainMaterial.ts';
 import { createDevOverlay } from './ui/devoverlay.ts';
+import { createConsole } from './ui/console.ts';
+import { createConsoleView } from './ui/consoleview.ts';
+import { createMainMenu } from './ui/menu.ts';
+import { registerGameCommands } from './game/consolecommands.ts';
+import type { ConsoleGame } from './game/consolecommands.ts';
 import { createHud } from './ui/hud.ts';
 import type { CommandAction } from './ui/hud.ts';
 import { createMinimap } from './ui/minimap.ts';
@@ -68,6 +73,8 @@ const TEST_MATCH_KEY = 'F5';
 const SAVE_REPLAY_KEY = 'F6';
 /** Loads a replay file and plays it back. */
 const LOAD_REPLAY_KEY = 'F7';
+/** Where archived cvars and key binds are kept between sessions. */
+const CONFIG_KEY = 'web_rts.config';
 
 export interface App {
   /** The map currently loaded. Replaced when the editor opens a file. */
@@ -92,6 +99,10 @@ export interface App {
   playReplay(replay: Replay): void;
   /** Solve a flow field to a cell. Used by orders, and by the browser check. */
   requestPath(cell: number): Promise<FlowField | null>;
+  /** The developer console. Exposed so the browser check can drive it. */
+  readonly console: ReturnType<typeof createConsole>;
+  /** The main menu, open on boot unless something asked to skip it. */
+  readonly menu: ReturnType<typeof createMainMenu>;
   dispose(): void;
 }
 
@@ -422,6 +433,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     stopMatch();
     stopPlayback();
     overlay.set('net', 'connecting');
+    // Cheats off, and not merely hidden: a console command that spawned units
+    // this client never told the other about is a desync, not an unfairness.
+    gameConsole.setCheatsLocked(true);
 
     const connection = connect({
       url,
@@ -482,6 +496,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     lockstep?.dispose();
     lockstep = null;
     netPlayer = LOCAL_PLAYER;
+    gameConsole.setCheatsLocked(false);
+    menu.refresh();
     overlay.remove('net');
     overlay.remove('waiting');
     mode.editor()?.refresh();
@@ -740,14 +756,6 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   overlay.set('mode', 'game');
   if (modeFromLocation(window.location.search) === 'editor') void mode.set('editor');
 
-  // ?relay=ws://host:port&match=id joins a networked match on load, which is
-  // all two browsers need to play each other.
-  const params = new URLSearchParams(window.location.search);
-  const relayUrl = params.get('relay');
-  if (relayUrl) {
-    void joinMatch(relayUrl, params.get('match') ?? 'default');
-  }
-
   // Editor pointer routing. The camera keeps middle-drag; the brush uses left
   // and right, and only while the editor is open.
   const modifiersOf = (e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => ({
@@ -840,7 +848,162 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   canvas.addEventListener('pointercancel', onPointerLost);
   window.addEventListener('blur', onPointerLost);
 
+  // ---------------------------------------------------------------------
+  // Console and main menu.
+  //
+  // Both drive the same surface, so anything the menu can do has a console
+  // command and vice versa. Commands that touch match state go on
+  // `pendingCommands` like every other input rather than writing to the store.
+  // ---------------------------------------------------------------------
+
+  const consoleGame: ConsoleGame = {
+    world: () => world,
+    match: () => driver?.match ?? playback?.match ?? null,
+    selection: () => selection.selection.list(),
+    focus: () => ({ x: camera.focusX, z: camera.focusZ }),
+    localPlayer: () => (lockstep ? netPlayer : LOCAL_PLAYER),
+
+    startMatch,
+    stopMatch,
+    connect: (url, matchId) => void joinMatch(url, matchId),
+    openEditor: () => void mode.set('editor'),
+    closeEditor: () => void mode.set('game'),
+    inEditor: () => mode.current() === 'editor',
+    playLastReplay: () => {
+      if (lastReplay) startPlayback(lastReplay);
+    },
+    hasReplay: () => lastReplay !== null,
+    saveReplay,
+    stressSpawn,
+
+    setFogEnabled: (enabled) => {
+      setTerrainFog(
+        terrainMaterial,
+        enabled ? fogTexture.texture : null,
+        world.width,
+        world.height,
+        EXPLORED_DIM,
+      );
+    },
+    setOverlayLayer: (id) => {
+      flagOverlay.rebuild(heightOverrides());
+      flagOverlay.show(id);
+      overlay.set('overlay', FLAG_LAYERS.find((l) => l.id === id)?.label ?? 'off');
+    },
+    overlayLayers: () => FLAG_LAYERS.map((l) => l.id),
+    setWireframe: (enabled) => {
+      terrainMaterial.wireframe = enabled;
+    },
+    setStatsVisible: (visible) => overlay.setVisible(visible),
+    setCameraSpeed: (scale) => {
+      camera.panScale = scale;
+    },
+  };
+
+  const gameConsole = createConsole({
+    queue: (command) => pendingCommands.push(command),
+    storage: {
+      read: () => {
+        try {
+          return window.localStorage.getItem(CONFIG_KEY);
+        } catch {
+          // Private browsing, or storage disabled. Not worth failing over.
+          return null;
+        }
+      },
+      write: (text) => {
+        try {
+          window.localStorage.setItem(CONFIG_KEY, text);
+        } catch {
+          /* ignore */
+        }
+      },
+    },
+  });
+  registerGameCommands(gameConsole, consoleGame);
+
+  const consoleView = createConsoleView(overlayRoot, gameConsole);
+  const menu = createMainMenu({
+    overlay: overlayRoot,
+    game: consoleGame,
+    console: gameConsole,
+  });
+
+  // Restore archived cvars and binds from the last session, then greet.
+  try {
+    const saved = window.localStorage.getItem(CONFIG_KEY);
+    if (saved) gameConsole.loadConfig(saved);
+  } catch {
+    /* ignore */
+  }
+  gameConsole.print('web_rts console. `help` for help, `cmdlist` for everything.');
+
+  // ---------------------------------------------------------------------
+  // Where to start.
+  //
+  // All of it lives here, below the console, because joining a relay locks
+  // cheats off and so cannot run before the console exists. Doing this higher
+  // up cost a working multiplayer check and a confusing temporal-dead-zone
+  // error that named the console rather than the URL parameter.
+  // ---------------------------------------------------------------------
+  const params = new URLSearchParams(window.location.search);
+  const relayUrl = params.get('relay');
+
+  // ?relay=ws://host:port&match=id joins a networked match on load, which is
+  // all two browsers need to play each other.
+  if (relayUrl) void joinMatch(relayUrl, params.get('match') ?? 'default');
+
+  // Otherwise boot into the menu, the way a game does — unless the URL
+  // already said where it wanted to be. Joining a relay and opening the editor
+  // are both requests to be somewhere specific, and the tooling passes
+  // ?menu=0 so `pnpm shot` gets a live canvas without dismissing anything.
+  const skipMenu =
+    params.get('menu') === '0' ||
+    relayUrl !== null ||
+    modeFromLocation(window.location.search) === 'editor';
+  if (!skipMenu) menu.open();
+
+  /**
+   * Spawn the M33 stress army.
+   *
+   * This writes to the unit store directly rather than queueing commands,
+   * which is fine for a profiling tool run locally and would be a desync in a
+   * networked match. It is reachable from the console only as a cheat, and
+   * cheats are locked off the moment a relay is involved.
+   */
+  function stressSpawn(perSide: number): number {
+    if (!driver) return 0;
+    const match = driver.match;
+    const types = ['soldier', 'raider', 'siege'];
+    for (let i = 0; i < perSide; i++) {
+      const type = unitTypeById(types[i % types.length] as string);
+      for (const owner of [0, 1]) {
+        spawnUnit(match.units, {
+          type,
+          ownerId: owner,
+          x: fromInt(6 + (i % 24) + owner * 26) + (1 << 15),
+          z: fromInt(4 + ((i / 24) | 0)) + (1 << 15),
+        });
+      }
+    }
+    return match.units.alive;
+  }
+
   const onKey = (e: KeyboardEvent): void => {
+    // The console gets first refusal: while it is open, every key belongs to
+    // it, or typing `stop` would also stop the army behind it.
+    if (consoleView.handleKey(e)) return;
+    if (menu.handleKey(e)) return;
+    if (e.code === 'Escape' && mode.current() === 'game' && pendingBuild < 0 && !playback) {
+      e.preventDefault();
+      menu.open();
+      return;
+    }
+    if (gameConsole.binds.has(e.code)) {
+      e.preventDefault();
+      gameConsole.pressKey(e.code);
+      return;
+    }
     if (e.code === INSPECTOR_KEY) {
       e.preventDefault();
       void toggleInspector(renderer.scene);
@@ -902,6 +1065,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     get world() {
       return world;
     },
+    console: gameConsole,
+    menu,
     mode,
     get driver() {
       return driver;
@@ -919,23 +1084,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       return lockstep;
     },
     stateHash: () => (driver ? hashMatch(driver.match) : 0),
-    stressSpawn(perSide) {
-      if (!driver) return 0;
-      const match = driver.match;
-      const types = ['soldier', 'raider', 'siege'];
-      for (let i = 0; i < perSide; i++) {
-        const type = unitTypeById(types[i % types.length] as string);
-        for (const owner of [0, 1]) {
-          spawnUnit(match.units, {
-            type,
-            ownerId: owner,
-            x: fromInt(6 + (i % 24) + owner * 26) + (1 << 15),
-            z: fromInt(4 + ((i / 24) | 0)) + (1 << 15),
-          });
-        }
-      }
-      return match.units.alive;
-    },
+    stressSpawn,
     playReplay: startPlayback,
     requestPath: async (cell) => {
       const field = await nav.request(cell);
@@ -954,6 +1103,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       nav.dispose();
       hud.dispose();
       minimap.dispose();
+      consoleView.dispose();
+      menu.dispose();
       mode.dispose();
       renderer.engine.stopRenderLoop();
       overlay.dispose();

@@ -64,6 +64,29 @@ triangle points down**. Getting this backwards renders the entire map as
 nothing but its edge skirt, silently, with every test still passing. It has
 cost one debugging session. `test/terrain.test.ts` asserts it directly now.
 
+## Console and main menu
+
+The game boots into the main menu. `?menu=0` skips it, which is what `pnpm
+shot` wants; `?relay=` and `?mode=editor` skip it too, because both are already
+requests to be somewhere specific. All of that routing lives in one block near
+the bottom of `startApp`, **below** the console's construction — joining a
+relay locks cheats off, so it cannot run before the console exists. Putting it
+higher up costs a temporal-dead-zone error that names `gameConsole` rather than
+the URL parameter that actually caused it.
+
+The console (backquote) is split in two on purpose: `ui/console.ts` is the
+registry, parser, history and completion with no DOM at all, and
+`ui/consoleview.ts` draws it. The game's own commands are in
+`game/consolecommands.ts` and reach the app through `ConsoleGame`, which the
+main menu uses too — that is why Settings is a view onto cvars rather than a
+second place preferences live.
+
+**A console command never writes match state.** `give`, `spawn` and `kill`
+build a `SimCommand` and queue it like a mouse click would. Cheats are also
+gated behind `sv_cheats`, which `joinMatch` locks off: the gate is not about
+fairness, it is that one client inventing units the other never hears about is
+a desync.
+
 ## Verifying
 
 `pnpm test` runs the suite and then the serial performance budgets. The budgets
@@ -75,6 +98,7 @@ Looking at the thing matters — several bugs here typechecked and passed tests:
 ```
 pnpm shot out.png --keys "F5:300" --after 20000   # screenshot the running game
 pnpm shot out.png --path "?mode=editor" --wheel 1200   # the map with no fog over it
+pnpm shot out.png --path "?menu=0"                     # straight into the game
 pnpm check:browser        # production build in a real browser, fails on any console error
 pnpm check:multiplayer    # two browsers against a local relay, asserts no desync
 pnpm check:bundle         # editor stays code-split, Inspector never ships

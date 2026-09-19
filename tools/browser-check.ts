@@ -90,6 +90,43 @@ async function main(): Promise<void> {
     { timeout: 10_000 },
   );
 
+  // The game boots into the main menu, so the first thing to check is that it
+  // is there and that it gets out of the way. Everything below this point
+  // needs the canvas to have the keyboard, which is exactly what the menu
+  // takes away — so if this stops working, the whole rest of the check fails
+  // in a confusing way, and that is worth a clear message here.
+  const menuOpen = await page.isVisible('.menu-panel');
+  if (!menuOpen) failures.push('main menu did not appear on boot');
+  // Enter takes the highlighted entry, which is Continue at the top.
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(200);
+  if (await page.isVisible('.menu-panel')) failures.push('main menu did not close on Enter');
+
+  // The console: open it, run a command, read the output back, close it.
+  await page.keyboard.press('Backquote');
+  await page.waitForTimeout(150);
+  if (!(await page.isVisible('.console-input'))) {
+    failures.push('console did not open on backquote');
+  } else {
+    await page.keyboard.type('status');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(150);
+    const consoleText = (await page.textContent('.console-output')) ?? '';
+    if (!consoleText.includes('map ')) failures.push(`console ran nothing: ${consoleText.slice(-120)}`);
+
+    // A cheat must be refused until sv_cheats is on. This is the gate that
+    // keeps a console command from desyncing a networked match.
+    await page.keyboard.type('give 500');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(100);
+    const afterCheat = (await page.textContent('.console-output')) ?? '';
+    if (!afterCheat.includes('sv_cheats')) failures.push('cheat was not refused with cheats off');
+
+    await page.keyboard.press('Backquote');
+    await page.waitForTimeout(150);
+    if (await page.isVisible('.console-input')) failures.push('console did not close');
+  }
+
   // Park the cursor in the middle of the canvas: a pointer sitting in the
   // corner is a legitimate edge-pan and would mask the keyboard test.
   const size = page.viewportSize() ?? { width: 1280, height: 720 };

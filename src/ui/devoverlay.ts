@@ -6,6 +6,8 @@
 export interface DevOverlay {
   set(key: string, value: string): void;
   remove(key: string): void;
+  /** Hide the whole readout without forgetting its rows. */
+  setVisible(visible: boolean): void;
   dispose(): void;
 }
 
@@ -37,6 +39,9 @@ export function createDevOverlay(parent: HTMLElement): DevOverlay {
     remove(key) {
       rows.get(key)?.remove();
       rows.delete(key);
+    },
+    setVisible(visible) {
+      root.hidden = !visible;
     },
     dispose() {
       rows.clear();

@@ -1,0 +1,333 @@
+/**
+ * The game's console commands and cvars.
+ *
+ * Kept apart from `ui/console.ts` so the console engine stays a general thing
+ * with no idea what a mineral is, and apart from `app.ts` so the shell does
+ * not grow another three hundred lines. Everything the commands need arrives
+ * through `ConsoleGame`, which is the same surface the main menu uses.
+ *
+ * The rule that shapes this file: **a console command never writes match
+ * state**. `give`, `spawn` and `kill` build a `SimCommand` and queue it, so it
+ * is applied at a tick boundary, recorded in the replay, and — in a networked
+ * match — shipped to the other client rather than applied behind its back.
+ * That is also why cheats are locked off when a relay is involved: the gate is
+ * not about fairness, it is that one client inventing units the other never
+ * hears about is a desync.
+ */
+import type { GameConsole } from '../ui/console.ts';
+import { CommandKind } from '../sim/commands.ts';
+import type { Match } from '../sim/match.ts';
+import { UNIT_TYPES, unitTypeById } from '../sim/unittypes.ts';
+import { resolve } from '../sim/units.ts';
+import type { UnitHandle } from '../sim/units.ts';
+import { fromInt } from '../sim/fixed.ts';
+import { hashMatch } from '../sim/statehash.ts';
+import { cellCentreHeight, cellSlope } from '../sim/terrain.ts';
+import { cellFromWorld } from '../sim/world.ts';
+import type { World } from '../sim/world.ts';
+import { toFloat } from '../sim/fixed.ts';
+
+/** Everything the console needs from the running application. */
+export interface ConsoleGame {
+  world(): World;
+  match(): Match | null;
+  /** Units the player has selected, for commands that act on a selection. */
+  selection(): readonly UnitHandle[];
+  /** Where the camera is looking, so `spawn` has somewhere to put things. */
+  focus(): { x: number; z: number };
+  localPlayer(): number;
+
+  startMatch(seed?: number): void;
+  stopMatch(): void;
+  connect(url: string, matchId: string): void;
+  openEditor(): void;
+  closeEditor(): void;
+  inEditor(): boolean;
+  playLastReplay(): void;
+  /** Whether a finished match is available to replay. */
+  hasReplay(): boolean;
+  saveReplay(): void;
+  stressSpawn(perSide: number): number;
+
+  /** Renderer and UI switches the cvars flip. */
+  setFogEnabled(enabled: boolean): void;
+  setOverlayLayer(id: string | null): void;
+  overlayLayers(): readonly string[];
+  setWireframe(enabled: boolean): void;
+  setStatsVisible(visible: boolean): void;
+  setCameraSpeed(scale: number): void;
+}
+
+/** Look up a unit type by name or by id, so `spawn 1` works as well as names. */
+function resolveType(token: string): number {
+  const byName = UNIT_TYPES.find((t) => t.id === token.toLowerCase());
+  if (byName) return byName.typeId;
+  const id = Number(token);
+  if (Number.isInteger(id) && id >= 0 && id < UNIT_TYPES.length) return id;
+  throw new Error(`no unit type called '${token}' — try: ${UNIT_TYPES.map((t) => t.id).join(', ')}`);
+}
+
+export function registerGameCommands(console: GameConsole, game: ConsoleGame): void {
+  // ---------------------------------------------------------------- cvars
+
+  console.cvar({
+    name: 'r_fog',
+    help: 'Draw fog of war. Turning it off reveals the map for the local view only.',
+    value: true,
+    cheat: true,
+    onChange: (value) => game.setFogEnabled(value === true),
+  });
+
+  console.cvar({
+    name: 'r_overlay',
+    help: `Debug terrain overlay: off, or one of ${game.overlayLayers().join(', ')}.`,
+    value: 'off',
+    onChange: (value) => game.setOverlayLayer(value === 'off' ? null : String(value)),
+  });
+
+  console.cvar({
+    name: 'r_wireframe',
+    help: 'Draw the terrain as wireframe.',
+    value: false,
+    onChange: (value) => game.setWireframe(value === true),
+  });
+
+  console.cvar({
+    name: 'cl_showstats',
+    help: 'Show the frame and simulation readout.',
+    value: true,
+    archive: true,
+    onChange: (value) => game.setStatsVisible(value === true),
+  });
+
+  console.cvar({
+    name: 'cam_speed',
+    help: 'Camera pan speed, as a multiple of the default.',
+    value: 1,
+    min: 0.1,
+    max: 5,
+    archive: true,
+    onChange: (value) => game.setCameraSpeed(Number(value)),
+  });
+
+  // ------------------------------------------------------------- commands
+
+  console.register({
+    name: 'map',
+    help: 'Start a match on the loaded map. An integer argument seeds it.',
+    usage: 'map [seed]',
+    run({ args, print }) {
+      const seed = args[0] === undefined ? 1 : Number(args[0]);
+      if (!Number.isFinite(seed)) throw new Error('seed must be a number');
+      game.stopMatch();
+      game.startMatch(seed);
+      print(`started a match with seed ${seed}`);
+    },
+  });
+
+  console.register({
+    name: 'disconnect',
+    help: 'Stop the running match and return to the menu.',
+    run({ print }) {
+      game.stopMatch();
+      print('match stopped');
+    },
+  });
+
+  console.register({
+    name: 'connect',
+    help: 'Join a networked match through a relay.',
+    usage: 'connect <url> [matchId]',
+    run({ args, print }) {
+      const url = args[0];
+      if (url === undefined) throw new Error('usage: connect <url> [matchId]');
+      game.connect(url, args[1] ?? 'default');
+      print(`connecting to ${url}...`);
+    },
+  });
+
+  console.register({
+    name: 'editor',
+    help: 'Open or close the map editor.',
+    usage: 'editor [0|1]',
+    run({ args, print }) {
+      const wanted = args[0] === undefined ? !game.inEditor() : args[0] !== '0';
+      if (wanted) game.openEditor();
+      else game.closeEditor();
+      print(wanted ? 'editor open' : 'editor closed');
+    },
+  });
+
+  console.register({
+    name: 'replay',
+    help: 'Play back the last finished match, or save it to a file.',
+    usage: 'replay play|save',
+    run({ args, print }) {
+      const what = args[0] ?? 'play';
+      if (what === 'save') {
+        game.saveReplay();
+        print('saving replay');
+        return;
+      }
+      game.playLastReplay();
+      print('playing the last replay');
+    },
+  });
+
+  console.register({
+    name: 'hash',
+    help: 'Print the running match state hash, for comparing against another client.',
+    run({ print }) {
+      const match = game.match();
+      if (!match) {
+        print('no match running', 'warn');
+        return;
+      }
+      print(`tick ${match.tick}  hash 0x${(hashMatch(match) >>> 0).toString(16).padStart(8, '0')}`);
+    },
+  });
+
+  console.register({
+    name: 'status',
+    help: 'Summarise the running match.',
+    run({ print }) {
+      const match = game.match();
+      const world = game.world();
+      print(`map        ${world.width} x ${world.height}`);
+      if (!match) {
+        print('match      not running');
+        return;
+      }
+      print(`tick       ${match.tick}`);
+      print(`players    ${match.playerCount}`);
+      print(`units      ${match.units.alive} alive of ${match.units.count} slots`);
+      print(`selected   ${game.selection().length}`);
+      for (let player = 0; player < match.playerCount; player++) {
+        print(`player ${player}   ${match.minerals[player]} minerals, ${match.gas[player]} gas`);
+      }
+    },
+  });
+
+  console.register({
+    name: 'where',
+    help: 'Describe the ground under the camera.',
+    run({ print }) {
+      const world = game.world();
+      const focus = game.focus();
+      const cell = cellFromWorld(world, fromInt(Math.round(focus.x)), fromInt(Math.round(focus.z)));
+      if (cell < 0) {
+        print('the camera is not over the map', 'warn');
+        return;
+      }
+      print(`cell   ${cell}  (${cell % world.width}, ${(cell / world.width) | 0})`);
+      print(`height ${toFloat(cellCentreHeight(world, cell)).toFixed(2)}`);
+      print(`slope  ${toFloat(cellSlope(world, cell)).toFixed(3)}`);
+    },
+  });
+
+  console.register({
+    name: 'unittypes',
+    help: 'List the unit types spawn and build accept.',
+    run({ print }) {
+      for (const type of UNIT_TYPES) {
+        print(
+          `${String(type.typeId).padStart(2)}  ${type.id.padEnd(10)} ${type.mineralCost}m ${type.gasCost}g` +
+            `${type.isStructure ? '  [structure]' : ''}`,
+        );
+      }
+    },
+  });
+
+  // --------------------------------------------------------------- cheats
+
+  console.register({
+    name: 'give',
+    help: 'Grant resources to the local player.',
+    usage: 'give <minerals> [gas]',
+    cheat: true,
+    run({ args, console: c, print }) {
+      const minerals = Number(args[0] ?? 1000);
+      const gas = Number(args[1] ?? 0);
+      if (!Number.isFinite(minerals) || !Number.isFinite(gas)) {
+        throw new Error('usage: give <minerals> [gas]');
+      }
+      if (!game.match()) {
+        print('no match running', 'warn');
+        return;
+      }
+      c.queue({
+        kind: CommandKind.GrantResources,
+        player: game.localPlayer(),
+        minerals: Math.trunc(minerals),
+        gas: Math.trunc(gas),
+      });
+      print(`queued ${minerals} minerals and ${gas} gas`);
+    },
+  });
+
+  console.register({
+    name: 'spawn',
+    help: 'Spawn units at the camera. They arrive at the next tick boundary.',
+    usage: 'spawn <type> [count] [player]',
+    cheat: true,
+    run({ args, console: c, print }) {
+      const token = args[0];
+      if (token === undefined) throw new Error('usage: spawn <type> [count] [player]');
+      const typeId = resolveType(token);
+      const count = Math.max(1, Math.min(200, Number(args[1] ?? 1) || 1));
+      const player = Number(args[2] ?? game.localPlayer());
+      const match = game.match();
+      if (!match) {
+        print('no match running', 'warn');
+        return;
+      }
+
+      // A small spiral out from the camera, so a count of twenty does not put
+      // twenty units on one cell and leave separation to sort it out.
+      const focus = game.focus();
+      for (let i = 0; i < count; i++) {
+        const ring = Math.floor(Math.sqrt(i));
+        const angle = i * 2.399963; // golden angle, which spreads without clumping
+        c.queue({
+          kind: CommandKind.SpawnUnit,
+          player,
+          typeId,
+          x: fromInt(Math.round(focus.x + Math.cos(angle) * ring)),
+          z: fromInt(Math.round(focus.z + Math.sin(angle) * ring)),
+        });
+      }
+      print(`queued ${count} x ${unitTypeById(UNIT_TYPES[typeId]?.id ?? '').id} for player ${player}`);
+    },
+  });
+
+  console.register({
+    name: 'kill',
+    help: 'Remove the selected units.',
+    cheat: true,
+    run({ console: c, print }) {
+      const match = game.match();
+      const selected = game.selection();
+      if (!match || selected.length === 0) {
+        print('nothing selected', 'warn');
+        return;
+      }
+      for (const handle of selected) {
+        if (resolve(match.units, handle) < 0) continue;
+        c.queue({ kind: CommandKind.DespawnUnit, handle });
+      }
+      print(`queued ${selected.length} removals`);
+    },
+  });
+
+  console.register({
+    name: 'stress',
+    help: 'Spawn the M33 stress army, for profiling the renderer.',
+    usage: 'stress [perSide]',
+    cheat: true,
+    run({ args, print }) {
+      const perSide = Math.max(1, Math.min(2000, Number(args[0] ?? 400) || 400));
+      const spawned = game.stressSpawn(perSide);
+      print(`spawned ${spawned} units`);
+    },
+  });
+}

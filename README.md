@@ -2,8 +2,8 @@
 
 A 3D real-time strategy game in the browser. TypeScript, deterministic lockstep
 simulation, continuous heightfield terrain in the vein of Generals or Tiberium
-Wars, fog of war computed by a radial horizon sweep, and an in-game map editor
-with sculpting brushes.
+Wars, fog of war computed by a radial horizon sweep, an in-game map editor with
+sculpting brushes, and a Quake-style console.
 
 See [PLAN.md](PLAN.md) for the architecture invariants and milestone plan.
 
@@ -113,6 +113,27 @@ dev server and open it yourself.
 
 The dev server serves **http://localhost:5173/web_rts/** — Vite's `base`
 matches the GitHub Pages path, so the bare root 404s.
+
+## Console
+
+Backquote opens it. `help` for help, `cmdlist` and `cvarlist` for everything;
+Tab completes, up and down walk history.
+
+```
+map 42                      start a match with a seed
+connect ws://host:8787      join through a relay
+status / hash / where       what is going on
+r_overlay slope             debug terrain overlays
+bind F4 "spawn raider 4"    binds take arguments
+sv_cheats 1                 unlocks give, spawn, kill, stress
+```
+
+Commands that change the match queue a `SimCommand` rather than writing state,
+so they are applied at a tick boundary and recorded in the replay. Cheats are
+locked off entirely in a networked match, because a client inventing units the
+other never hears about is a desync rather than an unfairness.
+
+Archived cvars and binds persist in `localStorage`.
 
 ## Multiplayer
 

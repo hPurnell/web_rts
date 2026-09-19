@@ -55,6 +55,8 @@ export class RtsCamera {
   focusZ: number;
 
   private readonly pitch: number;
+  /** Multiplier on pan speed, driven by the `cam_speed` cvar. */
+  panScale = 1;
   private readonly minHeight: number;
   private readonly maxHeight: number;
   private height: number;
@@ -147,7 +149,7 @@ export class RtsCamera {
     // Normalise so diagonal panning is not faster than axis-aligned panning.
     const magnitude = Math.hypot(dx, dz);
     if (magnitude > 0) {
-      const speed = (PAN_SPEED_PER_HEIGHT * this.height * dt) / magnitude;
+      const speed = (PAN_SPEED_PER_HEIGHT * this.panScale * this.height * dt) / magnitude;
       this.focusX += dx * speed;
       this.focusZ += dz * speed;
     }
