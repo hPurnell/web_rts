@@ -31,7 +31,16 @@ export interface ConsoleView {
   dispose(): void;
 }
 
-export function createConsoleView(parent: HTMLElement, console: GameConsole): ConsoleView {
+export interface ConsoleViewOptions {
+  /** Called whenever the panel opens or closes, so the shell can react. */
+  onVisibility?(open: boolean): void;
+}
+
+export function createConsoleView(
+  parent: HTMLElement,
+  console: GameConsole,
+  options: ConsoleViewOptions = {},
+): ConsoleView {
   const disposer = new Disposer();
 
   const root = document.createElement('div');
@@ -122,6 +131,7 @@ export function createConsoleView(parent: HTMLElement, console: GameConsole): Co
       // flight, and focusing now would type a backquote into the input.
       requestAnimationFrame(() => input.focus());
       draw();
+      options.onVisibility?.(true);
     },
 
     close() {
@@ -129,6 +139,7 @@ export function createConsoleView(parent: HTMLElement, console: GameConsole): Co
       open = false;
       root.hidden = true;
       input.blur();
+      options.onVisibility?.(false);
     },
 
     toggle() {

@@ -10,10 +10,17 @@ const CANVAS_W = 1280;
 const CANVAS_H = 720;
 
 /** A hand-driven InputState, so camera behaviour is testable without a DOM. */
-function fakeInput(overrides: Partial<{ keys: string[]; wheel: number; buttons: number; x: number; y: number; inside: boolean; focused: boolean; drag: { dx: number; dy: number } }> = {}): InputState {
+function fakeInput(overrides: Partial<{ keys: string[]; wheel: number; buttons: number; x: number; y: number; inside: boolean; focused: boolean; suppressed: boolean; drag: { dx: number; dy: number } }> = {}): InputState {
   let wheel = overrides.wheel ?? 0;
   let drag = overrides.drag ?? { dx: 0, dy: 0 };
+  let suppressed = overrides.suppressed ?? false;
   return {
+    get suppressed() {
+      return suppressed;
+    },
+    setSuppressed(value: boolean) {
+      suppressed = value;
+    },
     keys: new Set(overrides.keys ?? []),
     pointer: {
       x: overrides.x ?? CANVAS_W / 2,
@@ -170,5 +177,50 @@ describe('RTS camera', () => {
     cam.moveTo(-100, 500);
     expect(cam.focusX).toBe(BOUNDS.minX);
     expect(cam.focusZ).toBe(BOUNDS.maxZ);
+  });
+});
+
+describe('input suppression', () => {
+  let engine: NullEngine;
+  let scene: Scene;
+
+  beforeEach(() => {
+    engine = new NullEngine();
+    scene = new Scene(engine);
+  });
+
+  const make = (): RtsCamera =>
+    new RtsCamera(scene, { pitchDegrees: 55, bounds: BOUNDS, minHeight: 12, maxHeight: 90, startHeight: 38 });
+
+  it('does not pan while a modal overlay owns the input', () => {
+    // Typing `map 42` into the console must not pan west through the `a`.
+    // The camera polls key state rather than receiving events, so swallowing
+    // the keydown in the console is not enough on its own.
+    const camera = make();
+    camera.moveTo(32, 32);
+
+    camera.update(fakeInput({ keys: ['KeyA'], suppressed: true }), 0.5, CANVAS_W, CANVAS_H);
+    expect(camera.focusX).toBe(32);
+    expect(camera.focusZ).toBe(32);
+
+    // And it pans again once the overlay gives the input back.
+    camera.update(fakeInput({ keys: ['KeyA'] }), 0.5, CANVAS_W, CANVAS_H);
+    expect(camera.focusX).toBeLessThan(32);
+  });
+
+  it('does not edge-pan, zoom or middle-drag while suppressed', () => {
+    const camera = make();
+    camera.moveTo(32, 32);
+    const height = camera.currentHeight;
+
+    camera.update(
+      fakeInput({ x: 2, y: 2, wheel: -500, buttons: 4, drag: { dx: 50, dy: 50 }, suppressed: true }),
+      0.5,
+      CANVAS_W,
+      CANVAS_H,
+    );
+    expect(camera.focusX).toBe(32);
+    expect(camera.focusZ).toBe(32);
+    expect(camera.currentHeight).toBe(height);
   });
 });

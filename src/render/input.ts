@@ -19,6 +19,23 @@ export interface InputState {
   readonly pointer: PointerState;
   /** True when the document has focus; edge-pan is off otherwise. */
   focused: boolean;
+  /**
+   * True while a modal overlay owns the input: the console or the main menu.
+   *
+   * Systems poll this state rather than receiving events, so an overlay that
+   * merely swallowed keydown would not stop the camera — it reads `keys` on
+   * its own schedule and would happily pan west through the `a` of `map 42`.
+   * Suppression has to happen here, where the state itself lives.
+   */
+  readonly suppressed: boolean;
+  /**
+   * Turn suppression on or off.
+   *
+   * Switching it on clears everything currently held. A key that was down
+   * when the console opened would otherwise never see its keyup — the console
+   * eats it — and the camera would pan forever.
+   */
+  setSuppressed(value: boolean): void;
   /** Wheel delta accumulated since the last call, then reset. */
   takeWheel(): number;
   /** Pointer movement accumulated since the last call, then reset. */
@@ -35,11 +52,25 @@ export function attachInput(canvas: HTMLCanvasElement): InputState {
   const pointer: PointerState = { x: 0, y: 0, inside: false, buttons: 0, wheel: 0 };
   let dragX = 0;
   let dragY = 0;
+  let suppressed = false;
 
   const state: InputState = {
     keys,
     pointer,
     focused: document.hasFocus(),
+    get suppressed() {
+      return suppressed;
+    },
+    setSuppressed(value) {
+      if (suppressed === value) return;
+      suppressed = value;
+      if (!value) return;
+      keys.clear();
+      pointer.buttons = 0;
+      pointer.wheel = 0;
+      dragX = 0;
+      dragY = 0;
+    },
     takeWheel() {
       const w = pointer.wheel;
       pointer.wheel = 0;
@@ -68,7 +99,7 @@ export function attachInput(canvas: HTMLCanvasElement): InputState {
   };
 
   on<KeyboardEvent>(window, 'keydown', (e) => {
-    if (e.repeat) return;
+    if (e.repeat || suppressed) return;
     keys.add(e.code);
   });
   on<KeyboardEvent>(window, 'keyup', (e) => keys.delete(e.code));
@@ -93,6 +124,7 @@ export function attachInput(canvas: HTMLCanvasElement): InputState {
 
   on<PointerEvent>(canvas, 'pointermove', (e) => {
     updatePointer(e);
+    if (suppressed) return;
     dragX += e.movementX;
     dragY += e.movementY;
   });
@@ -109,7 +141,10 @@ export function attachInput(canvas: HTMLCanvasElement): InputState {
   });
   on<PointerEvent>(canvas, 'pointerenter', (e) => updatePointer(e));
   on<WheelEvent>(canvas, 'wheel', (e) => {
+    // Still prevented while suppressed: the page must not scroll behind an
+    // open console just because the game is ignoring the wheel.
     e.preventDefault();
+    if (suppressed) return;
     // deltaMode 1 is lines, 2 is pages; normalise to something pixel-ish.
     const scale = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
     pointer.wheel += e.deltaY * scale;

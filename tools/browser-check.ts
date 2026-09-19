@@ -108,7 +108,15 @@ async function main(): Promise<void> {
   if (!(await page.isVisible('.console-input'))) {
     failures.push('console did not open on backquote');
   } else {
+    // Typing must not reach the game. `map`, `status` and `disconnect` are
+    // all full of camera keys, and the camera polls key state rather than
+    // receiving events, so this is not automatic.
+    const cameraBeforeTyping = await readOverlay('camera');
     await page.keyboard.type('status');
+    await page.waitForTimeout(250);
+    if ((await readOverlay('camera')) !== cameraBeforeTyping) {
+      failures.push('camera moved while typing into the console');
+    }
     await page.keyboard.press('Enter');
     await page.waitForTimeout(150);
     const consoleText = (await page.textContent('.console-output')) ?? '';

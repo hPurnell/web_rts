@@ -115,6 +115,15 @@ export class RtsCamera {
   }
 
   update(input: InputState, dt: number, canvasWidth: number, canvasHeight: number): void {
+    if (input.suppressed) {
+      // The console or the menu has the input. Let the zoom finish easing so
+      // it does not freeze mid-glide, and take nothing new.
+      const settle = 1 - Math.exp(-ZOOM_SMOOTHING * dt);
+      this.height += (this.targetHeight - this.height) * settle;
+      this.apply();
+      return;
+    }
+
     const wheel = input.takeWheel();
     if (wheel !== 0) {
       // Multiplicative zoom: each notch changes height by a fixed ratio, so

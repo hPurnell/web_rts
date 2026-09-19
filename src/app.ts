@@ -793,6 +793,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   };
 
   const onPointerDown = (e: PointerEvent): void => {
+    // The console only covers the top of the screen, so the canvas below it is
+    // still clickable as far as the DOM is concerned. Selecting units through
+    // an open console is not what anyone means by clicking there.
+    if (input.suppressed) return;
     const [x, y] = canvasPoint(e);
     const session = mode.session();
     if (session && mode.current() === 'editor') {
@@ -842,6 +846,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   };
 
   const onPointerMove = (e: PointerEvent): void => {
+    if (input.suppressed) return;
     const [x, y] = canvasPoint(e);
     const session = mode.session();
     if (session && mode.current() === 'editor') {
@@ -947,11 +952,33 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   });
   registerGameCommands(gameConsole, consoleGame);
 
-  const consoleView = createConsoleView(overlayRoot, gameConsole);
+  /**
+   * Hand the input to the game or to the overlay on top of it.
+   *
+   * The camera and the selection code poll input state on their own schedule
+   * rather than receiving events, so an overlay that only swallowed keydown
+   * would still let the map slide west through the `a` of `map 42`. This is
+   * the one switch that stops all of it.
+   */
+  const syncInputOwner = (): void => {
+    const overlayOwnsIt = consoleView.isOpen() || menu.isOpen();
+    input.setSuppressed(overlayOwnsIt);
+    if (!overlayOwnsIt) return;
+    // A drag in progress when the overlay opens never gets its pointerup,
+    // because the overlay is in front of the canvas by then. End it here or
+    // the selection box is still on screen when the console closes.
+    selection.cancelDrag();
+    dragBoxElement.hidden = true;
+  };
+
+  const consoleView = createConsoleView(overlayRoot, gameConsole, {
+    onVisibility: () => syncInputOwner(),
+  });
   const menu = createMainMenu({
     overlay: overlayRoot,
     game: consoleGame,
     console: gameConsole,
+    onVisibility: () => syncInputOwner(),
   });
 
   // Restore archived cvars and binds from the last session, then greet.
