@@ -83,6 +83,20 @@ export interface PickOptions {
   readonly ownerId: number;
   readonly width: number;
   readonly height: number;
+  /**
+   * World-space Y of the ground under a unit, so it projects to where it is
+   * drawn rather than to where sea level would be.
+   *
+   * This existed as a hard-coded 0, which was nearly harmless when terrain was
+   * five flat tiers and the camera looked at the lowest one. Over a heightfield
+   * a unit on a six-unit plateau projects most of a screen below itself, and
+   * the only way to catch it is to drag a box over the whole view — which is
+   * exactly how the bug was reported.
+   *
+   * Defaults to flat ground, so callers that genuinely have none (the unit
+   * tests, and anything on a flat map) need not supply it.
+   */
+  readonly groundY?: (x: number, z: number) => number;
 }
 
 /**
@@ -101,11 +115,13 @@ export function unitsInRect(
   for (let i = 0; i < store.count; i++) {
     if (store.isAlive[i] !== 1) continue;
     if (options.ownerId >= 0 && store.ownerId[i] !== options.ownerId) continue;
+    const x = toFloat(store.posX[i] as number);
+    const z = toFloat(store.posZ[i] as number);
     const point = projectPoint(
       viewProjection,
-      toFloat(store.posX[i] as number),
-      0,
-      toFloat(store.posZ[i] as number),
+      x,
+      options.groundY?.(x, z) ?? 0,
+      z,
       options.width,
       options.height,
     );
@@ -129,11 +145,13 @@ export function unitAtPoint(
   for (let i = 0; i < store.count; i++) {
     if (store.isAlive[i] !== 1) continue;
     if (options.ownerId >= 0 && store.ownerId[i] !== options.ownerId) continue;
+    const x = toFloat(store.posX[i] as number);
+    const z = toFloat(store.posZ[i] as number);
     const point = projectPoint(
       viewProjection,
-      toFloat(store.posX[i] as number),
-      0,
-      toFloat(store.posZ[i] as number),
+      x,
+      options.groundY?.(x, z) ?? 0,
+      z,
       options.width,
       options.height,
     );

@@ -33,7 +33,7 @@ import { createTerrain, maxTerrainHeight } from './render/terrain.ts';
 import { describeFlags, pickCell, screenRay } from './render/pick.ts';
 import { FLAG_LAYERS, createFlagOverlay } from './render/flagoverlay.ts';
 import { createGizmos } from './render/gizmos.ts';
-import { createUnitRenderer } from './render/units.ts';
+import { createUnitRenderer, groundHeightAt } from './render/units.ts';
 import { createGhostRenderer } from './render/ghosts.ts';
 import { EXPLORED_DIM, createFogTexture } from './render/fogtexture.ts';
 import { setTerrainFog } from './render/terrainMaterial.ts';
@@ -262,6 +262,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     viewProjection: renderer.scene.getTransformMatrix().m,
     width: renderer.engine.getRenderWidth(),
     height: renderer.engine.getRenderHeight(),
+    // The same height the renderer draws the unit at, so what the box catches
+    // is what the eye sees. Anything else and hit-testing disagrees with the
+    // picture by however tall the ground is.
+    groundY: (x: number, z: number) => groundHeightAt(world, heightOverrides(), x, z),
   });
 
   /** Swap in a different map: rebuild the scene and re-bound the camera. */

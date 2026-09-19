@@ -46,6 +46,19 @@ match state and is hashed. Every read of the terrain during a match has to be
 passed those overrides, which is why so many signatures end in an optional
 `overrides` parameter.
 
+## Selection projects units at ground height
+
+`unitsInRect` and `unitAtPoint` transform unit positions on the CPU rather than
+raycasting meshes, and they need the **world Y the unit is drawn at**, supplied
+as `PickOptions.groundY`. It used to be a hard-coded 0, which was nearly
+harmless over flat tiers and is badly wrong over a heightfield: a unit on a
+six-unit plateau projects most of a screen below itself, and the only way to
+select it is to drag a box over the whole view.
+
+`test/selection.test.ts` had a top-down matrix with no y terms at all, so it
+could not have caught this. The height-aware cases use `PITCHED` instead. If
+you add a projection test, make sure the matrix actually depends on y.
+
 ## Babylon's tree-shaken build
 
 Some methods only exist if you import a module for its side effect. This has

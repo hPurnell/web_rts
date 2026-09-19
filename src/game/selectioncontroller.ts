@@ -9,6 +9,7 @@
 import type { UnitHandle, UnitStore } from '../sim/units.ts';
 import { NULL_HANDLE } from '../sim/units.ts';
 import { ControlGroups, Selection, CLICK_THRESHOLD_PX, sameTypeOnScreen, unitAtPoint, unitsInRect } from './selection.ts';
+import type { PickOptions } from './selection.ts';
 import { rectArea, rectFromDrag } from './project.ts';
 
 /** How close a click must land to a unit's centre to pick it, in pixels. */
@@ -25,6 +26,8 @@ export interface ViewInfo {
   readonly viewProjection: ArrayLike<number>;
   readonly width: number;
   readonly height: number;
+  /** Ground height under a world-space point, for projecting units correctly. */
+  readonly groundY?: (x: number, z: number) => number;
 }
 
 export interface DragBox {
@@ -90,7 +93,12 @@ export class SelectionController {
     this.dragY = y;
 
     const rect = rectFromDrag(this.dragStartX, this.dragStartY, x, y);
-    const options = { ownerId: this.localPlayer, width: view.width, height: view.height };
+    const options: PickOptions = {
+      ownerId: this.localPlayer,
+      width: view.width,
+      height: view.height,
+      ...(view.groundY ? { groundY: view.groundY } : {}),
+    };
 
     if (rectArea(rect) <= CLICK_THRESHOLD_PX * CLICK_THRESHOLD_PX) {
       this.click(x, y, store, view, modifiers, nowMs, options);
@@ -110,7 +118,7 @@ export class SelectionController {
     view: ViewInfo,
     modifiers: SelectionModifiers,
     nowMs: number,
-    options: { ownerId: number; width: number; height: number },
+    options: PickOptions,
   ): void {
     const handle = unitAtPoint(
       store,

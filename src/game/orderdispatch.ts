@@ -56,7 +56,15 @@ export function resolveOrder(
     input.screenX,
     input.screenY,
     TARGET_PICK_RADIUS_PX,
-    { ownerId: -1, width: input.view.width, height: input.view.height },
+    {
+      ownerId: -1,
+      width: input.view.width,
+      height: input.view.height,
+      // The same ground lookup box selection uses. Without it, right-clicking
+      // an enemy on a plateau projects it at sea level, misses, and issues a
+      // move order into the cliff instead of an attack.
+      ...(input.view.groundY ? { groundY: input.view.groundY } : {}),
+    },
   );
   if (enemy !== NULL_HANDLE) {
     const index = resolve(store, enemy);

@@ -374,3 +374,102 @@ describe('selection controller', () => {
     expect(recycled).not.toBe(handle);
   });
 });
+
+/**
+ * A pitched camera, where height matters.
+ *
+ * The TOP_DOWN matrix above has no y terms at all, which is why it never
+ * noticed that `unitsInRect` projected every unit at y = 0. This one lifts a
+ * unit up the screen as the ground under it rises, the way any camera looking
+ * down at an angle does.
+ */
+const PITCHED = (() => {
+  const m = new Float32Array(16);
+  m[0] = 1 / 64; // x -> clip.x
+  m[12] = -1;
+  m[9] = -1 / 36; // z -> clip.y, inverted so +z goes down the screen
+  m[5] = 1 / 36; // y -> clip.y, so higher ground draws higher up
+  m[13] = 1;
+  m[15] = 1;
+  return m;
+})();
+
+describe('picking units over terrain that is not flat', () => {
+  const PLATEAU = 6;
+  const groundY = (_x: number, z: number): number => (z >= 20 ? PLATEAU : 0);
+
+  it('projects a unit at the height it is drawn at, not at zero', () => {
+    // The reported bug: with a unit standing six units up, a box drawn around
+    // where it appears caught nothing, and the only way to select it was to
+    // drag over the whole screen.
+    const m = match();
+    const handle = spawn(m, 'soldier', 0, 30, 30);
+
+    const drawn = projectPoint(PITCHED, 30, PLATEAU, 30, WIDTH, HEIGHT);
+    const box = rectFromDrag(drawn.x - 20, drawn.y - 20, drawn.x + 20, drawn.y + 20);
+
+    const withHeight = unitsInRect(m.units, PITCHED, box, {
+      ownerId: 0,
+      width: WIDTH,
+      height: HEIGHT,
+      groundY,
+    });
+    expect(withHeight).toEqual([handle]);
+
+    // And without the height, the same box misses it — which is the bug.
+    const flat = unitsInRect(m.units, PITCHED, box, {
+      ownerId: 0,
+      width: WIDTH,
+      height: HEIGHT,
+    });
+    expect(flat).toEqual([]);
+  });
+
+  it('clicks a unit standing on high ground', () => {
+    const m = match();
+    const handle = spawn(m, 'soldier', 0, 30, 30);
+    const drawn = projectPoint(PITCHED, 30, PLATEAU, 30, WIDTH, HEIGHT);
+
+    expect(
+      unitAtPoint(m.units, PITCHED, drawn.x, drawn.y, 24, {
+        ownerId: 0,
+        width: WIDTH,
+        height: HEIGHT,
+        groundY,
+      }),
+    ).toBe(handle);
+  });
+
+  it('keeps units at different heights apart on screen', () => {
+    // Two units at the same x and adjacent z, one on the plateau and one in
+    // the basin. Projected at y = 0 they land almost on top of each other; at
+    // their real heights they are a plateau apart.
+    const m = match();
+    spawn(m, 'soldier', 0, 30, 19);
+    spawn(m, 'soldier', 0, 30, 21);
+
+    const low = projectPoint(PITCHED, 30, groundY(30, 19), 19, WIDTH, HEIGHT);
+    const high = projectPoint(PITCHED, 30, groundY(30, 21), 21, WIDTH, HEIGHT);
+    expect(Math.abs(low.y - high.y)).toBeGreaterThan(40);
+
+    const around = (p: { x: number; y: number }) =>
+      unitsInRect(m.units, PITCHED, rectFromDrag(p.x - 15, p.y - 15, p.x + 15, p.y + 15), {
+        ownerId: 0,
+        width: WIDTH,
+        height: HEIGHT,
+        groundY,
+      });
+    expect(around(low)).toHaveLength(1);
+    expect(around(high)).toHaveLength(1);
+  });
+
+  it('still works with no height lookup at all, on a flat map', () => {
+    const m = match();
+    const handle = spawn(m, 'soldier', 0, 30, 10);
+    const drawn = projectPoint(PITCHED, 30, 0, 10, WIDTH, HEIGHT);
+    const box = rectFromDrag(drawn.x - 20, drawn.y - 20, drawn.x + 20, drawn.y + 20);
+    expect(
+      unitsInRect(m.units, PITCHED, box, { ownerId: 0, width: WIDTH, height: HEIGHT }),
+    ).toEqual([handle]);
+  });
+});
