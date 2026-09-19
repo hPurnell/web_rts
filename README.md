@@ -51,8 +51,8 @@ PLAN.md's: ~700 live units with 600 of them engaged, on a 256×256 map.
 | | |
 |---|---|
 | Simulation tick | 2.4 ms (budget: 8 ms) |
-| — of which movement | 2.2 ms |
-| — of which fog, every 4th tick | 3.3 ms (budget: 6 ms) |
+| — of which movement | 1.8 ms |
+| — of which fog, every 4th tick | 3.0 ms (budget: 6 ms) |
 | Browser CPU per frame, ~850 units | ~7 ms |
 | Terrain + units + rings | 11 draw calls |
 

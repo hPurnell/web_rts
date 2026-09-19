@@ -124,6 +124,16 @@ export interface HeightOverrides {
   corner: Int32Array;
   height: Int32Array;
   readonly index: Map<number, number>;
+  /**
+   * Bumped on every write, so consumers can cache anything derived from the
+   * terrain and know when to throw it away.
+   *
+   * Not hashed, and deliberately not part of `overrideHashableArrays`: it is a
+   * fact about how many times this list has been touched, not about the state
+   * of the world, and two clients that agreed on the heights but disagreed on
+   * the number of writes are not desynced.
+   */
+  version: number;
 }
 
 export function createHeightOverrides(capacity = 256): HeightOverrides {
@@ -132,10 +142,12 @@ export function createHeightOverrides(capacity = 256): HeightOverrides {
     corner: new Int32Array(capacity),
     height: new Int32Array(capacity),
     index: new Map(),
+    version: 0,
   };
 }
 
 export function setOverride(overrides: HeightOverrides, corner: number, height: Fixed): void {
+  overrides.version++;
   const existing = overrides.index.get(corner);
   if (existing !== undefined) {
     overrides.height[existing] = height;
@@ -158,6 +170,7 @@ export function setOverride(overrides: HeightOverrides, corner: number, height: 
 export function clearOverrides(overrides: HeightOverrides): void {
   overrides.count = 0;
   overrides.index.clear();
+  overrides.version++;
 }
 
 export function overrideHashableArrays(

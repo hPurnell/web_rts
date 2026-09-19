@@ -132,6 +132,11 @@ function main(): void {
   }
 
   if (process.argv.includes('--write')) {
+    // This overwrites the committed baseline's `note` and `browser` block,
+    // both of which are written by hand: the browser figures come from
+    // check:browser under SwiftShader and cannot be measured here. Put them
+    // back after regenerating, or the file quietly loses the caveat that says
+    // its frame rate means nothing.
     const out = fileURLToPath(new URL('../test/golden/perf.json', import.meta.url));
     writeFileSync(out, JSON.stringify(results, null, 1) + '\n');
     console.log(`\nwrote ${out}`);

@@ -91,6 +91,9 @@ pnpm stress               # M33 performance profile
   frame separately and says so.
 - **Over-saturated mining degrades**, rather than merely flattening. Measured
   and documented at `HARVEST_SLOTS` in `src/sim/economy.ts`.
-- **Fog costs 3.3ms**, against a budget the plan raised from 2ms to 6ms when
-  the disc stamp became a horizon sweep. It is the largest single item in a
-  tick, and it is what buys terrain that genuinely occludes.
+- **Fog costs 3.0ms** on the 256x256 stress map, against a budget the plan
+  raised from 2ms to 6ms when the disc stamp became a horizon sweep. It is the
+  largest single item in a tick, and it is what buys terrain that genuinely
+  occludes. `FogGrids.cellHeights` caches the whole map's heights and is keyed
+  on `match.terrain.version`; refilling it every update costs as much again as
+  the sweeps do.

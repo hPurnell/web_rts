@@ -51,6 +51,14 @@ export interface FogGrids {
    * this costs a fraction of that and makes the inner loop an array index.
    */
   cellHeights: Int32Array;
+  /**
+   * The override version `cellHeights` was filled from, or -1 for never.
+   *
+   * Refilling it is one pass over the whole map. On a 256x256 map that is
+   * 65,536 cells of work every fog update, for a heightfield that changes only
+   * when a building levels its footprint — which is to say almost never.
+   */
+  cellHeightsVersion: number;
   /** Currently in someone's sight radius. Cleared and restamped. */
   readonly visible: Uint8Array[];
   /** Ever seen. OR-accumulated and never cleared. */
@@ -72,6 +80,7 @@ export function createFogGrids(width: number, height: number): FogGrids {
   const cells = width * height;
   return {
     cellHeights: new Int32Array(cells),
+    cellHeightsVersion: -1,
     visible: Array.from({ length: MAX_PLAYERS }, () => new Uint8Array(cells)),
     explored: Array.from({ length: MAX_PLAYERS }, () => new Uint8Array(cells)),
     remembered: Array.from({ length: MAX_PLAYERS }, () => new Uint8Array(cells)),
@@ -211,11 +220,19 @@ export function updateFog(match: Match, world: World): void {
   // One pass to cache the height of every cell, then the sweeps just index it.
   // Stored in 1/256 of a cell rather than Q16.16, which is what lets the
   // horizon comparison be a plain integer multiply.
+  //
+  // Only refilled when the terrain has actually moved. The world's heightfield
+  // cannot change during a match at all (invariant 3), so in practice this
+  // runs once, and again each time a building levels its footprint.
   if (fog.cellHeights.length !== width * height) {
     fog.cellHeights = new Int32Array(width * height);
+    fog.cellHeightsVersion = -1;
   }
-  for (let cell = 0; cell < fog.cellHeights.length; cell++) {
-    fog.cellHeights[cell] = cellCentreHeight(world, cell, match.terrain) >> 8;
+  if (fog.cellHeightsVersion !== match.terrain.version) {
+    for (let cell = 0; cell < fog.cellHeights.length; cell++) {
+      fog.cellHeights[cell] = cellCentreHeight(world, cell, match.terrain) >> 8;
+    }
+    fog.cellHeightsVersion = match.terrain.version;
   }
 
   for (let i = 0; i < store.count; i++) {
