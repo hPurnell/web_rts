@@ -216,6 +216,56 @@ async function main(): Promise<void> {
     failures.push(`fps too low in headless Chromium: ${fps}`);
   }
 
+  // ---------------------------------------------------------------------
+  // Selection on a HiDPI display.
+  //
+  // The engine renders at device resolution while every pointer coordinate is
+  // a CSS pixel, so anything that projects world positions to the screen has
+  // to pick one space and stay in it. Getting that wrong makes box selection
+  // miss by exactly the device pixel ratio — and it is invisible at ratio 1,
+  // which is what every other check here runs at. Hence a second page.
+  // ---------------------------------------------------------------------
+  const hidpi = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+    deviceScaleFactor: 2,
+  });
+  try {
+    await hidpi.goto(`${url}?menu=0`, { waitUntil: 'networkidle' });
+    await hidpi.waitForFunction(
+      () => {
+        const rows = Array.from(document.querySelectorAll('.dev-row'));
+        const fps = rows.find((r) => r.firstElementChild?.textContent === 'fps');
+        return Number(fps?.lastElementChild?.textContent ?? '0') > 0;
+      },
+      undefined,
+      { timeout: 15_000 },
+    );
+    await hidpi.keyboard.press('F5');
+    await hidpi.waitForTimeout(2500);
+
+    // A box around the starting base, well short of the whole screen.
+    await hidpi.mouse.move(560, 240);
+    await hidpi.mouse.down({ button: 'left' });
+    await hidpi.mouse.move(650, 310);
+    await hidpi.mouse.move(740, 380);
+    await hidpi.mouse.up({ button: 'left' });
+    await hidpi.waitForTimeout(400);
+
+    const selected = Number(
+      await hidpi.evaluate(() => {
+        const row = Array.from(document.querySelectorAll('.dev-row')).find(
+          (c) => c.firstElementChild?.textContent === 'selected',
+        );
+        return row?.lastElementChild?.textContent ?? '0';
+      }),
+    );
+    if (!(selected > 0)) {
+      failures.push(`box selection caught nothing at devicePixelRatio 2 (selected ${selected})`);
+    }
+  } finally {
+    await hidpi.close();
+  }
+
   await browser.close();
   await server.close();
 

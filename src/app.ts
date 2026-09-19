@@ -257,11 +257,28 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     }
   }
 
+  /**
+   * The canvas size in **CSS pixels**, which is the space every pointer
+   * coordinate in this file is already in.
+   *
+   * Not `engine.getRenderWidth()`. The engine renders at device resolution —
+   * `setHardwareScalingLevel(1 / devicePixelRatio)` in `render/engine.ts` — so
+   * on a HiDPI display the drawing buffer is twice the CSS size. Projecting
+   * units into that space and then testing them against a drag box measured in
+   * CSS pixels puts every unit at double its true screen position, and
+   * selection catches nothing at all. Babylon's own `createPickingRay` takes
+   * CSS pixels and scales up internally, which is why terrain picking was
+   * unaffected and this stayed hidden.
+   */
+  const viewportSize = (): { width: number; height: number } => {
+    const rect = canvas.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  };
+
   /** View data the selection code needs, read fresh each time it is used. */
   const viewInfo = () => ({
     viewProjection: renderer.scene.getTransformMatrix().m,
-    width: renderer.engine.getRenderWidth(),
-    height: renderer.engine.getRenderHeight(),
+    ...viewportSize(),
     // The same height the renderer draws the unit at, so what the box catches
     // is what the eye sees. Anything else and hit-testing disagrees with the
     // picture by however tall the ground is.
@@ -547,7 +564,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   renderer.engine.runRenderLoop(() => {
     const frameStarted = performance.now();
     const dt = renderer.frameDelta();
-    camera.update(input, dt, renderer.engine.getRenderWidth(), renderer.engine.getRenderHeight());
+    // CSS pixels again: the camera compares these against `input.pointer`,
+    // which is a CSS coordinate, and divides by them to turn a middle-drag in
+    // CSS pixels into ground units.
+    const view = viewportSize();
+    camera.update(input, dt, view.width, view.height);
 
     if (playback) {
       const showing = playback;

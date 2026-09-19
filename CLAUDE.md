@@ -46,6 +46,27 @@ match state and is hashed. Every read of the terrain during a match has to be
 passed those overrides, which is why so many signatures end in an optional
 `overrides` parameter.
 
+## CSS pixels vs the drawing buffer
+
+`render/engine.ts` calls `setHardwareScalingLevel(1 / devicePixelRatio)`, so on
+a HiDPI display **the drawing buffer is larger than the canvas**:
+`engine.getRenderWidth()` is 2560 where `getBoundingClientRect().width` is 1280.
+
+Every pointer coordinate in the app is a CSS pixel — `canvasPoint` and
+`input.pointer` both come from `getBoundingClientRect()`. So anything that
+projects world positions to the screen, or divides a pixel delta into world
+units, must use the **CSS size** (`viewportSize()` in `app.ts`), never
+`getRenderWidth()`. Mixing them scales every projected unit by the device pixel
+ratio and box selection misses entirely.
+
+Babylon's `createPickingRay` takes CSS pixels and multiplies by
+`1 / getHardwareScalingLevel()` itself, which is why terrain picking was
+unaffected — and why this hid for so long.
+
+It is invisible at ratio 1, which is what all the headless tooling runs at, so
+`check:browser` opens a second page at `deviceScaleFactor: 2` purely to box
+select and confirm it catches something.
+
 ## Selection projects units at ground height
 
 `unitsInRect` and `unitAtPoint` transform unit positions on the CPU rather than
