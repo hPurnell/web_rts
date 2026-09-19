@@ -16,7 +16,7 @@ describe('map file round trip', () => {
     const world = createTestMap();
     const restored = decodeMap(encodeMap(world));
     expect(w.hashWorld(restored)).toBe(w.hashWorld(world));
-    expect(restored.tier).toEqual(world.tier);
+    expect(restored.heights).toEqual(world.heights);
     expect(restored.flags).toEqual(world.flags);
     expect(restored.resourceNodes).toEqual(world.resourceNodes);
     expect(restored.startLocations).toEqual(world.startLocations);
@@ -37,7 +37,7 @@ describe('map file round trip', () => {
     expect(w.hashWorld(decodeMap(encodeMap(empty)))).toBe(w.hashWorld(empty));
 
     const big = w.createWorld({ width: 512, height: 512, cellSize: fromInt(2) });
-    big.tier[512 * 512 - 1] = 3;
+    big.heights[513 * 513 - 1] = fromInt(3);
     const restored = decodeMap(encodeMap(big));
     expect(w.hashWorld(restored)).toBe(w.hashWorld(big));
     expect(restored.cellSize).toBe(fromInt(2));
@@ -46,8 +46,10 @@ describe('map file round trip', () => {
   it('is mostly raw grid data rather than encoded numbers', () => {
     const world = createTestMap();
     const bytes = encodeMap(world);
-    const gridBytes = world.width * world.height * 2;
-    // The header and JSON tail together stay a small fraction of the file.
+    // Four bytes per corner for the heightfield, one per cell for the flags.
+    // Heights dominate now, which is the cost of continuous terrain: a tier
+    // fitted in a byte and a fixed-point height does not.
+    const gridBytes = (world.width + 1) * (world.height + 1) * 4 + world.width * world.height;
     expect(bytes.length).toBeGreaterThan(gridBytes);
     expect(bytes.length - gridBytes).toBeLessThan(gridBytes / 4);
   });
@@ -60,7 +62,8 @@ describe('map file round trip', () => {
     expect(view.getUint16(4, true)).toBe(FORMAT_VERSION);
     expect(view.getUint16(8, true)).toBe(7);
     expect(view.getUint16(10, true)).toBe(5);
-    expect(bytes.length).toBe(HEADER_BYTES + 35 * 2 + view.getUint32(16, true));
+    // 8x6 corners at four bytes, then 7x5 flag bytes, then the JSON tail.
+    expect(bytes.length).toBe(HEADER_BYTES + 8 * 6 * 4 + 35 + view.getUint32(16, true));
   });
 });
 
@@ -118,7 +121,7 @@ describe('map file sanitisation', () => {
     const bytes = encodeMap(world);
 
     // Rewrite the tail with entries that point off the map.
-    const head = bytes.subarray(0, 20 + 16 * 2);
+    const head = bytes.subarray(0, 20 + 5 * 5 * 4 + 16);
     const tail = new TextEncoder().encode(
       JSON.stringify({
         resourceNodes: [

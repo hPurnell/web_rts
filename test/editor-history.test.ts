@@ -8,46 +8,64 @@ import {
 import { createTestMap } from '../src/sim/fixtures/testmap.ts';
 import * as w from '../src/sim/world.ts';
 import { makeRand, nextRange } from '../src/sim/rand.ts';
+import { HEIGHT_MAX, cornerStride } from '../src/sim/terrain.ts';
+import { fromInt } from '../src/sim/fixed.ts';
 
-/** Build a terrain edit that raises one cell a tier, clamped. */
-function raise(world: w.World, cell: number, key: string | null = null): TerrainEditCommand {
+/** Build a terrain edit that raises one corner a unit, clamped. */
+function raise(world: w.World, corner: number, key: string | null = null): TerrainEditCommand {
   const command = new TerrainEditCommand(key);
-  const tier = Math.min((world.tier[cell] as number) + 1, w.MAX_TIER);
-  command.record(world, cell, tier, world.flags[cell] as number);
+  const height = Math.min((world.heights[corner] as number) + fromInt(1), HEIGHT_MAX);
+  command.recordCorner(world, corner, height);
   return command;
 }
 
 describe('editor commands', () => {
   it('invert restores the exact previous value, not an arithmetic inverse', () => {
     const world = w.createWorld({ width: 4, height: 4 });
-    world.tier[0] = w.MAX_TIER;
+    world.heights[0] = HEIGHT_MAX;
     const command = raise(world, 0);
     const history = new EditorHistory(world);
     history.push(command);
-    // Raising a cell already at MAX_TIER clamps; subtracting one would be wrong.
-    expect(world.tier[0]).toBe(w.MAX_TIER);
+    // Raising ground already at the ceiling clamps; subtracting a unit on
+    // undo would leave it lower than it started.
+    expect(world.heights[0]).toBe(HEIGHT_MAX);
     history.undo();
-    expect(world.tier[0]).toBe(w.MAX_TIER);
+    expect(world.heights[0]).toBe(HEIGHT_MAX);
   });
 
-  it('records a cell once however many times a stroke crosses it', () => {
+  it('records a corner once however many times a stroke crosses it', () => {
     const world = w.createWorld({ width: 4, height: 4 });
     const command = new TerrainEditCommand('stroke');
-    command.record(world, 5, 1, 1);
-    command.record(world, 5, 2, 1);
-    command.record(world, 5, 3, 1);
+    command.recordCorner(world, 5, fromInt(1));
+    command.recordCorner(world, 5, fromInt(2));
+    command.recordCorner(world, 5, fromInt(3));
     command.apply(world);
-    expect(world.tier[5]).toBe(3);
+    expect(world.heights[5]).toBe(fromInt(3));
     command.invert(world);
-    expect(world.tier[5]).toBe(0);
-    expect(command.touchedCells()).toEqual([5]);
+    expect(world.heights[5]).toBe(0);
+    expect(command.touchedCorners()).toEqual([5]);
+  });
+
+  it('expands a touched corner into the cells that share it', () => {
+    // A corner belongs to up to four cells, and all four change shape when it
+    // moves. Rebuilding only one of them would leave three stale.
+    const world = w.createWorld({ width: 4, height: 4 });
+    const stride = cornerStride(world);
+    const command = new TerrainEditCommand(null);
+    command.recordCorner(world, 2 * stride + 2, fromInt(1));
+    expect(command.touchedCells(world).sort((a, b) => a - b)).toEqual([
+      w.cellIndex(world, 1, 1),
+      w.cellIndex(world, 2, 1),
+      w.cellIndex(world, 1, 2),
+      w.cellIndex(world, 2, 2),
+    ].sort((a, b) => a - b));
   });
 
   it('drops commands that change nothing', () => {
     const world = w.createWorld({ width: 4, height: 4 });
     const history = new EditorHistory(world);
     const noop = new TerrainEditCommand();
-    noop.record(world, 3, world.tier[3] as number, world.flags[3] as number);
+    noop.recordCorner(world, 3, world.heights[3] as number);
     expect(noop.isEmpty()).toBe(true);
     expect(history.push(noop)).toBe(false);
     expect(history.depth).toBe(0);
@@ -62,14 +80,13 @@ describe('undo and redo', () => {
     const rand = makeRand(4242);
 
     for (let i = 0; i < 100; i++) {
-      const cell = nextRange(rand, 0, world.tier.length);
       const command = new TerrainEditCommand();
-      command.record(
+      command.recordCorner(
         world,
-        cell,
-        nextRange(rand, 0, w.MAX_TIER + 1),
-        nextRange(rand, 0, 16),
+        nextRange(rand, 0, world.heights.length),
+        fromInt(nextRange(rand, 1, 12)),
       );
+      command.recordFlags(world, nextRange(rand, 0, world.flags.length), nextRange(rand, 0, 16));
       history.push(command);
     }
 
@@ -82,7 +99,7 @@ describe('undo and redo', () => {
 
     while (history.canUndo) history.undo();
     expect(w.hashWorld(world)).toBe(original);
-    expect(world.tier).toEqual(createTestMap().tier);
+    expect(world.heights).toEqual(createTestMap().heights);
     expect(world.flags).toEqual(createTestMap().flags);
 
     while (history.canRedo) history.redo();
@@ -92,15 +109,16 @@ describe('undo and redo', () => {
   it('undoes and redoes in strict order', () => {
     const world = w.createWorld({ width: 4, height: 4 });
     const history = new EditorHistory(world);
+    const one = fromInt(1);
     for (let i = 0; i < 3; i++) history.push(raise(world, i));
-    expect(Array.from(world.tier.slice(0, 3))).toEqual([1, 1, 1]);
+    expect(Array.from(world.heights.slice(0, 3))).toEqual([one, one, one]);
 
     history.undo();
-    expect(Array.from(world.tier.slice(0, 3))).toEqual([1, 1, 0]);
+    expect(Array.from(world.heights.slice(0, 3))).toEqual([one, one, 0]);
     history.undo();
-    expect(Array.from(world.tier.slice(0, 3))).toEqual([1, 0, 0]);
+    expect(Array.from(world.heights.slice(0, 3))).toEqual([one, 0, 0]);
     history.redo();
-    expect(Array.from(world.tier.slice(0, 3))).toEqual([1, 1, 0]);
+    expect(Array.from(world.heights.slice(0, 3))).toEqual([one, one, 0]);
   });
 
   it('discards the redo stack once a new command is pushed', () => {
@@ -132,8 +150,8 @@ describe('undo and redo', () => {
     expect(history.depth).toBe(10);
     while (history.canUndo) history.undo();
     // The oldest 15 edits are past the horizon and stay applied.
-    expect(Array.from(world.tier.slice(0, 15)).every((t) => t === 1)).toBe(true);
-    expect(Array.from(world.tier.slice(15, 25)).every((t) => t === 0)).toBe(true);
+    expect(Array.from(world.heights.slice(0, 15)).every((h) => h === fromInt(1))).toBe(true);
+    expect(Array.from(world.heights.slice(15, 25)).every((h) => h === 0)).toBe(true);
   });
 
   it('reports changes to a listener', () => {
@@ -156,9 +174,9 @@ describe('stroke coalescing', () => {
 
     history.beginStroke('stroke-1');
     for (let i = 0; i < 400; i++) {
-      const cell = (i * 7) % world.tier.length;
+      const corner = (i * 7) % world.heights.length;
       const command = new TerrainEditCommand('stroke-1');
-      command.record(world, cell, 3, world.flags[cell] as number);
+      command.recordCorner(world, corner, fromInt(3));
       history.push(command);
     }
     history.endStroke();
@@ -172,20 +190,21 @@ describe('stroke coalescing', () => {
   it('keeps separate strokes separate', () => {
     const world = w.createWorld({ width: 8, height: 8 });
     const history = new EditorHistory(world);
-    // Each stroke paints a different row, so none of them is a no-op.
+    const stride = cornerStride(world);
+    // Each stroke paints a different row of corners, so none is a no-op.
     ['a', 'b', 'c'].forEach((key, stroke) => {
       history.beginStroke(key);
       for (let i = 0; i < 5; i++) {
         const command = new TerrainEditCommand(key);
-        command.record(world, stroke * 8 + i, stroke + 1, 1);
+        command.recordCorner(world, stroke * stride + i, fromInt(stroke + 1));
         history.push(command);
       }
       history.endStroke();
     });
     expect(history.depth).toBe(3);
     history.undo();
-    expect(world.tier[16]).toBe(0);
-    expect(world.tier[8]).toBe(2);
+    expect(world.heights[2 * stride]).toBe(0); // the third stroke is undone
+    expect(world.heights[stride]).toBe(fromInt(2)); // the second still stands
   });
 
   it('does not coalesce commands pushed outside a stroke', () => {
@@ -201,7 +220,7 @@ describe('stroke coalescing', () => {
     history.beginStroke('empty');
     for (let i = 0; i < 5; i++) {
       const command = new TerrainEditCommand('empty');
-      command.record(world, i, world.tier[i] as number, world.flags[i] as number);
+      command.recordCorner(world, i, world.heights[i] as number);
       history.push(command);
     }
     history.endStroke();

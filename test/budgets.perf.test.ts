@@ -18,7 +18,7 @@ import { createSpatialHash, rebuildSpatialHash } from '../src/sim/spatialhash.ts
 import { spawnUnit } from '../src/sim/units.ts';
 import { UNIT_TYPES, unitTypeById } from '../src/sim/unittypes.ts';
 import { createUnitRenderer } from '../src/render/units.ts';
-import { solveRamps } from '../src/render/terrain.ts';
+
 import { createTestMap } from '../src/sim/fixtures/testmap.ts';
 import { unitsInRect } from '../src/game/selection.ts';
 import { stepMatch } from '../src/sim/tick.ts';
@@ -62,7 +62,7 @@ describe('simulation budgets', () => {
     expect(best(10, 5, () => computeFlowField(grid, goal))).toBeLessThan(15);
   });
 
-  it('M22: 200 units at sight radius 9 update fog in under 2ms', () => {
+  it('M22: 200 units at sight radius 9 update fog in under 6ms', () => {
     const world = w.createWorld({ width: 128, height: 128 });
     const match = createMatchFromWorld({
       world,
@@ -74,7 +74,12 @@ describe('simulation budgets', () => {
     });
     spawnGrid(match, 'siege', 200, 100);
     expect(unitTypeById('siege').sightRadius).toBeGreaterThan(fromInt(9));
-    expect(best(40, 10, () => updateFog(match, world))).toBeLessThan(2);
+    // 6ms, not the 2ms a disc stamp cost. A horizon sweep walks a ray to the
+    // rim for every cell on the rim, which is several times the work of
+    // stamping a disc, and it buys terrain that genuinely occludes. The plan
+    // raised this budget deliberately rather than pretending the sweep was
+    // free; fog runs every fourth tick, so this is 1.5ms of an average tick.
+    expect(best(40, 10, () => updateFog(match, world))).toBeLessThan(6);
   });
 
   it('M20: the spatial hash rebuilds for 2,000 units in under 2ms', () => {
@@ -90,7 +95,7 @@ describe('simulation budgets', () => {
 
 describe('rendering budgets', () => {
   const world = createTestMap();
-  const ramps = solveRamps(world);
+  const overrides = null;
 
   it('M16: writing 2,000 unit instances costs a fraction of a frame', () => {
     const scene = new Scene(new NullEngine());
@@ -100,7 +105,7 @@ describe('rendering budgets', () => {
     for (const type of UNIT_TYPES) spawnGrid(match, type.id, per * 2, 40);
     renderer.captureTick(match);
 
-    expect(best(40, 10, () => renderer.update(match, world, ramps, 0.5))).toBeLessThan(4);
+    expect(best(40, 10, () => renderer.update(match, world, overrides, 0.5))).toBeLessThan(4);
     renderer.dispose();
   });
 

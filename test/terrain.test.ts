@@ -6,126 +6,196 @@ import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
 
 import {
   CHUNK_SIZE,
-  TIER_HEIGHT,
   buildChunkVertexData,
-  cornerHeights,
+  buildCornerNormals,
+  cellCornerY,
   createTerrain,
-  solveRamps,
-  tierHeight,
+  maxTerrainHeight,
 } from '../src/render/terrain.ts';
 import { createTestMap, TEST_MAP_SIZE } from '../src/sim/fixtures/testmap.ts';
+import { cornerStride, createHeightOverrides, setOverride } from '../src/sim/terrain.ts';
+import { fromInt, toFloat } from '../src/sim/fixed.ts';
 import * as w from '../src/sim/world.ts';
 
-describe('ramp slopes', () => {
-  it('slopes a straight ramp from the low tier to the high tier', () => {
-    const world = w.createWorld({ width: 8, height: 6 });
-    // Rows 0-1 are tier 1 high ground, rows 4-5 are tier 0, rows 2-3 the ramp.
-    for (let x = 0; x < 8; x++) {
-      world.tier[w.cellIndex(world, x, 0)] = 1;
-      world.tier[w.cellIndex(world, x, 1)] = 1;
-    }
-    for (const y of [2, 3]) {
-      const cell = w.cellIndex(world, 3, y);
-      world.tier[cell] = 1;
-      world.flags[cell] = w.WALKABLE | w.RAMP;
-    }
-    const ramps = solveRamps(world);
-    const top = ramps.byCell.get(w.cellIndex(world, 3, 2));
-    const bottom = ramps.byCell.get(w.cellIndex(world, 3, 3));
-    expect(top).toBeDefined();
-    expect(bottom).toBeDefined();
-    // North corners of the top ramp cell meet the high ground exactly.
-    expect(top?.[0]).toBeCloseTo(tierHeight(1), 6);
-    expect(top?.[1]).toBeCloseTo(tierHeight(1), 6);
-    // South corners of the bottom ramp cell meet the basin exactly.
-    expect(bottom?.[2]).toBeCloseTo(tierHeight(0), 6);
-    expect(bottom?.[3]).toBeCloseTo(tierHeight(0), 6);
-    // And it descends monotonically in between.
-    expect(top?.[3]).toBeGreaterThan(bottom?.[3] ?? 0);
+/** Raise one corner and return its index, for the small hand-built worlds. */
+function raise(world: w.World, cx: number, cz: number, height: number): number {
+  const corner = cz * cornerStride(world) + cx;
+  world.heights[corner] = height;
+  return corner;
+}
+
+describe('surface geometry', () => {
+  it('places a cell at its own corner heights', () => {
+    const world = w.createWorld({ width: 4, height: 4 });
+    const cell = w.cellIndex(world, 1, 1);
+    raise(world, 1, 1, fromInt(3)); // the cell's NW corner
+
+    // NW, NE, SE, SW. Only the corner that was raised moves, which is the
+    // whole point of putting heights on corners: a cell cannot be lifted
+    // without lifting its neighbours' shared corners with it.
+    expect(cellCornerY(world, cell, null)).toEqual([3, 0, 0, 0]);
   });
 
-  it('shares corner heights between adjacent ramp cells, so there is no crack', () => {
+  it('shares corners between neighbouring cells, so there is no crack', () => {
+    // Guaranteed by construction rather than by a solver, which is why the
+    // heightfield has no equivalent of the old ramp-stitching pass. This
+    // checks the guarantee has not been lost in the indexing.
     const world = createTestMap();
-    const ramps = solveRamps(world);
-    for (const [cell, heights] of ramps.byCell) {
-      const cx = w.cellX(world, cell);
-      const cy = w.cellY(world, cell);
-      const east = ramps.byCell.get(w.cellIndex(world, cx + 1, cy));
-      if (east) {
-        // This cell's NE/SE corners are the east cell's NW/SW corners.
-        expect(heights[1]).toBeCloseTo(east[0], 6);
-        expect(heights[2]).toBeCloseTo(east[3], 6);
-      }
-      const south = ramps.byCell.get(w.cellIndex(world, cx, cy + 1));
-      if (south) {
-        expect(heights[3]).toBeCloseTo(south[0], 6);
-        expect(heights[2]).toBeCloseTo(south[1], 6);
+    for (let cz = 0; cz < world.height - 1; cz++) {
+      for (let cx = 0; cx < world.width - 1; cx++) {
+        const here = cellCornerY(world, w.cellIndex(world, cx, cz), null);
+        const east = cellCornerY(world, w.cellIndex(world, cx + 1, cz), null);
+        const south = cellCornerY(world, w.cellIndex(world, cx, cz + 1), null);
+        // This cell's NE/SE are the east cell's NW/SW.
+        expect(here[1]).toBe(east[0]);
+        expect(here[2]).toBe(east[3]);
+        // This cell's SW/SE are the south cell's NW/NE.
+        expect(here[3]).toBe(south[0]);
+        expect(here[2]).toBe(south[1]);
       }
     }
   });
 
-  it('leaves a ramp that connects nothing flat', () => {
-    const world = w.createWorld({ width: 5, height: 5 });
-    const cell = w.cellIndex(world, 2, 2);
-    world.flags[cell] = w.WALKABLE | w.RAMP;
-    const heights = solveRamps(world).byCell.get(cell);
-    expect(heights).toEqual([0, 0, 0, 0]);
+  it('reads a match height override in place of the map own height', () => {
+    const world = w.createWorld({ width: 4, height: 4 });
+    const overrides = createHeightOverrides();
+    const corner = 1 * cornerStride(world) + 1;
+    setOverride(overrides, corner, fromInt(5));
+
+    const cell = w.cellIndex(world, 1, 1);
+    expect(cellCornerY(world, cell, null)[0]).toBe(0);
+    expect(cellCornerY(world, cell, overrides)[0]).toBe(5);
+  });
+
+  it('reports the highest ground on the map, for the shader', () => {
+    const world = w.createWorld({ width: 4, height: 4 });
+    expect(maxTerrainHeight(world)).toBeGreaterThan(0); // never divides by zero
+    raise(world, 2, 2, fromInt(9));
+    expect(maxTerrainHeight(world)).toBeGreaterThanOrEqual(9);
+  });
+});
+
+describe('corner normals', () => {
+  it('points straight up over flat ground', () => {
+    const world = w.createWorld({ width: 4, height: 4 });
+    const normals = buildCornerNormals(world);
+    for (let i = 0; i < normals.length; i += 3) {
+      expect(normals[i]).toBeCloseTo(0, 6);
+      expect(normals[i + 1]).toBeCloseTo(1, 6);
+      expect(normals[i + 2]).toBeCloseTo(0, 6);
+    }
+  });
+
+  it('tilts away from rising ground', () => {
+    // A slope climbing to the east: the normal leans west, which is what makes
+    // the hillside catch the light differently from the ground beside it.
+    const world = w.createWorld({ width: 8, height: 4 });
+    const stride = cornerStride(world);
+    for (let cz = 0; cz <= 4; cz++) {
+      for (let cx = 0; cx <= 8; cx++) world.heights[cz * stride + cx] = fromInt(cx);
+    }
+    const normals = buildCornerNormals(world);
+    const middle = (2 * stride + 4) * 3;
+    expect(normals[middle]).toBeLessThan(0); // leaning back down the slope
+    expect(normals[middle + 2]).toBeCloseTo(0, 6); // nothing changes north-south
+  });
+
+  it('is computed map-wide, so chunk seams do not shade differently', () => {
+    // Chunk-local normals were the obvious implementation and would put a
+    // visible crease down every chunk boundary, because the cells outside the
+    // chunk are exactly the ones a central difference needs.
+    const world = createTestMap();
+    const normals = buildCornerNormals(world);
+    expect(normals.length).toBe(cornerStride(world) * (world.height + 1) * 3);
   });
 });
 
 describe('chunk geometry', () => {
-  it('puts a flat cell at its tier height', () => {
-    const world = w.createWorld({ width: 4, height: 4 });
-    world.tier[w.cellIndex(world, 1, 1)] = 2;
-    const ramps = solveRamps(world);
-    expect(cornerHeights(world, ramps, w.cellIndex(world, 1, 1))).toEqual([4, 4, 4, 4]);
-    expect(TIER_HEIGHT).toBe(2);
-  });
-
-  it('emits a wall exactly once per cliff edge, from the higher cell', () => {
+  it('emits two triangles per cell, split the same way heightAt is', () => {
     const world = w.createWorld({ width: 3, height: 1 });
-    world.tier[1] = 1; // a single raised cell between two low ones
-    const ramps = solveRamps(world);
+    const normals = buildCornerNormals(world);
+    const data = buildChunkVertexData(world, normals, { cx0: 0, cy0: 0, cx1: 3, cy1: 1 });
+    const indices = data.indices as number[];
 
-    const whole = buildChunkVertexData(world, ramps, { cx0: 0, cy0: 0, cx1: 3, cy1: 1 });
-    const positions = whole.positions as number[];
-    // Count quads whose four vertices are not all at the same height: those are
-    // the walls. The raised cell has two cliff sides plus two map-edge skirts.
-    let walls = 0;
-    for (let q = 0; q < positions.length / 12; q++) {
-      const ys = [0, 1, 2, 3].map((i) => positions[q * 12 + i * 3 + 1] as number);
-      if (Math.max(...ys) - Math.min(...ys) > 1e-6) walls++;
+    // Three cells of two triangles, plus the map-edge skirt. The top faces
+    // come first, so the first eighteen indices are the cells.
+    expect(indices.length).toBeGreaterThanOrEqual(18);
+
+    const positions = data.positions as number[];
+    // Each cell's two triangles share the NW-SE diagonal: vertex 0 and 2.
+    for (let cell = 0; cell < 3; cell++) {
+      const base = cell * 4;
+      const tri = indices.slice(cell * 6, cell * 6 + 6);
+      expect(tri).toContain(base);
+      expect(tri).toContain(base + 2);
+      // NW is at (cx, cz); SE is a cell along in both directions.
+      expect(positions[base * 3]).toBeCloseTo(cell, 6);
+      expect(positions[(base + 2) * 3]).toBeCloseTo(cell + 1, 6);
     }
-    // 3 cells * 4 edges = 12 edges; walls are the 2 internal cliffs plus the
-    // 8 map-edge skirts (the two low cells contribute 3 each, the high one 2).
-    expect(walls).toBe(10);
   });
 
-  it('builds seam walls from the world grid, not from the chunk', () => {
-    // A cliff running exactly along a chunk boundary must still produce a wall
-    // when only one chunk is built.
+  it('needs no cliff walls, because the surface is continuous', () => {
+    // With tiers, a height change meant a vertical wall quad stitched in by
+    // hand. A heightfield's cliff is just a steep triangle, and every vertex
+    // in the chunk sits on the surface.
+    const world = w.createWorld({ width: 3, height: 3 });
+    raise(world, 1, 1, fromInt(6));
+    raise(world, 2, 1, fromInt(6));
+    raise(world, 1, 2, fromInt(6));
+    raise(world, 2, 2, fromInt(6));
+
+    const normals = buildCornerNormals(world);
+    const data = buildChunkVertexData(world, normals, { cx0: 0, cy0: 0, cx1: 3, cy1: 3 });
+    const positions = data.positions as number[];
+    // Four vertices per cell for nine cells, then the skirt.
+    const surfaceVertices = 9 * 4;
+    for (let i = 0; i < surfaceVertices; i++) {
+      const cx = Math.round((positions[i * 3] as number));
+      const cz = Math.round((positions[i * 3 + 2] as number));
+      const corner = cz * cornerStride(world) + cx;
+      expect(positions[i * 3 + 1]).toBeCloseTo(toFloat(world.heights[corner] as number), 6);
+    }
+  });
+
+  it('hangs a skirt off the map edge so the horizon is not a hole', () => {
     const world = w.createWorld({ width: CHUNK_SIZE * 2, height: 2 });
-    for (let y = 0; y < 2; y++) {
-      for (let x = 0; x < CHUNK_SIZE; x++) world.tier[w.cellIndex(world, x, y)] = 1;
-    }
-    const ramps = solveRamps(world);
-    const left = buildChunkVertexData(world, ramps, { cx0: 0, cy0: 0, cx1: CHUNK_SIZE, cy1: 2 });
+    const normals = buildCornerNormals(world);
+    const left = buildChunkVertexData(world, normals, {
+      cx0: 0,
+      cy0: 0,
+      cx1: CHUNK_SIZE,
+      cy1: 2,
+    });
     const positions = left.positions as number[];
-    // The east edge of the left chunk is a cliff down to the right chunk.
-    const seamX = CHUNK_SIZE;
-    let seamWallVerts = 0;
-    for (let i = 0; i < positions.length; i += 3) {
-      if (Math.abs((positions[i] as number) - seamX) < 1e-6 && (positions[i + 1] as number) === 0) {
-        seamWallVerts++;
-      }
+
+    let below = 0;
+    for (let i = 1; i < positions.length; i += 3) {
+      if ((positions[i] as number) < 0) below++;
     }
-    expect(seamWallVerts).toBeGreaterThan(0);
+    expect(below).toBeGreaterThan(0);
+
+    // The interior seam is not an edge, so it grows no skirt.
+    const right = buildChunkVertexData(world, normals, {
+      cx0: CHUNK_SIZE,
+      cy0: 0,
+      cx1: CHUNK_SIZE * 2,
+      cy1: 2,
+    });
+    const rightPositions = right.positions as number[];
+    for (let i = 0; i < rightPositions.length; i += 3) {
+      if ((rightPositions[i + 1] as number) >= 0) continue;
+      // Any skirt here belongs to the map's own east, north or south edge.
+      const x = rightPositions[i] as number;
+      expect(x === CHUNK_SIZE * 2 || rightPositions[i + 2] === 0 || rightPositions[i + 2] === 2).toBe(
+        true,
+      );
+    }
   });
 
   it('carries positions, normals and both UV channels', () => {
     const world = createTestMap();
-    const ramps = solveRamps(world);
-    const data = buildChunkVertexData(world, ramps, { cx0: 0, cy0: 0, cx1: 8, cy1: 8 });
+    const normals = buildCornerNormals(world);
+    const data = buildChunkVertexData(world, normals, { cx0: 0, cy0: 0, cx1: 8, cy1: 8 });
     expect(data.positions?.length).toBeGreaterThan(0);
     expect(data.normals?.length).toBe(data.positions?.length);
     expect((data.uvs as number[]).length).toBe(((data.positions as number[]).length / 3) * 2);
@@ -134,8 +204,8 @@ describe('chunk geometry', () => {
 
   it('addresses the whole map in the second UV channel', () => {
     const world = createTestMap();
-    const ramps = solveRamps(world);
-    const data = buildChunkVertexData(world, ramps, {
+    const normals = buildCornerNormals(world);
+    const data = buildChunkVertexData(world, normals, {
       cx0: 0,
       cy0: 0,
       cx1: TEST_MAP_SIZE,
@@ -161,15 +231,16 @@ describe('terrain meshes', () => {
     scene = new Scene(new NullEngine());
   });
 
-  it('chunks the fixture into four meshes sharing one material', () => {
+  it('chunks the fixture into meshes sharing one material', () => {
     const world = createTestMap();
     const material = new StandardMaterial('t', scene);
     const terrain = createTerrain(scene, world, material);
 
-    expect(terrain.chunksX).toBe(2);
-    expect(terrain.chunksY).toBe(2);
-    expect(terrain.chunks).toHaveLength(4);
-    // Four meshes, one material: four draw calls for terrain, well under eight.
+    const expected = Math.ceil(TEST_MAP_SIZE / CHUNK_SIZE);
+    expect(terrain.chunksX).toBe(expected);
+    expect(terrain.chunksY).toBe(expected);
+    expect(terrain.chunks).toHaveLength(expected * expected);
+    // One material across every chunk: terrain costs one draw call per chunk.
     for (const chunk of terrain.chunks) {
       expect(chunk.mesh).not.toBeNull();
       expect(chunk.mesh?.material).toBe(material);
@@ -183,15 +254,19 @@ describe('terrain meshes', () => {
     const world = createTestMap();
     const terrain = createTerrain(scene, world, new StandardMaterial('t', scene));
     const untouched = terrain.chunks[3]?.mesh;
-    const before = terrain.chunks[0]?.mesh?.getTotalVertices() ?? 0;
+    const before = terrain.chunks[0]?.mesh?.getVerticesData(VertexBuffer.PositionKind)?.slice();
 
-    // Raise a block of cells inside chunk 0 and rebuild only that chunk.
-    for (let y = 4; y < 8; y++) {
-      for (let x = 4; x < 8; x++) world.tier[w.cellIndex(world, x, y)] = 3;
+    // Raise a block of corners inside chunk 0 and rebuild only that chunk.
+    for (let cz = 4; cz < 8; cz++) {
+      for (let cx = 4; cx < 8; cx++) raise(world, cx, cz, fromInt(7));
     }
     terrain.rebuildChunk(0);
 
-    expect(terrain.chunks[0]?.mesh?.getTotalVertices()).not.toBe(before);
+    const after = terrain.chunks[0]?.mesh?.getVerticesData(VertexBuffer.PositionKind);
+    // The vertex count does not change — a heightfield chunk always has the
+    // same topology — so what must have changed is where the vertices are.
+    expect(after?.length).toBe(before?.length);
+    expect(Array.from(after ?? [])).not.toEqual(Array.from(before ?? []));
     expect(terrain.chunks[3]?.mesh).toBe(untouched); // other chunks untouched
     terrain.dispose();
   });

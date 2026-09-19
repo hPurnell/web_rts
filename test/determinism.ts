@@ -21,7 +21,7 @@ import { stepMatch } from '../src/sim/tick.ts';
 
 /**
  * The script runs on the fixture map, so movement has real terrain to path
- * over: cliffs, ramps and chokepoints are exactly where a desync would hide.
+ * over: cliffs, slopes and chokepoints are exactly where a desync would hide.
  */
 export const SCRIPT_WORLD = createTestMap();
 export const SCRIPT_SEED = 0xc0ffee;
@@ -144,6 +144,41 @@ export const SCRIPT: readonly ScheduledCommand[] = [
       player: 1,
       handles: handleRange(0, 4),
       goalCell: cellIndex(SCRIPT_WORLD, 60, 60),
+    },
+  },
+
+  // Heightfield terrain: a building levels the ground under its footprint
+  // into the match's height override layer, which is match state and so is
+  // hashed. Three placements, each covering a different path:
+  //  - flat plateau ground, which succeeds and writes overrides;
+  //  - the ridge, which is too steep and must be refused everywhere;
+  //  - flat basin ground, so the override list holds more than one entry and
+  //    its order is pinned.
+  {
+    tick: 250,
+    command: {
+      kind: CommandKind.PlaceBuilding,
+      player: 0,
+      typeId: 5, // barracks, a 3x3 footprint
+      cell: cellIndex(SCRIPT_WORLD, 24, 28),
+    },
+  },
+  {
+    tick: 252,
+    command: {
+      kind: CommandKind.PlaceBuilding,
+      player: 1,
+      typeId: 4, // depot, on the ridge: refused for slope
+      cell: cellIndex(SCRIPT_WORLD, 63, 60),
+    },
+  },
+  {
+    tick: 260,
+    command: {
+      kind: CommandKind.PlaceBuilding,
+      player: 1,
+      typeId: 4,
+      cell: cellIndex(SCRIPT_WORLD, 70, 60),
     },
   },
 ];

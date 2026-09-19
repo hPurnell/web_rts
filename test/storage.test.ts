@@ -10,6 +10,7 @@ import {
   writeAutosave,
 } from '../src/editor/storage.ts';
 import { decodeMap, encodeMap } from '../src/editor/mapfile.ts';
+import { fromInt } from '../src/sim/fixed.ts';
 import { createTestMap } from '../src/sim/fixtures/testmap.ts';
 import * as w from '../src/sim/world.ts';
 
@@ -67,11 +68,11 @@ describe('saving with the File System Access API', () => {
     expect(w.hashWorld(decodeMap(state.bytes))).toBe(w.hashWorld(world));
 
     // A second save reuses the handle rather than asking again.
-    world.tier[0] = 3;
+    world.heights[0] = fromInt(3);
     await storage.save(world);
     expect(show).toHaveBeenCalledTimes(1);
     expect(state.closed).toBe(2);
-    expect(decodeMap(state.bytes).tier[0]).toBe(3);
+    expect(decodeMap(state.bytes).heights[0]).toBe(fromInt(3));
   });
 
   it('asks again for Save As', async () => {
@@ -170,11 +171,11 @@ describe('autosave', () => {
   it('keeps only the newest autosave', async () => {
     const world = createTestMap();
     await writeAutosave(world, 'a');
-    world.tier[0] = 3;
+    world.heights[0] = fromInt(3);
     await writeAutosave(world, 'b');
     const record = await readAutosave();
     expect(record?.name).toBe('b');
-    expect(decodeMap(record!.bytes).tier[0]).toBe(3);
+    expect(decodeMap(record!.bytes).heights[0]).toBe(fromInt(3));
   });
 
   it('clears on request, so a fresh session is not offered a stale map', async () => {

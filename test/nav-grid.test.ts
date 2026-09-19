@@ -3,7 +3,7 @@ import {
   BASE_COST,
   BLOCKED,
   DIRECTIONS,
-  RAMP_COST,
+  MAX_SLOPE_COST,
   createCostGrid,
   gridFromSnapshot,
   isLinked,
@@ -14,6 +14,16 @@ import {
   snapshotCostGrid,
 } from '../src/nav/grid.ts';
 import { createTestMap } from '../src/sim/fixtures/testmap.ts';
+import { cornerStride } from '../src/sim/terrain.ts';
+import { fromInt } from '../src/sim/fixed.ts';
+
+/** Raise a block of corner columns to a height, spanning the whole map depth. */
+function raiseCorners(world: w.World, cx0: number, cx1: number, height: number): void {
+  const stride = cornerStride(world);
+  for (let cz = 0; cz <= world.height; cz++) {
+    for (let cx = cx0; cx <= cx1; cx++) world.heights[cz * stride + cx] = height;
+  }
+}
 import * as w from '../src/sim/world.ts';
 
 /** Walk the grid and report whether `to` is reachable from `from`. */
@@ -37,15 +47,31 @@ describe('cost grid', () => {
     expect(grid.links[10]).toBe(0);
   });
 
-  it('charges more for a ramp than for flat ground', () => {
-    const world = createTestMap();
+  it('charges more for a slope than for flat ground, in proportion', () => {
+    // The ramp flag used to buy a flat surcharge. Cost now scales with how
+    // steep the ground actually is, so a gentle rise is nearly free and a
+    // near-cliff is nearly unaffordable, and paths bend around hills by
+    // themselves rather than because a flag told them to.
+    const world = w.createWorld({ width: 8, height: 4 });
+    const stride = cornerStride(world);
+    for (let cz = 0; cz <= 4; cz++) {
+      world.heights[cz * stride + 2] = world.cellSize / 8; // gentle
+      world.heights[cz * stride + 5] = world.cellSize / 2; // steep
+    }
     const grid = createCostGrid(world);
-    const rampCell = world.flags.findIndex((f) => (f & w.RAMP) !== 0);
-    expect(grid.cost[rampCell]).toBe(RAMP_COST);
-    expect(RAMP_COST).toBeGreaterThan(BASE_COST);
+
+    const flat = grid.cost[w.cellIndex(world, 7, 2)] as number;
+    const gentle = grid.cost[w.cellIndex(world, 1, 2)] as number;
+    const steep = grid.cost[w.cellIndex(world, 4, 2)] as number;
+
+    expect(flat).toBe(BASE_COST);
+    expect(gentle).toBeGreaterThan(flat);
+    expect(steep).toBeGreaterThan(gentle);
+    expect(steep).toBeLessThanOrEqual(MAX_SLOPE_COST);
+    expect(MAX_SLOPE_COST).toBeGreaterThan(BASE_COST);
   });
 
-  it('links neighbours on the same tier in all eight directions', () => {
+  it('links neighbours on level ground in all eight directions', () => {
     const world = w.createWorld({ width: 8, height: 8 });
     const grid = createCostGrid(world);
     const centre = w.cellIndex(world, 4, 4);
@@ -64,34 +90,36 @@ describe('cost grid', () => {
 
   it('refuses to link across a cliff', () => {
     const world = w.createWorld({ width: 8, height: 4 });
-    for (let y = 0; y < 4; y++) {
-      for (let x = 4; x < 8; x++) world.tier[w.cellIndex(world, x, y)] = 1;
-    }
+    raiseCorners(world, 5, 8, fromInt(6));
     const grid = createCostGrid(world);
     const low = w.cellIndex(world, 3, 2);
-    const high = w.cellIndex(world, 4, 2);
+    const high = w.cellIndex(world, 5, 2);
     expect(neighboursOf(grid, low)).not.toContain(high);
     expect(neighboursOf(grid, high)).not.toContain(low);
     expect(reachable(grid, low, high)).toBe(false);
   });
 
-  it('links across a ramp, and only across the ramp', () => {
-    const world = w.createWorld({ width: 8, height: 4 });
-    for (let y = 0; y < 4; y++) {
-      for (let x = 4; x < 8; x++) world.tier[w.cellIndex(world, x, y)] = 1;
+  it('links across an incline cut into a cliff, and only there', () => {
+    // A plateau with one row sculpted down into a slope gentle enough to
+    // climb. Nothing is flagged: the slope is the ramp.
+    const world = w.createWorld({ width: 12, height: 5 });
+    const stride = cornerStride(world);
+    raiseCorners(world, 4, 12, fromInt(2));
+
+    // Row 2's corners run from ground level up to the plateau over four
+    // cells, which is a slope of half a cell per cell.
+    for (const cz of [2, 3]) {
+      for (let cx = 4; cx <= 8; cx++) {
+        world.heights[cz * stride + cx] = (fromInt(2) * (cx - 4)) / 4;
+      }
     }
-    // A one-cell-wide ramp at row 2.
-    const rampCell = w.cellIndex(world, 4, 2);
-    world.tier[rampCell] = 0;
-    world.flags[rampCell] = w.WALKABLE | w.RAMP;
 
     const grid = createCostGrid(world);
     const low = w.cellIndex(world, 3, 2);
-    const highBehindRamp = w.cellIndex(world, 5, 2);
+    const highBehindRamp = w.cellIndex(world, 9, 2);
     expect(reachable(grid, low, highBehindRamp)).toBe(true);
-    expect(neighboursOf(grid, low)).toContain(rampCell);
 
-    // Rows without the ramp still cannot be crossed directly.
+    // Rows away from the incline still cannot be crossed directly.
     expect(neighboursOf(grid, w.cellIndex(world, 3, 0))).not.toContain(w.cellIndex(world, 4, 0));
   });
 
@@ -105,11 +133,9 @@ describe('cost grid', () => {
     expect(neighboursOf(grid, w.cellIndex(world, 3, 3))).not.toContain(w.cellIndex(world, 4, 4));
   });
 
-  it('does not let a diagonal clip the corner of a tier change', () => {
+  it('does not let a diagonal clip the corner of a cliff edge', () => {
     const world = w.createWorld({ width: 8, height: 8 });
-    for (let y = 0; y < 8; y++) {
-      for (let x = 4; x < 8; x++) world.tier[w.cellIndex(world, x, y)] = 1;
-    }
+    raiseCorners(world, 5, 8, fromInt(6));
     const grid = createCostGrid(world);
     expect(neighboursOf(grid, w.cellIndex(world, 3, 3))).not.toContain(w.cellIndex(world, 4, 4));
   });
@@ -119,11 +145,11 @@ describe('the fixture map', () => {
   const world = createTestMap();
   const grid = createCostGrid(world);
 
-  it('is one connected component, because every region has a ramp', () => {
+  it('is one connected component, because every plateau has a way down', () => {
     const { count, labels } = labelComponents(grid);
-    // Resource patches are impassable, so they are their own tiny components.
-    const patchCells = new Set(world.resourceNodes.map((n) => n.cell));
-    const walkable = [...labels.keys()].filter((cell) => !patchCells.has(cell));
+    // Resource patches and cliff faces are impassable, and impassable cells
+    // are left unlabelled rather than put in a component of their own.
+    const walkable = [...labels.keys()].filter((cell) => isPassable(grid, cell));
     const label = labels[walkable[0] as number];
     expect(walkable.every((cell) => labels[cell] === label)).toBe(true);
     expect(count).toBeGreaterThanOrEqual(1);
@@ -134,33 +160,29 @@ describe('the fixture map', () => {
     expect(reachable(grid, a!.cell, b!.cell)).toBe(true);
   });
 
-  it('cannot leave a plateau except by its ramp', () => {
-    // Block every ramp and the plateau becomes an island.
+  it('cannot leave a plateau except down its incline', () => {
+    // Wall off the incline and the plateau becomes an island. There is no
+    // ramp flag to clear, so this blocks the ground itself, which is what a
+    // player walling a choke point would do.
     const blocked = createTestMap();
-    for (let cell = 0; cell < blocked.flags.length; cell++) {
-      if (((blocked.flags[cell] as number) & w.RAMP) !== 0) w.setFlags(blocked, cell, 0);
+    for (let y = 20; y <= 32; y++) {
+      for (let x = 44; x <= 66; x++) w.setFlags(blocked, w.cellIndex(blocked, x, y), 0);
     }
     const island = createCostGrid(blocked);
-    const plateau = w.cellIndex(blocked, 8, 12);
-    const basin = w.cellIndex(blocked, 32, 32);
+    const plateau = w.cellIndex(blocked, 20, 20);
+    const basin = w.cellIndex(blocked, 70, 64);
     expect(reachable(island, plateau, basin)).toBe(false);
-    // And with the ramps back, it is not.
+    // And with the incline open, it is not an island.
     expect(reachable(grid, plateau, basin)).toBe(true);
   });
 
-  it('never links two cells more than one tier apart', () => {
+  it('never links two cells the terrain rules would keep apart', () => {
+    // The grid and the terrain must agree about what a cliff is, exactly.
+    // This is the assertion that would have caught a nav grid quietly using a
+    // different slope limit from the one units and buildings use.
     for (let cell = 0; cell < grid.cost.length; cell++) {
       for (const neighbour of neighboursOf(grid, cell)) {
-        const difference = Math.abs(
-          (world.tier[cell] as number) - (world.tier[neighbour] as number),
-        );
-        expect(difference).toBeLessThanOrEqual(1);
-        if (difference === 1) {
-          // A tier change is only crossable on a ramp.
-          const isRamp =
-            ((world.flags[cell] as number) | (world.flags[neighbour] as number)) & w.RAMP;
-          expect(isRamp).toBeTruthy();
-        }
+        expect(w.cellsConnect(world, cell, neighbour)).toBe(true);
       }
     }
   });

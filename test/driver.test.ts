@@ -171,13 +171,13 @@ describe('match initialisation from world state', () => {
     // Invariant 4: match setup reads world state and never writes it.
     const world = createTestMap();
     const before = w.hashWorld(world);
-    const tierCopy = world.tier.slice();
+    const heightCopy = world.heights.slice();
     const flagCopy = world.flags.slice();
 
     const driver = createDriver(createMatchFromWorld({ world, seed: 3, playerCount: 2 }));
     driver.advance(5);
     expect(w.hashWorld(world)).toBe(before);
-    expect(world.tier).toEqual(tierCopy);
+    expect(world.heights).toEqual(heightCopy);
     expect(world.flags).toEqual(flagCopy);
 
     // And starting a second match over the same world behaves identically.

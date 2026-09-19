@@ -23,7 +23,8 @@ import { createCostGrid, isPassable } from '../src/nav/grid.ts';
 import { computeFlowField, isReachable } from '../src/nav/flowfield.ts';
 import { hashMatch } from '../src/sim/statehash.ts';
 import * as w from '../src/sim/world.ts';
-import { toFloat } from '../src/sim/fixed.ts';
+import { fromInt, toFloat } from '../src/sim/fixed.ts';
+import { cornerStride } from '../src/sim/terrain.ts';
 
 const barracks = unitTypeById('barracks');
 const depot = unitTypeById('depot');
@@ -60,16 +61,20 @@ describe('placement', () => {
     expect(toFloat(centre.z)).toBeCloseTo(11.5, 4);
   });
 
-  it('refuses unbuildable ground, uneven ground and the map edge', () => {
+  it('refuses unbuildable ground, steep ground and the map edge', () => {
     const { world, match } = setup();
     w.setFlags(world, w.cellIndex(world, 11, 10), w.WALKABLE);
     expect(canPlace(match, world, 0, barracks, w.cellIndex(world, 10, 10)).reason).toMatch(
       /not buildable/,
     );
 
-    world.tier[w.cellIndex(world, 21, 20)] = 1;
+    // Tiers made this "all four cells on the same tier". A heightfield never
+    // has two cells at exactly the same height, so what is refused is ground
+    // steeper than a building can sit on.
+    const stride = cornerStride(world);
+    world.heights[20 * stride + 21] = fromInt(3);
     expect(canPlace(match, world, 0, barracks, w.cellIndex(world, 20, 20)).reason).toMatch(
-      /level ground/,
+      /too steep/,
     );
 
     expect(canPlace(match, world, 0, barracks, w.cellIndex(world, 47, 47)).reason).toMatch(

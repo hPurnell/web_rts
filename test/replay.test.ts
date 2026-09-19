@@ -236,7 +236,7 @@ describe('replay files', () => {
     const world = createTestMap();
     const { replay } = recordMatch(world, 100);
     const other = createTestMap();
-    other.tier[0] = 3;
+    other.heights[0] = fromInt(3);
 
     expect(() => decodeReplay(encodeReplay(replay), w.hashWorld(other))).toThrow(ReplayError);
     expect(() => createReplayPlayer({ replay, world: other })).toThrow(/different map/);

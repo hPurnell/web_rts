@@ -4,12 +4,13 @@ import {
   VISIBLE,
   canSeeUnit,
   createFogGrids,
-  discOffsets,
+  visionRays,
   isExplored,
   isVisible,
   rememberedStructure,
   updateFog,
 } from '../src/sim/fog.ts';
+import { cornerStride } from '../src/sim/terrain.ts';
 import { createMatchFromWorld } from '../src/sim/matchinit.ts';
 import { stepMatch } from '../src/sim/tick.ts';
 import { spawnUnit, despawnUnit } from '../src/sim/units.ts';
@@ -43,23 +44,41 @@ function spawnAt(match: ReturnType<typeof createMatchFromWorld>, owner: number, 
   });
 }
 
-describe('sight discs', () => {
-  it('is a filled circle, cached by radius', () => {
-    const offsets = discOffsets(3);
-    expect(discOffsets(3)).toBe(offsets); // same array, not recomputed
-    const cells = offsets.length / 2;
-    // A radius-3 disc holds 29 cells; a 7x7 square would hold 49.
-    expect(cells).toBe(29);
-    for (let i = 0; i < offsets.length; i += 2) {
-      const dx = offsets[i] as number;
-      const dy = offsets[i + 1] as number;
-      expect(dx * dx + dy * dy).toBeLessThanOrEqual(9);
+describe('vision rays', () => {
+  it('stays inside the disc, and is cached by radius', () => {
+    const rays = visionRays(3);
+    expect(visionRays(3)).toBe(rays); // same table, not recomputed
+
+    for (let i = 0; i < rays.dx.length; i++) {
+      const dx = rays.dx[i] as number;
+      const dz = rays.dz[i] as number;
+      expect(dx * dx + dz * dz).toBeLessThanOrEqual(9);
+      // The run is that distance in 1/256 of a cell.
+      expect(rays.run[i]).toBeCloseTo(Math.sqrt(dx * dx + dz * dz) * 256, -1);
     }
   });
 
-  it('grows with the square of the radius', () => {
-    expect(discOffsets(6).length).toBeGreaterThan(discOffsets(3).length * 3);
-    expect(discOffsets(0).length).toBe(2); // just the centre cell
+  it('covers every cell of the disc', () => {
+    // The point of one ray per perimeter cell: no cell inside the radius is
+    // missed, so flat ground reveals a disc exactly as the old stamp did.
+    const radius = 6;
+    const rays = visionRays(radius);
+    const seen = new Set<string>();
+    for (let i = 0; i < rays.dx.length; i++) seen.add(`${rays.dx[i]},${rays.dz[i]}`);
+
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (dx * dx + dz * dz > radius * radius) continue;
+        if (dx === 0 && dz === 0) continue; // the centre is revealed directly
+        expect(seen.has(`${dx},${dz}`)).toBe(true);
+      }
+    }
+  });
+
+  it('gets denser with radius, as a circumference does', () => {
+    const rayCount = (radius: number): number => visionRays(radius).starts.length - 1;
+    expect(rayCount(6)).toBeGreaterThan(rayCount(3));
+    expect(visionRays(0).dx.length).toBe(0); // only the centre, revealed directly
   });
 });
 
@@ -77,27 +96,49 @@ describe('visibility', () => {
     expect(isVisible(match.fog, 1, w.cellIndex(world, 32, 32))).toBe(false);
   });
 
-  it('sees down a cliff but not up it', () => {
-    // The high-ground rule, which is the whole point of tiered terrain.
+  it('sees down a cliff, and only the face of it from below', () => {
+    // The high-ground rule, which used to be a tier comparison and is now a
+    // consequence of the horizon sweep: what the low unit can see of the
+    // plateau is its edge, because the edge is what its line of sight meets.
     const world = w.createWorld({ width: 32, height: 8 });
-    for (let y = 0; y < 8; y++) {
-      for (let x = 16; x < 32; x++) world.tier[w.cellIndex(world, x, y)] = 2;
+    const stride = cornerStride(world);
+    for (let cz = 0; cz <= 8; cz++) {
+      for (let cx = 16; cx <= 32; cx++) world.heights[cz * stride + cx] = fromInt(8);
     }
     const { match } = setup(world);
 
-    const high = spawnAt(match, 0, 18, 4);
+    const high = spawnAt(match, 0, 16, 4);
     const low = spawnAt(match, 1, 14, 4);
     expect(high).toBeGreaterThan(0);
     expect(low).toBeGreaterThan(0);
     updateFog(match, world);
 
-    // The unit on tier 2 sees the low ground beside it.
+    // The unit at the lip sees the low ground below and beyond it.
     expect(isVisible(match.fog, 0, w.cellIndex(world, 14, 4))).toBe(true);
-    // The unit on tier 0 cannot see up onto the plateau at all.
-    expect(isVisible(match.fog, 1, w.cellIndex(world, 18, 4))).toBe(false);
-    expect(isVisible(match.fog, 1, w.cellIndex(world, 16, 4))).toBe(false);
-    // But it still sees its own level.
+    expect(isVisible(match.fog, 0, w.cellIndex(world, 12, 4))).toBe(true);
+
+    // The unit below sees the cliff and its lip, and nothing behind it: the
+    // lip raises the horizon above everything further back.
     expect(isVisible(match.fog, 1, w.cellIndex(world, 12, 4))).toBe(true);
+    expect(isVisible(match.fog, 1, w.cellIndex(world, 16, 4))).toBe(true);
+    expect(isVisible(match.fog, 1, w.cellIndex(world, 18, 4))).toBe(false);
+    expect(isVisible(match.fog, 1, w.cellIndex(world, 20, 4))).toBe(false);
+  });
+
+  it('leaves a shadow behind a ridge', () => {
+    // A ridge with low ground on both sides. A unit on one side sees up to
+    // the crest and no further, which is what a heightfield buys that a tier
+    // comparison never could.
+    const world = w.createWorld({ width: 40, height: 8 });
+    const stride = cornerStride(world);
+    for (let cz = 0; cz <= 8; cz++) world.heights[cz * stride + 20] = fromInt(10);
+    const { match } = setup(world);
+
+    spawnAt(match, 0, 14, 4);
+    updateFog(match, world);
+
+    expect(isVisible(match.fog, 0, w.cellIndex(world, 18, 4))).toBe(true);
+    expect(isVisible(match.fog, 0, w.cellIndex(world, 22, 4))).toBe(false);
   });
 
   it('does not reveal a vision blocker', () => {

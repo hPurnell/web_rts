@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EditorHistory } from '../src/editor/history.ts';
 import { TerrainEditCommand } from '../src/editor/commands.ts';
-import { stageTierEdit } from '../src/editor/brush.ts';
-import { planRamp, stageRamp } from '../src/editor/ramp.ts';
+import { brushCorners, rampTarget, stageSculpt } from '../src/editor/sculpt.ts';
 import { createSession } from '../src/editor/session.ts';
 import { EDITOR_TOOLS } from '../src/editor/shell.ts';
 import { decodeMap, encodeMap } from '../src/editor/mapfile.ts';
@@ -14,7 +13,11 @@ import {
   removeResourceNode,
   removeStartLocation,
 } from '../src/editor/placement.ts';
-import { createTestMap, TEST_MAP_SIZE } from '../src/sim/fixtures/testmap.ts';
+import { createTestMap } from '../src/sim/fixtures/testmap.ts';
+import { MAX_BUILD_SLOPE, cellSlope, cornerStride } from '../src/sim/terrain.ts';
+import { fromInt } from '../src/sim/fixed.ts';
+import { createCostGrid } from '../src/nav/grid.ts';
+import { computeFlowField, isReachable } from '../src/nav/flowfield.ts';
 import * as w from '../src/sim/world.ts';
 
 const tool = (id: string) => EDITOR_TOOLS.find((t) => t.id === id)!;
@@ -36,7 +39,7 @@ describe('placement rules', () => {
     expect(result.flagCells).toEqual([40]);
   });
 
-  it('refuses to stack patches, starts and ramps', () => {
+  it('refuses to stack patches and starts, and refuses steep ground', () => {
     const world = emptyWorld();
     world.resourceNodes.push({ cell: 40, type: w.ResourceType.Minerals, amount: 1 });
     expect(placeResourceNode(world, 40, w.ResourceType.Minerals).reason).toMatch(/already a patch/);
@@ -46,8 +49,13 @@ describe('placement rules', () => {
     expect(placeResourceNode(world, 41, w.ResourceType.Minerals).reason).toMatch(/start location/);
     expect(placeStartLocation(world, 41).reason).toMatch(/already a start/);
 
-    w.setFlags(world, 42, w.WALKABLE | w.RAMP);
-    expect(placeResourceNode(world, 42, w.ResourceType.Minerals).reason).toMatch(/ramp/);
+    // What used to be "not on a ramp" is now a question of slope: a patch
+    // needs ground level enough to drive a harvester onto.
+    const steep = w.cellIndex(world, 20, 20);
+    world.heights[20 * cornerStride(world) + 20] = fromInt(4);
+    expect(placeResourceNode(world, steep, w.ResourceType.Minerals).reason).toMatch(
+      /level ground/,
+    );
   });
 
   it('refuses unwalkable ground and cells off the map', () => {
@@ -63,8 +71,10 @@ describe('placement rules', () => {
     const world = emptyWorld();
     const cell = w.cellIndex(world, 4, 4);
     expect(placeResourceNode(world, cell, w.ResourceType.Gas).ok).toBe(true);
-    world.tier[w.cellIndex(world, 5, 5)] = 1;
-    expect(placeResourceNode(world, cell, w.ResourceType.Gas).reason).toMatch(/flat ground/);
+    // Cell (4,4) itself stays level; the corner raised here belongs to the
+    // geyser's wider footprint, which is what the extra check is for.
+    world.heights[6 * cornerStride(world) + 6] = fromInt(4);
+    expect(placeResourceNode(world, cell, w.ResourceType.Gas).reason).toMatch(/level ground/);
     // And it must not hang off the edge of the map.
     const corner = w.cellIndex(world, 31, 31);
     expect(placeResourceNode(world, corner, w.ResourceType.Gas).reason).toMatch(/does not fit/);
@@ -178,7 +188,9 @@ describe('start location validation', () => {
  * unchanged. This is the end-to-end proof that the editor can author a real
  * map, rather than that its pieces work individually.
  */
-describe('reauthoring the fixture with editor operations only', () => {
+describe('authoring a playable map with editor operations only', () => {
+  const SIZE = 96;
+
   interface Rect {
     x0: number;
     y0: number;
@@ -186,78 +198,94 @@ describe('reauthoring the fixture with editor operations only', () => {
     y1: number;
   }
 
-  function cellsIn(world: w.World, rect: Rect): number[] {
-    const cells: number[] = [];
-    for (let y = rect.y0; y <= rect.y1; y++) {
-      for (let x = rect.x0; x <= rect.x1; x++) {
-        const cell = w.cellIndex(world, x, y);
-        if (cell >= 0) cells.push(cell);
-      }
-    }
-    return cells;
-  }
-
-  /** Raise a rectangle to an absolute tier, one editor step at a time. */
-  function raiseTo(history: EditorHistory, world: w.World, rect: Rect, tier: number): void {
-    for (let step = 0; step < tier; step++) {
+  /**
+   * Flatten a rectangle of corners to a height, the way a player would: put
+   * the flatten brush down and hold it until the ground stops moving.
+   *
+   * The old version of this test raised a rectangle a tier at a time and
+   * compared the result to the fixture byte for byte. That comparison made
+   * sense when terrain was five discrete values; over a heightfield the
+   * fixture's skirts are smoothstepped and no sequence of brush strokes would
+   * land on them exactly. What is worth asserting has not changed: that the
+   * editor's own operations can produce a map that is playable.
+   */
+  function flattenTo(history: EditorHistory, world: w.World, rect: Rect, height: number): void {
+    const stride = cornerStride(world);
+    for (let pass = 0; pass < 24; pass++) {
       const command = new TerrainEditCommand(null);
-      const cells = cellsIn(world, rect).filter((c) => (world.tier[c] as number) < tier);
-      if (stageTierEdit(world, command, cells, 1) === 0) continue;
-      history.push(command);
-    }
-  }
-
-  /** Move a rectangle to an absolute tier, raising or lowering as needed. */
-  function setTo(history: EditorHistory, world: w.World, rect: Rect, tier: number): void {
-    for (let pass = 0; pass < 4; pass++) {
       let moved = 0;
-      for (const delta of [1, -1]) {
-        const command = new TerrainEditCommand(null);
-        const cells = cellsIn(world, rect).filter((c) =>
-          delta > 0 ? (world.tier[c] as number) < tier : (world.tier[c] as number) > tier,
-        );
-        if (cells.length === 0) continue;
-        if (stageTierEdit(world, command, cells, delta) === 0) continue;
-        history.push(command);
-        moved++;
+      for (let cz = rect.y0; cz <= rect.y1; cz++) {
+        for (let cx = rect.x0; cx <= rect.x1; cx++) {
+          moved += stageSculpt(world, command, [{ corner: cz * stride + cx, weight: 65536 }], {
+            mode: 'flatten',
+            reference: height,
+          });
+        }
       }
       if (moved === 0) return;
+      history.push(command);
     }
   }
 
-  function authorFixture(): w.World {
-    const world = w.createWorld({ width: TEST_MAP_SIZE, height: TEST_MAP_SIZE });
-    const history = new EditorHistory(world, 4096);
+  /** Drag the ramp tool from one corner to another, as the session does. */
+  function dragRamp(
+    history: EditorHistory,
+    world: w.World,
+    from: { x: number; z: number },
+    to: { x: number; z: number },
+    fromHeight: number,
+    toHeight: number,
+    radius: number,
+  ): void {
+    const stride = cornerStride(world);
+    const fromCorner = from.z * stride + from.x;
+    const toCorner = to.z * stride + to.x;
+    const command = new TerrainEditCommand(null);
+    const steps = Math.max(Math.abs(to.x - from.x), Math.abs(to.z - from.z));
 
-    raiseTo(history, world, { x0: 0, y0: 0, x1: 25, y1: 20 }, 2); // NW plateau
-    raiseTo(history, world, { x0: 40, y0: 0, x1: 63, y1: 16 }, 1); // NE shelf
-    raiseTo(history, world, { x0: 38, y0: 43, x1: 63, y1: 63 }, 2); // SE plateau
-    raiseTo(history, world, { x0: 0, y0: 47, x1: 23, y1: 63 }, 1); // SW shelf
-
-    // Four ramps, each dragged from its high end to its low end. The plateau
-    // ramps span two tiers and the shelf ramps one.
-    const ramps: [number, number, number, number][] = [
-      [21, 20, 21, 23], // NW plateau down to the basin
-      [45, 16, 45, 19], // NE shelf down to the basin
-      [42, 43, 42, 40], // SE plateau down to the basin
-      [18, 47, 18, 44], // SW shelf down to the basin
-    ];
-    for (const [hx, hy, lx, ly] of ramps) {
-      const plan = planRamp(
-        world,
-        w.cellIndex(world, hx, hy),
-        w.cellIndex(world, lx, ly),
-      );
-      expect(plan.ok, `ramp ${hx},${hy} -> ${lx},${ly}: ${plan.reason}`).toBe(true);
-      const command = new TerrainEditCommand(null);
-      stageRamp(world, command, plan);
-      history.push(command);
+    for (let step = 0; step <= steps; step++) {
+      const t = steps === 0 ? 0 : step / steps;
+      const x = Math.round(from.x + (to.x - from.x) * t);
+      const z = Math.round(from.z + (to.z - from.z) * t);
+      for (const sample of brushCorners(world, z * stride + x, radius)) {
+        const target = rampTarget(world, sample.corner, fromCorner, toCorner, fromHeight, toHeight);
+        stageSculpt(world, command, [sample], { mode: 'ramp', reference: target });
+      }
     }
+    history.push(command);
+  }
 
-    // The aprons beside each plateau ramp: partly a lowering of plateau edge,
-    // partly a raising of basin, which is two brush strokes either way.
-    setTo(history, world, { x0: 18, y0: 20, x1: 24, y1: 22 }, 1);
-    setTo(history, world, { x0: 39, y0: 41, x1: 45, y1: 43 }, 1);
+  function authorMap(): w.World {
+    const world = w.createWorld({ width: SIZE, height: SIZE });
+    const history = new EditorHistory(world, 4096);
+    const high = fromInt(6);
+
+    // Two plateaus in opposite corners, raised to the same height.
+    flattenTo(history, world, { x0: 4, y0: 4, x1: 32, y1: 32 }, high);
+    flattenTo(history, world, { x0: 64, y0: 64, x1: 92, y1: 92 }, high);
+
+    // An incline off each one, wide enough to move an army down.
+    dragRamp(history, world, { x: 32, z: 18 }, { x: 44, z: 18 }, high, 0, 5);
+    dragRamp(history, world, { x: 64, z: 78 }, { x: 52, z: 78 }, high, 0, 5);
+
+    // Smooth the cliff edges so the plateaus are not vertical walls where the
+    // ramps meet them, which is what a player does with the smooth brush.
+    for (const centre of [
+      { x: 32, z: 18 },
+      { x: 64, z: 78 },
+    ]) {
+      const stride = cornerStride(world);
+      for (let pass = 0; pass < 6; pass++) {
+        const command = new TerrainEditCommand(null);
+        const moved = stageSculpt(
+          world,
+          command,
+          brushCorners(world, centre.z * stride + centre.x, 8),
+          { mode: 'smooth' },
+        );
+        if (moved > 0) history.push(command);
+      }
+    }
 
     const place = (cx: number, cy: number, type: w.ResourceType, count: number): void => {
       for (let i = 0; i < count; i++) {
@@ -269,16 +297,14 @@ describe('reauthoring the fixture with editor operations only', () => {
         world.flags[cell] = (flags & ~w.BUILDABLE) | w.VISION_BLOCKER;
       }
     };
-    place(4, 6, w.ResourceType.Minerals, 8);
-    place(48, 4, w.ResourceType.Minerals, 8);
-    place(46, 54, w.ResourceType.Minerals, 8);
-    place(4, 54, w.ResourceType.Minerals, 8);
-    place(14, 9, w.ResourceType.Gas, 2);
-    place(48, 50, w.ResourceType.Gas, 2);
+    place(10, 10, w.ResourceType.Minerals, 8);
+    place(78, 78, w.ResourceType.Minerals, 8);
+    place(10, 14, w.ResourceType.Gas, 2);
+    place(78, 82, w.ResourceType.Gas, 2);
 
     for (const [cx, cy] of [
-      [8, 12],
-      [54, 50],
+      [16, 16],
+      [84, 84],
     ] as const) {
       const result = placeStartLocation(world, w.cellIndex(world, cx, cy));
       expect(result.ok, `start at ${cx},${cy}: ${result.reason}`).toBe(true);
@@ -288,27 +314,46 @@ describe('reauthoring the fixture with editor operations only', () => {
     return world;
   }
 
-  it('produces terrain identical to the fixture', () => {
-    const authored = authorFixture();
-    const fixture = createTestMap();
-    expect(Array.from(authored.tier)).toEqual(Array.from(fixture.tier));
-    expect(Array.from(authored.flags)).toEqual(Array.from(fixture.flags));
+  it('produces plateaus that are genuinely flat and genuinely raised', () => {
+    const world = authorMap();
+    const stride = cornerStride(world);
+    // The middle of each plateau sits at the height it was flattened to, and
+    // is level enough to put a base on.
+    for (const [cx, cz] of [
+      [16, 16],
+      [80, 80],
+    ] as const) {
+      // Flatten converges on its reference rather than snapping to it, so
+      // this is "level to well under a millimetre", not "exactly six".
+      expect(world.heights[cz * stride + cx]).toBeCloseTo(fromInt(6), -3);
+      expect(cellSlope(world, w.cellIndex(world, cx, cz))).toBeLessThanOrEqual(MAX_BUILD_SLOPE);
+    }
+    // And the basin between them was never touched.
+    expect(world.heights[48 * stride + 48]).toBe(0);
   });
 
-  it('produces the same resource nodes and start locations', () => {
-    const authored = authorFixture();
-    const fixture = createTestMap();
-    expect(authored.resourceNodes).toEqual(fixture.resourceNodes);
-    expect(authored.startLocations).toEqual(fixture.startLocations);
+  it('produces a map both players can actually leave their base on', () => {
+    const world = authorMap();
+    const grid = createCostGrid(world);
+    const [a, b] = world.startLocations;
+    const field = computeFlowField(grid, b!.cell);
+    expect(isReachable(field, a!.cell)).toBe(true);
   });
 
-  it('hashes identically, and still does after a save and load', () => {
-    const authored = authorFixture();
-    const fixture = createTestMap();
-    expect(w.hashWorld(authored)).toBe(w.hashWorld(fixture));
+  it('validates clean and hashes identically after a save and load', () => {
+    const world = authorMap();
+    expect(w.validate(world)).toEqual([]);
 
-    const reloaded = decodeMap(encodeMap(authored));
-    expect(w.hashWorld(reloaded)).toBe(w.hashWorld(fixture));
+    const reloaded = decodeMap(encodeMap(world));
+    expect(w.hashWorld(reloaded)).toBe(w.hashWorld(world));
+    expect(Array.from(reloaded.heights)).toEqual(Array.from(world.heights));
     expect(w.validate(reloaded)).toEqual([]);
+  });
+
+  it('is not the shipping fixture, and does not need to be', () => {
+    // Worth stating: the fixture is generated, not authored by strokes. What
+    // the editor guarantees is that a map built in it is playable, not that
+    // it can reproduce a procedural one bit for bit.
+    expect(w.hashWorld(authorMap())).not.toBe(w.hashWorld(createTestMap()));
   });
 });

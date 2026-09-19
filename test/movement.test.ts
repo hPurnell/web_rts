@@ -8,6 +8,7 @@ import type { UnitHandle } from '../src/sim/units.ts';
 import { unitTypeById } from '../src/sim/unittypes.ts';
 import { createCostGrid } from '../src/nav/grid.ts';
 import { createTestMap } from '../src/sim/fixtures/testmap.ts';
+import { cellCentreHeight } from '../src/sim/terrain.ts';
 import { hashMatch } from '../src/sim/statehash.ts';
 import { arrivalRadius } from '../src/sim/movement.ts';
 import { createSpatialHash, rebuildSpatialHash, bucketContents, forEachNeighbour } from '../src/sim/spatialhash.ts';
@@ -132,7 +133,7 @@ describe('movement', () => {
   it('stops on command', () => {
     const { match, context, world } = setup();
     const handle = spawnAt(match, 'soldier', 0, 30, 30);
-    stepMatch(match, [move(0, [handle], w.cellIndex(world, 50, 30))], context);
+    stepMatch(match, [move(0, [handle], w.cellIndex(world, 12, 12))], context);
     run(match, context, 20);
     expect(match.units.state[0]).toBe(UnitState.Moving);
 
@@ -151,17 +152,22 @@ describe('movement', () => {
     const goal = world.startLocations[0]!.cell;
     stepMatch(match, [move(0, [handle], goal)], context);
 
-    let previousTier = world.tier[w.cellFromWorld(world, match.units.posX[0] as number, match.units.posZ[0] as number)] as number;
+    let previous = w.cellFromWorld(world, match.units.posX[0] as number, match.units.posZ[0] as number);
     for (let i = 0; i < 600; i++) {
       stepMatch(match, [], context);
       const cell = w.cellFromWorld(world, match.units.posX[0] as number, match.units.posZ[0] as number);
       expect(cell).toBeGreaterThanOrEqual(0);
-      const tier = world.tier[cell] as number;
-      // Tier can only change by one step at a time, and only on a ramp.
-      expect(Math.abs(tier - previousTier)).toBeLessThanOrEqual(1);
-      previousTier = tier;
+      // Every cell it enters is one the terrain rules allow it to reach from
+      // the one it was in. With tiers this was "the tier changed by at most
+      // one, and only on a ramp"; the heightfield answers the same question
+      // directly, and answers it for the diagonals too.
+      if (cell !== previous) {
+        expect(w.cellsConnect(world, previous, cell)).toBe(true);
+      }
+      previous = cell;
     }
-    expect(previousTier).toBe(2); // it got up onto the plateau
+    // It got up onto the plateau.
+    expect(toFloat(cellCentreHeight(world, previous))).toBeCloseTo(6, 1);
   });
 
   it('stands still when the goal is unreachable', () => {

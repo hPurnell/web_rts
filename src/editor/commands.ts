@@ -65,6 +65,18 @@ export class TerrainEditCommand implements EditorCommand {
     });
   }
 
+  /**
+   * The height this command has already staged for a corner, if any.
+   *
+   * A stroke that crosses the same corner twice has to build on what it
+   * staged the first time, not on the world underneath. Nothing is applied
+   * until the command is pushed, so without this a second pass over a corner
+   * would silently discard the first.
+   */
+  stagedHeight(corner: number): number | undefined {
+    return this.corners.get(corner)?.afterHeight;
+  }
+
   /** Stage a cell's new flags, capturing its current ones once. */
   recordFlags(world: World, cell: number, flags: number): void {
     if (cell < 0 || cell >= world.flags.length) return;

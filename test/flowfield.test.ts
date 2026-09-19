@@ -12,6 +12,8 @@ import {
 } from '../src/nav/flowfield.ts';
 import { createCostGrid, DIRECTIONS } from '../src/nav/grid.ts';
 import { createTestMap } from '../src/sim/fixtures/testmap.ts';
+import { cellCentreHeight, cornerStride } from '../src/sim/terrain.ts';
+import { toFloat } from '../src/sim/fixed.ts';
 import * as w from '../src/sim/world.ts';
 import { fnv1a32 } from '../src/sim/hash.ts';
 
@@ -70,17 +72,20 @@ describe('integration field', () => {
     }
   });
 
-  it('prefers flat ground to a ramp when both reach the goal', () => {
+  it('prefers flat ground to a slope when both reach the goal', () => {
+    // The ramp flag used to add a fixed surcharge. Now the surcharge is the
+    // slope itself, so a bump in one row of a corridor is what makes the
+    // other row cheaper.
     const world = w.createWorld({ width: 16, height: 4 });
-    // A corridor of ordinary ground with one ramp-flagged cell in the middle.
-    const rampCell = w.cellIndex(world, 8, 1);
-    world.flags[rampCell] = w.WALKABLE | w.RAMP;
+    const stride = cornerStride(world);
+    // A rise of a quarter of a cell: slope 0.25, walkable but not free. Only
+    // corner row 2 moves, so the cells in row 0 stay perfectly flat.
+    for (let cx = 7; cx <= 10; cx++) world.heights[2 * stride + cx] = world.cellSize / 4;
     const grid = createCostGrid(world);
     const field = computeFlowField(grid, w.cellIndex(world, 15, 1));
-    const throughRamp = distanceAt(field, w.cellIndex(world, 7, 1));
+    const throughSlope = distanceAt(field, w.cellIndex(world, 7, 1));
     const around = distanceAt(field, w.cellIndex(world, 7, 0));
-    // Going around the ramp cell costs no more than going through it.
-    expect(around).toBeLessThanOrEqual(throughRamp);
+    expect(around).toBeLessThan(throughSlope);
   });
 });
 
@@ -122,23 +127,26 @@ describe('flow directions', () => {
     expect(flowAt(computeFlowField(grid, goal), goal)).toBe(NO_DIRECTION);
   });
 
-  it('routes off a plateau via the ramp, never over the cliff', () => {
+  it('routes off a plateau down the ramp, never over the cliff', () => {
     const world = createTestMap();
     const grid = createCostGrid(world);
-    const basin = w.cellIndex(world, 32, 32);
+    const basin = w.cellIndex(world, 70, 64);
     const field = computeFlowField(grid, basin);
     const path = tracePath(field, world.startLocations[0]!.cell);
 
     expect(path.length).toBeGreaterThan(0);
     expect(path.at(-1)).toBe(basin);
-    // Every tier change along the path happens on a ramp.
+
+    // There is no ramp flag to check any more, and there does not need to be:
+    // a step the terrain rules would refuse is a step off a cliff, whatever
+    // the map author called it.
     for (let i = 1; i < path.length; i++) {
-      const a = path[i - 1] as number;
-      const b = path[i] as number;
-      if (world.tier[a] === world.tier[b]) continue;
-      expect(((world.flags[a] as number) | (world.flags[b] as number)) & w.RAMP).toBeTruthy();
+      expect(w.cellsConnect(world, path[i - 1] as number, path[i] as number)).toBe(true);
     }
-    expect(path.some((cell) => ((world.flags[cell] as number) & w.RAMP) !== 0)).toBe(true);
+
+    // It really did descend the six units from the plateau to the basin.
+    expect(toFloat(cellCentreHeight(world, path[0] as number))).toBeCloseTo(6, 1);
+    expect(toFloat(cellCentreHeight(world, basin))).toBeCloseTo(0, 1);
   });
 });
 

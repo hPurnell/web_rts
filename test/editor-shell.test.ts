@@ -46,7 +46,7 @@ describe('editor shell', () => {
     expect(rampButton?.classList.contains('is-active')).toBe(true);
     expect(onToolChange).toHaveBeenCalledTimes(1);
 
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: '5' }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '8' }));
     expect(editor.activeTool().id).toBe('blocker');
     expect(rampButton?.classList.contains('is-active')).toBe(false);
     editor.dispose();

@@ -358,7 +358,10 @@ export function maxTerrainHeight(world: World): number {
     const h = world.heights[i] as number;
     if (h > highest) highest = h;
   }
-  return toFloat(Math.min(highest, HEIGHT_MAX));
+  // A floor of one unit: the shader divides by this to get a 0..1 elevation
+  // tint, and a perfectly flat map would otherwise turn a rounding error into
+  // a full-range colour ramp.
+  return Math.max(1, toFloat(Math.min(highest, HEIGHT_MAX)));
 }
 
 /** Exposed for tests: the vertex buffer kinds a terrain mesh must carry. */

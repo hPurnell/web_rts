@@ -22,8 +22,7 @@ import type { Match } from './match.ts';
 import type { World } from './world.ts';
 import { VISION_BLOCKER, cellFromWorld } from './world.ts';
 import { cellCentreHeight } from './terrain.ts';
-import type { Fixed } from './fixed.ts';
-import { ONE, fromInt, isqrt, mul, sub, toInt } from './fixed.ts';
+import { isqrt, toInt } from './fixed.ts';
 import { unitType } from './unittypes.ts';
 
 /** Ticks between recomputes. At 20Hz this is five updates a second. */
@@ -39,15 +38,9 @@ export const HIDDEN = 0;
  * all: every cell would be at exactly its own elevation angle of zero, and the
  * first one would raise the horizon to meet the rest.
  */
-const EYE_HEIGHT: Fixed = ONE;
+const EYE_HEIGHT = 256; // one cell, in the sweep's 1/256 units
 
-/**
- * How tall a vision blocker stands.
- *
- * A blocker is revealed — you can see the trees — and then blocks what is
- * behind it, which is the whole reason to paint one.
- */
-const BLOCKER_HEIGHT: Fixed = fromInt(4);
+
 
 export interface FogGrids {
   /**
@@ -89,20 +82,32 @@ export function createFogGrids(width: number, height: number): FogGrids {
 }
 
 /**
- * One step along a ray: a cell offset and how far away it is.
+ * The rays for one sight radius, flattened into typed arrays.
  *
- * Distance is kept because the horizon is an *angle*, and an angle needs a
- * run as well as a rise. Precomputing it means the sweep never takes a square
- * root.
+ * Held as parallel arrays rather than an array of step objects because this is
+ * the hottest loop in the simulation: two hundred units at sight radius nine
+ * is well over a hundred thousand steps a fog update, and walking objects
+ * costs more in pointer chasing than the arithmetic costs in total.
+ *
+ * Heights and distances here are in units of 1/256 of a cell, not Q16.16.
+ * That keeps the cross-multiplied horizon comparison inside a 32-bit integer
+ * with room to spare, so it is two `Math.imul`s and no fixed-point helper.
  */
-interface RayStep {
-  readonly dx: number;
-  readonly dz: number;
-  readonly distance: Fixed;
+interface RayTable {
+  /** Cell offset of each step, over every ray end to end. */
+  readonly dx: Int32Array;
+  readonly dz: Int32Array;
+  /** Distance from the centre, in 1/256 of a cell. */
+  readonly run: Int32Array;
+  /** Where each ray starts in the arrays above; one longer than the ray count. */
+  readonly starts: Int32Array;
 }
 
 /** Rays for a sight radius, cached: the same radius always sweeps the same way. */
-const RAY_CACHE = new Map<number, RayStep[][]>();
+const RAY_CACHE = new Map<number, RayTable>();
+
+/** How finely heights and distances are quantised inside the sweep. */
+const SUB = 256;
 
 /**
  * Rays from the centre out to every cell on the rim of the bounding square.
@@ -112,13 +117,16 @@ const RAY_CACHE = new Map<number, RayStep[][]>();
  * roughly one ray per cell of circumference, which is the density at which the
  * rim stops showing gaps between rays.
  */
-export function visionRays(radius: number): RayStep[][] {
+export function visionRays(radius: number): RayTable {
   const key = radius | 0;
   const cached = RAY_CACHE.get(key);
   if (cached) return cached;
 
-  const rays: RayStep[][] = [];
-  const seen = new Set<string>();
+  const dx: number[] = [];
+  const dz: number[] = [];
+  const run: number[] = [];
+  const starts: number[] = [0];
+  const seen = new Set<number>();
 
   for (let i = -key; i <= key; i++) {
     for (const [ex, ez] of [
@@ -127,20 +135,34 @@ export function visionRays(radius: number): RayStep[][] {
       [-key, i],
       [key, i],
     ] as const) {
-      const signature = `${ex},${ez}`;
+      // A ray is identified by its endpoint; the four edges share their corners.
+      const signature = (ex + key) * (2 * key + 2) + (ez + key);
       if (seen.has(signature)) continue;
       seen.add(signature);
-      rays.push(walkRay(ex, ez, key));
+      walkRay(ex, ez, key, dx, dz, run);
+      starts.push(dx.length);
     }
   }
 
-  RAY_CACHE.set(key, rays);
-  return rays;
+  const table: RayTable = {
+    dx: Int32Array.from(dx),
+    dz: Int32Array.from(dz),
+    run: Int32Array.from(run),
+    starts: Int32Array.from(starts),
+  };
+  RAY_CACHE.set(key, table);
+  return table;
 }
 
 /** Integer Bresenham walk from the origin to (ex, ez), clipped to the disc. */
-function walkRay(ex: number, ez: number, radius: number): RayStep[] {
-  const steps: RayStep[] = [];
+function walkRay(
+  ex: number,
+  ez: number,
+  radius: number,
+  dx: number[],
+  dz: number[],
+  run: number[],
+): void {
   const adx = Math.abs(ex);
   const adz = Math.abs(ez);
   const sx = ex >= 0 ? 1 : -1;
@@ -161,11 +183,13 @@ function walkRay(ex: number, ez: number, radius: number): RayStep[] {
     }
     const distanceSq = x * x + z * z;
     if (distanceSq > radius * radius) break;
-    // isqrt of a value scaled by 2^16 gives the root in Q16.16.
-    steps.push({ dx: x, dz: z, distance: isqrt(distanceSq * 65536) });
+    dx.push(x);
+    dz.push(z);
+    // isqrt takes a whole number: scaling by SUB squared gives the root in
+    // units of 1/SUB of a cell, which is the run the comparison divides by.
+    run.push(isqrt(distanceSq * SUB * SUB));
     if (x === ex && z === ez) break;
   }
-  return steps;
 }
 
 /**
@@ -185,11 +209,13 @@ export function updateFog(match: Match, world: World): void {
   }
 
   // One pass to cache the height of every cell, then the sweeps just index it.
+  // Stored in 1/256 of a cell rather than Q16.16, which is what lets the
+  // horizon comparison be a plain integer multiply.
   if (fog.cellHeights.length !== width * height) {
     fog.cellHeights = new Int32Array(width * height);
   }
   for (let cell = 0; cell < fog.cellHeights.length; cell++) {
-    fog.cellHeights[cell] = cellCentreHeight(world, cell, match.terrain);
+    fog.cellHeights[cell] = cellCentreHeight(world, cell, match.terrain) >> 8;
   }
 
   for (let i = 0; i < store.count; i++) {
@@ -218,10 +244,14 @@ export function updateFog(match: Match, world: World): void {
 /**
  * Reveal what one unit can see, by walking every ray out from it.
  *
- * `horizon` is the steepest elevation angle met so far along this ray, held as
- * a rise and a run rather than a quotient. A cell is visible when its own
- * angle is at least the horizon — cross-multiplied, so the comparison stays in
- * integers — and raises the horizon behind it when it is.
+ * `horizonRise / horizonRun` is the steepest elevation angle met so far along
+ * this ray, held as a rise and a run rather than a quotient. A cell is visible
+ * when its own angle is at least the horizon — cross-multiplied, so the
+ * comparison stays in integers — and raises the horizon behind it when it is.
+ *
+ * Both quantities are in 1/256 of a cell, which bounds the products well
+ * inside a 32-bit integer: the tallest legal rise is 32 cells and the longest
+ * run is the sight radius, so neither factor exceeds about 2^13.
  */
 function sweep(
   fog: FogGrids,
@@ -235,52 +265,55 @@ function sweep(
 ): void {
   const width = world.width;
   const height = world.height;
+  const heights = fog.cellHeights;
+  const flags = world.flags;
   const cx = unitCell % width;
   const cz = (unitCell / width) | 0;
-  const eye = (fog.cellHeights[unitCell] as number) + EYE_HEIGHT;
+  const eye = (heights[unitCell] as number) + EYE_HEIGHT;
 
-  const reveal = (cell: number): void => {
-    visible[cell] = VISIBLE;
-    explored[cell] = VISIBLE;
-    // Seeing a cell forgets what used to stand there; anything still standing
-    // is restamped afterwards.
-    remembered[cell] = 0;
-    rememberedOwner[cell] = 0;
-  };
+  visible[unitCell] = VISIBLE;
+  explored[unitCell] = VISIBLE;
+  remembered[unitCell] = 0;
+  rememberedOwner[unitCell] = 0;
 
-  reveal(unitCell);
+  const rays = visionRays(radius);
+  const starts = rays.starts;
+  const rayDx = rays.dx;
+  const rayDz = rays.dz;
+  const rayRun = rays.run;
 
-  for (const ray of visionRays(radius)) {
+  for (let ray = 0; ray + 1 < starts.length; ray++) {
     // The horizon starts below everything, so the first cell on a ray is
-    // always visible.
-    let horizonRise: Fixed = -0x40000000;
-    let horizonRun: Fixed = ONE;
+    // always visible. It must stay small enough that multiplying it by the
+    // longest run does not overflow a 32-bit integer; the tallest real rise
+    // is about 8,448 of these units, so this clears it by a wide margin.
+    let horizonRise = -(1 << 18);
+    let horizonRun = 1;
 
-    for (const step of ray) {
-      const x = cx + step.dx;
-      const z = cz + step.dz;
+    const end = starts[ray + 1] as number;
+    for (let step = starts[ray] as number; step < end; step++) {
+      const x = cx + (rayDx[step] as number);
+      const z = cz + (rayDz[step] as number);
       if (x < 0 || z < 0 || x >= width || z >= height) break;
       const cell = z * width + x;
 
-      const rise = sub(fog.cellHeights[cell] as number, eye);
-      // rise / distance >= horizonRise / horizonRun, without dividing.
-      if (mul(rise, horizonRun) >= mul(horizonRise, step.distance)) {
-        reveal(cell);
-        horizonRise = rise;
-        horizonRun = step.distance;
-      }
+      // A blocker hides itself and everything behind it. With a disc stamp it
+      // could only ever hide its own cell; a ray can stop, so a stand of trees
+      // now casts a shadow the way a ridge does.
+      if (((flags[cell] as number) & VISION_BLOCKER) !== 0) break;
 
-      // A blocker is seen and then hides what is behind it, whether or not the
-      // ground it stands on was high enough to do so itself.
-      if (((world.flags[cell] as number) & VISION_BLOCKER) !== 0) {
-        const blocked = sub(
-          (fog.cellHeights[cell] as number) + BLOCKER_HEIGHT,
-          eye,
-        );
-        if (mul(blocked, horizonRun) > mul(horizonRise, step.distance)) {
-          horizonRise = blocked;
-          horizonRun = step.distance;
-        }
+      const run = rayRun[step] as number;
+      const rise = (heights[cell] as number) - eye;
+      // rise / run >= horizonRise / horizonRun, without dividing.
+      if (Math.imul(rise, horizonRun) >= Math.imul(horizonRise, run)) {
+        visible[cell] = VISIBLE;
+        explored[cell] = VISIBLE;
+        // Seeing a cell forgets what used to stand there; anything still
+        // standing is restamped afterwards.
+        remembered[cell] = 0;
+        rememberedOwner[cell] = 0;
+        horizonRise = rise;
+        horizonRun = run;
       }
     }
   }

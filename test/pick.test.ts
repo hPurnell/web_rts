@@ -2,19 +2,30 @@ import { describe, expect, it } from 'vitest';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 
 import { makeRay, pickCell, describeFlags } from '../src/render/pick.ts';
-import { TIER_HEIGHT, solveRamps, tierHeight } from '../src/render/terrain.ts';
 import { createTestMap } from '../src/sim/fixtures/testmap.ts';
+import {
+  cellSlope,
+  cornerStride,
+  createHeightOverrides,
+  heightAt,
+  setOverride,
+} from '../src/sim/terrain.ts';
+import { fromInt, toFloat } from '../src/sim/fixed.ts';
 import * as w from '../src/sim/world.ts';
 
 const world = createTestMap();
-const ramps = solveRamps(world);
+
+/** Terrain height at a point, in world units, straight from the simulation. */
+function groundAt(x: number, z: number): number {
+  return toFloat(heightAt(world, fromInt(Math.round(x * 256)) / 256, fromInt(Math.round(z * 256)) / 256));
+}
 
 /** A ray straight down onto a cell centre — the unambiguous case. */
 function straightDown(cx: number, cy: number): ReturnType<typeof makeRay> {
-  return makeRay(new Vector3(cx + 0.5, 50, cy + 0.5), new Vector3(0, -1, 0));
+  return makeRay(new Vector3(cx + 0.5, 60, cy + 0.5), new Vector3(0, -1, 0));
 }
 
-/** A ray at the camera's 55 degree pitch, aimed at a point on a tier plane. */
+/** A ray at the camera's 55 degree pitch, aimed at a point on the ground. */
 function atPitch(targetX: number, targetZ: number, targetY: number): ReturnType<typeof makeRay> {
   const pitch = (55 * Math.PI) / 180;
   const distance = 40;
@@ -27,21 +38,25 @@ function atPitch(targetX: number, targetZ: number, targetY: number): ReturnType<
 }
 
 describe('cell picking', () => {
-  it('hits the cell directly below a downward ray on every tier', () => {
-    const samples: [number, number, number][] = [
-      [8, 12, 2], // NW plateau
-      [50, 8, 1], // NE shelf
-      [32, 32, 0], // basin
-      [54, 50, 2], // SE plateau
-      [10, 55, 1], // SW shelf
+  it('hits the cell directly below a downward ray, at every elevation', () => {
+    const samples: [number, number][] = [
+      [20, 20], // plateau A
+      [70, 64], // the basin
+      [108, 108], // plateau B
+      [54, 26], // partway up the western incline
+      [4, 4], // the low ground outside the plateau skirt
     ];
-    for (const [cx, cy, tier] of samples) {
-      const hit = pickCell(world, ramps, straightDown(cx, cy));
+    for (const [cx, cy] of samples) {
+      const hit = pickCell(world, straightDown(cx, cy));
       expect(hit, `cell ${cx},${cy}`).not.toBeNull();
       expect(hit?.cx).toBe(cx);
       expect(hit?.cy).toBe(cy);
-      expect(hit?.tier).toBe(tier);
-      expect(hit?.y).toBeCloseTo(tierHeight(tier), 5);
+      // The height it reports is the simulation's own, to the last bit that
+      // matters. Picking and pathing must not disagree about where the
+      // ground is, or a click lands on a cell a unit cannot reach.
+      expect(hit?.y).toBeCloseTo(groundAt(cx + 0.5, cy + 0.5), 4);
+      expect(hit?.height).toBeCloseTo(hit?.y ?? -1, 6);
+      expect(hit?.slope).toBeCloseTo(cellSlope(world, hit!.cell) / 65536, 4);
     }
   });
 
@@ -50,86 +65,99 @@ describe('cell picking', () => {
     expect(mineral).toBeDefined();
     const cx = w.cellX(world, mineral!.cell);
     const cy = w.cellY(world, mineral!.cell);
-    const hit = pickCell(world, ramps, straightDown(cx, cy));
+    const hit = pickCell(world, straightDown(cx, cy));
     expect(hit?.flags).toBe(world.flags[mineral!.cell]);
     expect(describeFlags(hit?.flags ?? 0)).toContain('blocker');
   });
 
-  it('picks the high cell, not the low one behind it, at a cliff edge', () => {
-    // Looking down at the camera's pitch, the ray passes over the basin and
-    // lands on the plateau: the nearest surface must win.
-    const plateauX = 12;
-    const plateauZ = 18; // inside the NW plateau, close to its southern cliff
-    const hit = pickCell(world, ramps, atPitch(plateauX + 0.5, plateauZ + 0.5, tierHeight(2)));
-    expect(hit?.tier).toBe(2);
+  it('picks the high ground, not the low ground behind it, at a cliff', () => {
+    // Looking down at the camera's pitch across the plateau's southern edge.
+    // The nearest surface the ray meets must win; a march that tested cells
+    // in the wrong order would report the basin showing through the cliff.
+    const plateauX = 20;
+    const plateauZ = 20;
+    const hit = pickCell(world, atPitch(plateauX + 0.5, plateauZ + 0.5, groundAt(20.5, 20.5)));
     expect(hit?.cy).toBe(plateauZ);
+    expect(hit?.y).toBeCloseTo(groundAt(20.5, 20.5), 3);
   });
 
-  it('never reports a cell whose surface the ray did not reach', () => {
-    // Sweep the pointer across a cliff line and check every hit is consistent:
-    // the reported tier must match the reported cell's tier in the world.
-    for (let z = 14; z < 30; z += 0.25) {
-      const hit = pickCell(world, ramps, atPitch(12.5, z, 0));
+  it('never reports a point that is not on the terrain surface', () => {
+    // Sweep the pointer across the plateau's cliff line. Whatever cell comes
+    // back, the point reported must lie on the ground at that point — this is
+    // the assertion that catches a march that returns a cell but computes the
+    // intersection against the wrong triangle.
+    let hits = 0;
+    for (let z = 40; z < 60; z += 0.25) {
+      const hit = pickCell(world, atPitch(20.5, z, 0));
       if (!hit) continue;
-      expect(hit.tier).toBe(world.tier[hit.cell]);
-      const expectedY = tierHeight(hit.tier);
-      const isRamp = (hit.flags & w.RAMP) !== 0;
-      if (!isRamp) expect(hit.y).toBeCloseTo(expectedY, 4);
+      hits++;
+      expect(hit.cell).toBe(w.cellIndex(world, hit.cx, hit.cy));
+      expect(hit.y).toBeCloseTo(groundAt(hit.x, hit.z), 3);
     }
+    expect(hits).toBeGreaterThan(0);
   });
 
-  it('follows the slope of a ramp instead of snapping to a tier plane', () => {
-    const rampCells = Array.from(ramps.byCell.keys());
-    expect(rampCells.length).toBeGreaterThan(0);
-    const heights = new Set<number>();
-    for (const cell of rampCells) {
-      const cx = w.cellX(world, cell);
-      const cy = w.cellY(world, cell);
-      const hit = pickCell(world, ramps, straightDown(cx, cy));
-      expect(hit?.cell).toBe(cell);
-      heights.add(Math.round((hit?.y ?? 0) * 100) / 100);
+  it('follows a slope continuously instead of snapping to a plane', () => {
+    // Walk up the western incline. Every step must report a different height:
+    // the old picker intersected flat tier planes and would have reported the
+    // same value for a whole ramp.
+    const heights: number[] = [];
+    for (let x = 46; x <= 62; x += 2) {
+      const hit = pickCell(world, straightDown(x, 26));
+      expect(hit).not.toBeNull();
+      heights.push(hit!.y);
     }
-    // A ramp that picked as a flat plane would report a single height.
-    expect(heights.size).toBeGreaterThan(1);
-    for (const h of heights) {
-      expect(h).toBeGreaterThanOrEqual(0);
-      expect(h).toBeLessThanOrEqual(tierHeight(2));
+    expect(new Set(heights).size).toBe(heights.length);
+    // And it climbs, rather than wandering.
+    for (let i = 1; i < heights.length; i++) {
+      expect(heights[i] as number).toBeLessThan(heights[i - 1] as number);
     }
   });
 
   it('returns null when the ray misses the map', () => {
-    expect(pickCell(world, ramps, makeRay(new Vector3(-50, 50, -50), new Vector3(0, -1, 0)))).toBeNull();
+    expect(pickCell(world, makeRay(new Vector3(-50, 50, -50), new Vector3(0, -1, 0)))).toBeNull();
     // Pointing away from the ground entirely.
-    expect(pickCell(world, ramps, makeRay(new Vector3(32, 50, 32), new Vector3(0, 1, 0)))).toBeNull();
+    expect(pickCell(world, makeRay(new Vector3(32, 50, 32), new Vector3(0, 1, 0)))).toBeNull();
   });
 
-  it('tests only a handful of cells, never the whole mesh', () => {
-    const out = { candidates: 0 };
-    pickCell(world, ramps, atPitch(32.5, 32.5, 0), out);
-    // Four tier planes, nine cells each, minus overlap: a fixed small number
-    // regardless of map size. This is the property that makes it cheap.
-    expect(out.candidates).toBeLessThanOrEqual(36);
+  it('marches a bounded number of cells, not the whole map', () => {
+    const out = { cells: 0 };
+    pickCell(world, atPitch(70.5, 64.5, 0), out);
+    // A DDA march visits cells along one line, and the ray is clipped to the
+    // slab the terrain can occupy first. What must not happen is a cost that
+    // grows with the map.
+    expect(out.cells).toBeGreaterThan(0);
+    expect(out.cells).toBeLessThan(world.width);
   });
 
   it('costs well under a frame budget at pointer rates', () => {
     const start = performance.now();
     const iterations = 2000;
     for (let i = 0; i < iterations; i++) {
-      pickCell(world, ramps, atPitch(10 + (i % 40), 10 + (i % 37), 0));
+      pickCell(world, atPitch(10 + (i % 40), 10 + (i % 37), 0));
     }
     const perPick = (performance.now() - start) / iterations;
     // One pick per frame at 60fps has a 16ms budget; this must be noise.
     expect(perPick).toBeLessThan(0.1);
   });
 
-  it('agrees with the terrain heights the mesh was built from', () => {
-    for (let i = 0; i < 200; i++) {
-      const cx = (i * 7) % world.width;
-      const cy = (i * 13) % world.height;
-      const hit = pickCell(world, ramps, straightDown(cx, cy));
-      expect(hit?.cell).toBe(w.cellIndex(world, cx, cy));
-      expect(hit?.y).toBeLessThanOrEqual(tierHeight(2) + 1e-6);
-      expect(hit?.y).toBeGreaterThanOrEqual(-TIER_HEIGHT);
+  it('reads a match height override, not the map underneath it', () => {
+    // Lift the four corners of one basin cell into an override layer, as a
+    // building levelling its footprint does. Picking has to read the same
+    // layer the mesh was built from, or a click on a levelled building site
+    // lands under the ground.
+    const overrides = createHeightOverrides();
+    const stride = cornerStride(world);
+    for (const [dx, dz] of [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ] as const) {
+      setOverride(overrides, (64 + dz) * stride + (70 + dx), fromInt(4));
     }
+
+    expect(pickCell(world, straightDown(70, 64))?.y).toBeCloseTo(0, 4);
+    expect(pickCell(world, straightDown(70, 64), undefined, overrides)?.y).toBeCloseTo(4, 4);
   });
 });

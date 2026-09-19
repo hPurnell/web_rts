@@ -10,7 +10,7 @@
  * themselves and the editor's slope overlay shows you.
  */
 import type { Fixed } from '../sim/fixed.ts';
-import { ONE, abs, add, div, fromInt, isqrt, mul, sub } from '../sim/fixed.ts';
+import { ONE, abs, add, div, fromInt, mul, sqrt, sub } from '../sim/fixed.ts';
 import type { World } from '../sim/world.ts';
 import { HEIGHT_MAX, HEIGHT_MIN, cornerStride } from '../sim/terrain.ts';
 import type { TerrainEditCommand } from './commands.ts';
@@ -60,7 +60,10 @@ export function brushCorners(world: World, centreCorner: number, radius: number)
       if (distanceSq > r * r) continue;
 
       // t = 1 - distance / r, then smoothstepped: t * t * (3 - 2t).
-      const distance = isqrt(distanceSq * 65536); // Q16.16 distance in corners
+      // sqrt, not isqrt: `sqrt` takes and returns Q16.16, which is what the
+      // division below needs. `isqrt` would return a Q8.8 value here and the
+      // falloff would collapse to a hard-edged disc.
+      const distance = sqrt(fromInt(distanceSq));
       const t = sub(ONE, div(distance, fromInt(r)));
       const clamped = t < 0 ? 0 : t > ONE ? ONE : t;
       const weight = mul(mul(clamped, clamped), sub(fromInt(3), mul(fromInt(2), clamped)));
@@ -101,7 +104,10 @@ export function stageSculpt(
   let changed = 0;
 
   for (const sample of samples) {
-    const current = world.heights[sample.corner] as number;
+    // What this command has already staged for the corner, falling back to
+    // the world. A drag stages many samples before anything is applied, and a
+    // ramp drag crosses the same corner from several steps along it.
+    const current = command.stagedHeight(sample.corner) ?? (world.heights[sample.corner] as number);
     const amount = mul(sample.weight, strength);
     let next = current;
 

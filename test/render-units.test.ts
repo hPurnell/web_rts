@@ -4,7 +4,7 @@ import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { Scene } from '@babylonjs/core/scene';
 
 import { createUnitRenderer } from '../src/render/units.ts';
-import { solveRamps } from '../src/render/terrain.ts';
+
 import { createMatch } from '../src/sim/match.ts';
 import { spawnUnit, despawnUnit, MAX_UNITS } from '../src/sim/units.ts';
 import { UNIT_TYPES, unitTypeById } from '../src/sim/unittypes.ts';
@@ -13,7 +13,7 @@ import { fromInt, fromRatio } from '../src/sim/fixed.ts';
 import type { World } from '../src/sim/world.ts';
 
 const world: World = createTestMap();
-const ramps = solveRamps(world);
+const overrides = null;
 
 describe('instanced unit rendering', () => {
   let scene: Scene;
@@ -43,7 +43,7 @@ describe('instanced unit rendering', () => {
   it('draws nothing for an empty match', () => {
     const renderer = createUnitRenderer(scene);
     const match = createMatch({ seed: 1, playerCount: 2 });
-    renderer.update(match, world, ramps, 0);
+    renderer.update(match, world, overrides, 0);
     expect(unitMeshes()).toHaveLength(0);
     expect(renderer.instanceCount()).toBe(0);
     renderer.dispose();
@@ -55,7 +55,7 @@ describe('instanced unit rendering', () => {
     spawnMany(match, 'soldier', 0, 30);
     spawnMany(match, 'soldier', 1, 20);
     spawnMany(match, 'raider', 0, 5);
-    renderer.update(match, world, ramps, 1);
+    renderer.update(match, world, overrides, 1);
 
     expect(renderer.instanceCount()).toBe(55);
     // One mesh per type, whoever owns the units: player colour is a
@@ -71,7 +71,7 @@ describe('instanced unit rendering', () => {
     const match = createMatch({ seed: 1, playerCount: 2 });
     spawnMany(match, 'worker', 0, 4);
     spawnMany(match, 'raider', 0, 4);
-    renderer.update(match, world, ramps, 1);
+    renderer.update(match, world, overrides, 1);
 
     const names = unitMeshes().map((m) => m.name);
     expect(unitTypeById('worker').hasTurret).toBe(false);
@@ -92,7 +92,7 @@ describe('instanced unit rendering', () => {
       spawnMany(match, type.id, 0, per);
       spawnMany(match, type.id, 1, per);
     }
-    renderer.update(match, world, ramps, 1);
+    renderer.update(match, world, overrides, 1);
 
     expect(renderer.instanceCount()).toBe(per * UNIT_TYPES.length * 2);
     expect(renderer.instanceCount()).toBeGreaterThanOrEqual(1900);
@@ -116,7 +116,7 @@ describe('instanced unit rendering', () => {
     match.units.posX[0] = fromInt(20);
 
     const xAt = (alpha: number): number => {
-      renderer.update(match, world, ramps, alpha);
+      renderer.update(match, world, overrides, alpha);
       const mesh = scene.meshes.find((m) => m.name === 'hull_t1') as Mesh | undefined;
       const data = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
         ._thinInstanceDataStorage.matrixData;
@@ -135,7 +135,7 @@ describe('instanced unit rendering', () => {
     spawnUnit(match.units, { type: unitTypeById('soldier'), ownerId: 0, x: fromInt(10), z: fromInt(10) });
     renderer.captureTick(match);
     match.units.posX[0] = fromInt(20);
-    renderer.update(match, world, ramps, 5);
+    renderer.update(match, world, overrides, 5);
     const mesh = scene.meshes.find((m) => m.name === 'hull_t1') as Mesh | undefined;
     const data = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
       ._thinInstanceDataStorage.matrixData;
@@ -156,7 +156,7 @@ describe('instanced unit rendering', () => {
     renderer.captureTick(match);
     match.units.facing[0] = fromRatio(1, 10); // just past zero
 
-    renderer.update(match, world, ramps, 0.5);
+    renderer.update(match, world, overrides, 0.5);
     const mesh = scene.meshes.find((m) => m.name === 'hull_t1') as Mesh | undefined;
     const data = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
       ._thinInstanceDataStorage.matrixData;
@@ -166,20 +166,20 @@ describe('instanced unit rendering', () => {
     renderer.dispose();
   });
 
-  it('places units on the terrain surface, following ramps', () => {
+  it('places units on the terrain surface, following the ground', () => {
     const renderer = createUnitRenderer(scene);
     const match = createMatch({ seed: 1, playerCount: 2 });
-    // One on the tier 2 plateau, one in the tier 0 basin.
-    spawnUnit(match.units, { type: unitTypeById('soldier'), ownerId: 0, x: fromInt(8), z: fromInt(8) });
-    spawnUnit(match.units, { type: unitTypeById('soldier'), ownerId: 0, x: fromInt(32), z: fromInt(32) });
-    renderer.update(match, world, ramps, 1);
+    // One up on the plateau, one down in the basin.
+    spawnUnit(match.units, { type: unitTypeById('soldier'), ownerId: 0, x: fromInt(16), z: fromInt(16) });
+    spawnUnit(match.units, { type: unitTypeById('soldier'), ownerId: 0, x: fromInt(70), z: fromInt(64) });
+    renderer.update(match, world, overrides, 1);
 
     const mesh = scene.meshes.find((m) => m.name === 'hull_t1') as Mesh | undefined;
     const data = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
       ._thinInstanceDataStorage.matrixData;
     const plateauY = data[13] as number;
     const basinY = data[16 + 13] as number;
-    expect(plateauY).toBeGreaterThan(4); // tier 2 is 4 units up
+    expect(plateauY).toBeGreaterThan(5); // the plateau stands six units up
     expect(basinY).toBeLessThan(1);
     renderer.dispose();
   });
@@ -190,11 +190,11 @@ describe('instanced unit rendering', () => {
     const handles = [0, 1, 2].map(() =>
       spawnUnit(match.units, { type: unitTypeById('soldier'), ownerId: 0, x: fromInt(10), z: fromInt(10) }),
     );
-    renderer.update(match, world, ramps, 1);
+    renderer.update(match, world, overrides, 1);
     expect(renderer.instanceCount()).toBe(3);
 
     despawnUnit(match.units, handles[1] as number);
-    renderer.update(match, world, ramps, 1);
+    renderer.update(match, world, overrides, 1);
     expect(renderer.instanceCount()).toBe(2);
     renderer.dispose();
   });
@@ -203,7 +203,7 @@ describe('instanced unit rendering', () => {
     const renderer = createUnitRenderer(scene);
     const match = createMatch({ seed: 1, playerCount: 2 });
     spawnMany(match, 'soldier', 0, 10);
-    renderer.update(match, world, ramps, 1);
+    renderer.update(match, world, overrides, 1);
     expect(unitMeshes().length).toBeGreaterThan(0);
     renderer.clear();
     expect(unitMeshes()).toHaveLength(0);
@@ -215,13 +215,13 @@ describe('instanced unit rendering', () => {
     const renderer = createUnitRenderer(scene);
     const match = createMatch({ seed: 1, playerCount: 2 });
     spawnMany(match, 'soldier', 0, 10);
-    renderer.update(match, world, ramps, 1);
+    renderer.update(match, world, overrides, 1);
     const mesh = scene.meshes.find((m) => m.name === 'hull_t1') as Mesh | undefined;
     const first = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
       ._thinInstanceDataStorage.matrixData;
 
     spawnMany(match, 'soldier', 0, 5); // still inside the allocated capacity
-    renderer.update(match, world, ramps, 1);
+    renderer.update(match, world, overrides, 1);
     const second = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
       ._thinInstanceDataStorage.matrixData;
     expect(second).toBe(first);
