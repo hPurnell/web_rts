@@ -128,6 +128,20 @@ export function createMinimap(size = 200): Minimap {
 
       context.imageSmoothingEnabled = false;
       context.clearRect(0, 0, size, size);
+
+      // Flip the z axis for everything below.
+      //
+      // The camera sits at `focusZ - back` and looks toward `focusZ`, so on
+      // screen **increasing z goes away from the viewer, up the screen**. A
+      // minimap that drew z downward — the obvious thing, since that is how
+      // image rows run — would be a vertical mirror of what the player is
+      // looking at, and every glance at it would have to be mentally
+      // reversed. Flipping once here keeps every coordinate below in plain
+      // world order.
+      context.save();
+      context.translate(0, world.height * scale);
+      context.scale(1, -1);
+
       context.drawImage(terrainCanvas, 0, 0, world.width * scale, world.height * scale);
 
       if (fog && localPlayer >= 0 && fogImage && fogContext) {
@@ -185,6 +199,7 @@ export function createMinimap(size = 200): Minimap {
         ((view.halfDepth * 2) / cellSize) * scale,
       );
 
+      context.restore();
       drawMs = performance.now() - started;
     },
 
@@ -195,9 +210,12 @@ export function createMinimap(size = 200): Minimap {
       if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
       const scale = size / Math.max(world.width, world.height);
       const cellSize = toFloat(world.cellSize);
+      // Undo the vertical flip the draw applies, or clicking the north of the
+      // map would send the camera south.
+      const mapped = ((y / rect.height) * size) / scale;
       return {
         x: ((x / rect.width) * size / scale) * cellSize,
-        z: ((y / rect.height) * size / scale) * cellSize,
+        z: (world.height - mapped) * cellSize,
       };
     },
 

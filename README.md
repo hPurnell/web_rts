@@ -45,6 +45,11 @@ sees further because of the shape of the ground rather than because of a rule,
 and a ridge casts a real shadow. Units tilt to the terrain normal and selection
 rings lie on the surface.
 
+**Orientation.** The camera sits south of its focus and looks north, so on
+screen increasing `z` goes *up*. Anything that draws the world flat — the
+minimap especially — has to flip `z`, or it is a mirror of what the player is
+looking at.
+
 ## Commands
 
 | Command | Does |

@@ -176,13 +176,42 @@ describe('the minimap', () => {
     document.body.innerHTML = '';
   });
 
-  it('maps a click back to a world position', () => {
+  it('rejects a click outside its bounds', () => {
     const world = w.createWorld({ width: 64, height: 64 });
     const minimap = createMinimap(200);
     document.body.appendChild(minimap.element);
-    // jsdom reports a zero-sized rect, so a click cannot be placed: the guard
-    // is what matters here, not the arithmetic.
     expect(minimap.worldAt(-10, -10, world)).toBeNull();
+    minimap.dispose();
+  });
+
+  it('maps a click back to a world position, north at the top', () => {
+    // The camera sits south of its focus and looks north, so on screen
+    // increasing z goes *up*. The minimap has to agree, or clicking the north
+    // of it sends the camera south — and reading it means mentally mirroring
+    // it every time.
+    //
+    // jsdom gives every element a zero-sized rect, so the arithmetic here was
+    // untested until this stub, which is how the minimap shipped mirrored.
+    const world = w.createWorld({ width: 64, height: 64 });
+    const minimap = createMinimap(200);
+    document.body.appendChild(minimap.element);
+    minimap.element.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 200, height: 200, right: 200, bottom: 200, x: 0, y: 0 }) as DOMRect;
+
+    // worldAt returns world units, not fixed-point: it feeds camera.moveTo.
+    const top = minimap.worldAt(100, 2, world);
+    const bottom = minimap.worldAt(100, 198, world);
+    expect(top).not.toBeNull();
+    expect(bottom).not.toBeNull();
+
+    // Near the top of the minimap is the far, high-z edge of the map.
+    expect(top!.z).toBeGreaterThan(60);
+    expect(bottom!.z).toBeLessThan(4);
+    // x is not flipped: left is low x, as it looks.
+    expect(minimap.worldAt(2, 100, world)!.x).toBeLessThan(
+      minimap.worldAt(198, 100, world)!.x,
+    );
+
     minimap.dispose();
   });
 
