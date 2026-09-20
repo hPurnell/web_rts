@@ -10,6 +10,7 @@
     "check:multiplayer": "tsx tools/check-multiplayer.ts",
     "dev": "vite",
     "gen:convert": "tsx generals/tools/convert.ts",
+    "gen:doodads": "tsx generals/tools/doodads.ts",
     "gen:extract": "tsx generals/tools/extract.ts",
     "gen:golden": "tsx tools/gen-trig-golden.ts",
     "gen:golden-sim": "tsx tools/gen-sim-golden.ts",

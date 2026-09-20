@@ -481,6 +481,54 @@ and the importer reports which ones, so the manifest can grow deliberately.
 tree line casts a vision shadow, and the frame time is within 20% of M16 with
 the full doodad count on screen.
 
+**Done**, except that the frame-time bound cannot be checked here — see below.
+
+Three things this turned out to need that the sketch above did not anticipate.
+
+**A map names objects; the archives hold models; the INI does not always
+join them up.** Scenery resolves through `Object` blocks under `Data/INI`, but
+the trees — which are most of the placements — are not defined as objects at
+all. `TreePine` is drawn straight from a model called `PTPine01`. So
+`objectini.ts` falls back to the art's naming convention, and generates
+candidates rather than guessing one: every abbreviation of the family name,
+with and without an `x` prefix, for each plausible number and seasonal suffix,
+each tested against the archives. A candidate that is not a real model simply
+does not match. That resolves 134 of the 136 scenery types across the five
+imported maps; the two misses are a ground decal and one wall with no art.
+
+Where a numbered variant does not exist the fallback prefers the **season**
+over the number: a winter map places eight kinds of snow-laden pine and the art
+ships four, and the nearest snow pine is a much better answer than the exact
+green one.
+
+**Roads are in the object list and are not objects.** They are spline control
+points drawn as a terrain overlay, and there is no model to import. Bit 1 or 2
+of an object's flag word marks one — verified across the shipped maps, where
+every road, rail and pavement point carries one of them and no tree, rock or
+building carries either. Without that filter a third of Alpine Assault's
+"doodads" are road segments that can never resolve.
+
+**Foliage is a cut-out.** A pine is a dozen flat quads with the branches
+punched out in the texture's alpha channel. Drawn opaque it is solid slabs with
+black corners, which reads as a broken texture rather than a missing alpha
+test. The converter now measures the source textures and marks the model, and
+the renderer alpha-tests those and drops back-face culling for them, since a
+single-plane branch has to be visible from both sides. It is a *share* of the
+texture that decides, not any transparent pixel: vehicle art carries a little
+stray alpha from antialiasing (the HIMARS is 0.4% transparent) where foliage is
+24% to 62%.
+
+**On the frame-time bound.** The CPU side is free, as intended: doodads never
+move, so the instance buffers are filled once when the map loads and there is
+no per-frame update at all — the simulation tick is unchanged at 0.15ms. The
+GPU side cannot be measured here. On Tournament Tundra the frame goes from
+21ms to 36-44ms with 777 doodads on screen, but the only browser available is
+headless SwiftShader, which rasterises in software, and alpha-tested foliage
+with heavy overdraw is the worst case for a software rasteriser specifically.
+Draw calls, which are the thing the design was actually protecting, go from 12
+to 30 for those 777 objects. Treat the 20% bound as unverified for the same
+reason the root PLAN.md treats 60fps as unverified.
+
 ### G18. Infantry (optional)
 
 Only if the vehicle game is working and you want more.

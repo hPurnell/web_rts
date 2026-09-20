@@ -226,15 +226,16 @@ function buildPart(
     // Wound for the renderer's front-face convention, which is the opposite
     // of the source's.
     //
-    // The axis map above has a determinant of +1, so it preserves handedness:
-    // the data stays left-handed, as a DirectX game's data is. Only the face
-    // winding has to flip. Leaving it alone renders every surface back-facing,
-    // and with culling on you look straight through a vehicle's roof into its
+    // The two flips cancel, so ordinary parts pass through unchanged: the
+    // axis map has a determinant of -1 and reverses handedness, and the
+    // source's front-face convention is already the opposite of the
+    // renderer's. Getting this wrong renders every surface back-facing, and
+    // with culling on you look straight through a vehicle's roof into its
     // unlit interior — which looks like a broken texture, not a winding bug,
     // and cost a long detour through the texture decoder to find.
     //
-    // A mirrored part has already had its winding flipped by its own
-    // transform, so it flips back rather than twice.
+    // A part that is its own mirror has a third flip from its own transform,
+    // and is the only case that needs correcting here.
     for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
       const a = base + (mesh.indices[i] as number);
       const b = base + (mesh.indices[i + 1] as number);
@@ -249,6 +250,9 @@ function buildPart(
 
 /** How many times a texture may be repeated into its atlas slot. */
 const MAX_TILES = 8;
+
+/** How much of a texture must be transparent before the art is a cut-out. */
+const CUTOUT_SHARE = 0.02;
 
 interface UvBounds {
   uMin: number;
@@ -412,6 +416,13 @@ interface ConvertedPart {
 
 export interface ConvertedModel {
   readonly id: string;
+  /**
+   * True when the art is a cut-out: the shape is alpha in the texture rather
+   * than geometry. Foliage is built this way — a pine is a dozen flat quads
+   * and the branches are holes punched in them — so drawing it opaque gives
+   * solid slabs with black corners instead of a tree.
+   */
+  readonly cutout: boolean;
   readonly hull: ConvertedPart;
   readonly turret?: ConvertedPart;
   /** Bounding radius in world units, for sanity-checking against unit stats. */
@@ -554,6 +565,21 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
     return null;
   }
 
+  // Measured from the source textures rather than the atlas, whose unfilled
+  // padding is transparent and would make every model look like a cut-out.
+  //
+  // A *share* of the texture, not any transparent pixel at all. Vehicle art
+  // carries a little stray alpha from being antialiased — the HIMARS is 0.4%
+  // transparent — where foliage is 24% to 62%. Treating the vehicle as a
+  // cut-out punches pinholes through it for no reason.
+  const cutout = [...wanted.values()].some((texture) => {
+    let clear = 0;
+    for (let i = 3; i < texture.data.length; i += 4) {
+      if ((texture.data[i] as number) < 128) clear++;
+    }
+    return clear * 4 > texture.data.length * CUTOUT_SHARE;
+  });
+
   const { image, remap } = atlas(wanted, uvBoundsByTexture([...hull, ...turret]));
   const textureFile = `${id}.png`;
   mkdirSync(join(ASSETS_DIR, 'models'), { recursive: true });
@@ -589,6 +615,7 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
 
   return {
     id,
+    cutout,
     hull: { gltf: `${id}_hull.gltf`, texture: textureFile, offsetY: 0 },
     ...(turretOut ? { turret: turretOut } : {}),
     radius,
@@ -622,7 +649,8 @@ async function main(): Promise<void> {
     // converted and sitting there for when the roster grows.
     if (vehicle.unitType) {
       entries.push({
-        unitType: vehicle.unitType,
+        id: vehicle.unitType,
+        ...(model.cutout ? { alphaTest: true } : {}),
         hull: `models/${model.hull.gltf}`,
         ...(model.turret ? { turret: `models/${model.turret.gltf}` } : {}),
         texture: `models/${model.hull.texture}`,

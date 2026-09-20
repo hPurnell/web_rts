@@ -33,13 +33,20 @@ non-zero and says so; nothing runs against a partial cache.
 pnpm gen:verify     what the manifest asks for, and what your install has
 pnpm gen:extract    pull the manifest's files out of the .big archives
 pnpm gen:convert    W3D -> glTF, TGA/DDS -> PNG
-pnpm gen:map --list           the maps in your installation
-pnpm gen:map "Fortress Avalanche"   import one; the first becomes the default
+pnpm gen:map --list                 the maps in your installation
+pnpm gen:map "Tournament Tundra"    import one; the first becomes the default
+pnpm gen:doodads    the scenery every imported map places, W3D -> glTF
 ```
 
 An imported map brings its terrain, its start positions, its own sun and a
-palette taken from the terrain textures it was built with. The game opens on
-whichever map `generals/assets/maps/index.json` names as the default.
+palette taken from the terrain textures it was built with, weighted by how much
+of the map each one actually covers. The game opens on whichever map
+`generals/assets/maps/index.json` names as the default.
+
+`gen:doodads` runs **after** `gen:map`, since it converts exactly the scenery
+the imported maps place and nothing else. It prints anything it could not find
+a model for; expect ground decals and the odd wall, and see PLAN.md's G17 for
+why the trees need a naming convention rather than the game's own INI.
 
 ## What is committed
 

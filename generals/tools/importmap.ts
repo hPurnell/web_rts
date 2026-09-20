@@ -36,6 +36,14 @@ import { loadTexture } from './convert.ts';
 const XY_PER_CELL = 10;
 const HEIGHT_PER_CELL = 16;
 
+/**
+ * Object flags marking a road spline control point rather than a model.
+ *
+ * A road is stored as a run of paired points, one bit for each end of a
+ * segment. Testing only one of them keeps half of every road.
+ */
+const ROAD_SEGMENT = (1 << 1) | (1 << 2);
+
 /** Objects whose type name marks them as a player's start position. */
 const START_WAYPOINT = /^Player_(\d+)_Start$/i;
 
@@ -108,8 +116,15 @@ function readObjects(
       const y = r.float();
       r.float(); // z, which the engine takes from the terrain instead
       const angle = r.float();
-      r.uint32(); // road/flags word
+      const flags = r.uint32();
       const type = r.string();
+
+      // Roads are stored in the object list but are not objects: they are
+      // spline control points the source engine draws as a terrain overlay,
+      // and they have no model to import. Verified across the shipped maps —
+      // every road, rail and pavement point carries one of these bits, and no
+      // tree, rock or building carries either.
+      if ((flags & ROAD_SEGMENT) !== 0) continue;
 
       const properties = new Map<string, string | number | boolean>();
       const count = r.uint16();
@@ -217,19 +232,85 @@ function terrainTypes(index: AssetIndex): Map<string, string> {
   return types;
 }
 
+/**
+ * The textures a map paints its ground with, and how much of it each covers.
+ *
+ * `BlendTileData` is a per-cell tile index array followed by a table of
+ * texture records. Each record is `firstTile`, `tileCount`, the square root of
+ * that count, a zero, and a length-prefixed name; `firstTile` accumulates
+ * across the table, which both identifies where the table starts and proves it
+ * was read correctly.
+ *
+ * The array is what makes the palette worth anything. Averaging the *list*
+ * weights a texture used on four cells the same as one used on a third of the
+ * map, and on a map with eleven incidental grass variants and one dominant
+ * cliff it produces a colour that appears nowhere on it.
+ */
+export function readTerrainCoverage(data: Buffer): { name: string; share: number }[] {
+  const cells = data.readUInt32LE(0);
+  // Four uint16 arrays per cell — tile, blend, extra blend and cliff indices —
+  // so the table cannot start before them.
+  const afterArrays = 4 + cells * 2 * 4;
+
+  let start = -1;
+  for (let at = afterArrays; at + 22 < data.length; at++) {
+    if (data.readUInt32LE(at) !== 0) continue; // the first record's firstTile
+    const count = data.readUInt32LE(at + 4);
+    const side = data.readUInt32LE(at + 8);
+    const length = data.readUInt16LE(at + 16);
+    if (count !== side * side || data.readUInt32LE(at + 12) !== 0) continue;
+    if (length < 3 || length > 32) continue;
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(data.toString('latin1', at + 18, at + 18 + length))) continue;
+    start = at;
+    break;
+  }
+  if (start < 0) return [];
+
+  const records: { name: string; first: number; count: number }[] = [];
+  let at = start;
+  let expected = 0;
+  while (at + 18 < data.length) {
+    const first = data.readUInt32LE(at);
+    const count = data.readUInt32LE(at + 4);
+    const side = data.readUInt32LE(at + 8);
+    const length = data.readUInt16LE(at + 16);
+    // The chain is the check: a record that does not continue where the last
+    // one ended means the table is over, or was never really there.
+    if (first !== expected || count !== side * side || length < 3 || length > 32) break;
+    records.push({ name: data.toString('latin1', at + 18, at + 18 + length), first, count });
+    expected = first + count;
+    at += 18 + length;
+  }
+
+  const used = new Map<number, number>();
+  for (let i = 0; i < cells; i++) {
+    const tile = data.readUInt16LE(4 + i * 2);
+    used.set(tile, (used.get(tile) ?? 0) + 1);
+  }
+
+  return records.map((record) => {
+    let count = 0;
+    for (const [tile, n] of used) {
+      if (tile >= record.first && tile < record.first + record.count) count += n;
+    }
+    return { name: record.name, share: count / cells };
+  });
+}
+
 function readTerrainPalette(
   data: Buffer,
   index: AssetIndex,
 ): { ground: number[]; cliff: number[]; names: string[] } {
   const types = terrainTypes(index);
-  const candidates = [...new Set(data.toString('latin1').match(/[A-Z][A-Za-z0-9_]{3,30}/g) ?? [])];
+  const coverage = readTerrainCoverage(data).sort((a, b) => b.share - a.share);
   const groundPixels: number[] = [0, 0, 0];
   const cliffPixels: number[] = [0, 0, 0];
-  let groundCount = 0;
-  let cliffCount = 0;
+  let groundWeight = 0;
+  let cliffWeight = 0;
   const found: string[] = [];
 
-  for (const name of candidates) {
+  for (const { name, share } of coverage) {
+    if (share <= 0) continue;
     const file = types.get(name.toLowerCase());
     if (!file) continue;
     const image = loadTexture(index, file);
@@ -249,20 +330,21 @@ function readTerrainPalette(
     }
     if (n === 0) continue;
 
-    const target = /cliff|rock/i.test(name) ? cliffPixels : groundPixels;
-    target[0] = (target[0] as number) + r / n;
-    target[1] = (target[1] as number) + g / n;
-    target[2] = (target[2] as number) + b / n;
-    if (/cliff|rock/i.test(name)) cliffCount++;
-    else groundCount++;
+    const cliff = /cliff|rock/i.test(name);
+    const target = cliff ? cliffPixels : groundPixels;
+    target[0] = (target[0] as number) + (r / n) * share;
+    target[1] = (target[1] as number) + (g / n) * share;
+    target[2] = (target[2] as number) + (b / n) * share;
+    if (cliff) cliffWeight += share;
+    else groundWeight += share;
   }
 
-  const average = (sum: number[], count: number, fallback: number[]): number[] =>
-    count === 0 ? fallback : sum.map((v) => v / count / 255);
+  const average = (sum: number[], weight: number, fallback: number[]): number[] =>
+    weight === 0 ? fallback : sum.map((v) => v / weight / 255);
 
   return {
-    ground: average(groundPixels, groundCount, [0.21, 0.29, 0.2]),
-    cliff: average(cliffPixels, cliffCount, [0.3, 0.27, 0.24]),
+    ground: average(groundPixels, groundWeight, [0.21, 0.29, 0.2]),
+    cliff: average(cliffPixels, cliffWeight, [0.3, 0.27, 0.24]),
     names: found,
   };
 }

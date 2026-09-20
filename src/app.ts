@@ -36,6 +36,8 @@ import { createGizmos } from './render/gizmos.ts';
 import { createUnitRenderer, groundHeightAt } from './render/units.ts';
 import { loadContentPack } from './render/models.ts';
 import type { ContentPackEntry } from './render/models.ts';
+import { createDoodads } from './render/doodads.ts';
+import type { DoodadPlacement, DoodadRenderer } from './render/doodads.ts';
 import { createGhostRenderer } from './render/ghosts.ts';
 import { EXPLORED_DIM, createFogTexture } from './render/fogtexture.ts';
 import {
@@ -126,6 +128,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   // `world` is replaced wholesale when the editor loads a map, so everything
   // built from it is rebuilt at the same time by loadWorld().
   let world = createTestMap();
+  /** A map's scenery, replaced wholesale when another map loads. */
+  let doodads: DoodadRenderer | null = null;
   const renderer = createRenderer(canvas);
   const input = attachInput(canvas);
   const overlay = createDevOverlay(overlayRoot);
@@ -1099,15 +1103,16 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     // slower. A networked match gets the map it booted with.
     if (new URLSearchParams(window.location.search).get('relay')) return;
     try {
-      const index = await fetch(`${CONTENT_PACK_URL}/maps/index.json`);
+      const baseUrl = CONTENT_PACK_URL;
+      const index = await fetch(`${baseUrl}/maps/index.json`);
       if (!index.ok) return;
       const listing = (await index.json()) as { default?: string };
       const slug = listing.default;
       if (!slug) return;
 
       const [mapResponse, metaResponse] = await Promise.all([
-        fetch(`${CONTENT_PACK_URL}/maps/${slug}.rtsmap`),
-        fetch(`${CONTENT_PACK_URL}/maps/${slug}.json`),
+        fetch(`${baseUrl}/maps/${slug}.rtsmap`),
+        fetch(`${baseUrl}/maps/${slug}.json`),
       ]);
       if (!mapResponse.ok) return;
 
@@ -1122,15 +1127,45 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
           name?: string;
           lighting?: Parameters<typeof applyMapLighting>[0];
           palette?: { ground: number[]; cliff: number[] };
+          doodads?: DoodadPlacement[];
         };
         if (meta.lighting) applyMapLighting(meta.lighting);
         if (meta.palette) setTerrainPalette(terrainMaterial, meta.palette.ground, meta.palette.cliff);
         if (meta.name) overlay.set('map', meta.name);
+        if (meta.doodads?.length) await loadDoodads(baseUrl, meta.doodads);
       }
     } catch {
       // No pack, or a bad one: the fixture map is already loaded.
     }
   })();
+
+  /**
+   * Put a map's scenery on screen.
+   *
+   * Its own content-pack file rather than `pack.json`, because the two are
+   * produced by different tools and a map may bring scenery a unit pack knows
+   * nothing about. Only the types the map actually places are loaded — a pack
+   * carries every doodad across every imported map, and fetching a hundred
+   * glTFs to draw forty of them is pure latency.
+   */
+  async function loadDoodads(baseUrl: string, placements: DoodadPlacement[]): Promise<void> {
+    const response = await fetch(`${baseUrl}/doodads.json`);
+    if (!response.ok) return;
+    const all = ((await response.json()) as { entries: ContentPackEntry[] }).entries;
+
+    const placed = new Set(placements.map((placement) => placement.type));
+    const entries = all.filter((entry) => placed.has(entry.id));
+    if (entries.length === 0) return;
+
+    const models = await loadContentPack(renderer.scene, { baseUrl, entries });
+    if (models.size === 0) return;
+
+    doodads?.dispose();
+    doodads = createDoodads(renderer.scene, models, placements, (x, z) =>
+      groundHeightAt(world, heightOverrides(), x, z),
+    );
+    overlay.set('doodads', `${doodads.count} in ${doodads.types} types`);
+  }
 
   const params = new URLSearchParams(window.location.search);
   const relayUrl = params.get('relay');

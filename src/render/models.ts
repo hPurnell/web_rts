@@ -15,6 +15,7 @@
  */
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
+import { Material } from '@babylonjs/core/Materials/material';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
@@ -35,8 +36,18 @@ export interface LoadedModel {
 
 /** What a content pack declares. */
 export interface ContentPackEntry {
-  /** The engine unit type id this model is for, e.g. `raider`. */
-  readonly unitType: string;
+  /**
+   * What this model is for: an engine unit type id such as `raider` for a
+   * vehicle, or a scenery type name such as `TreePine` for a doodad. The
+   * loader does not interpret it; it is the key the caller looks models up by.
+   */
+  readonly id: string;
+  /**
+   * The texture's alpha is a cut-out, not translucency. Foliage is built this
+   * way — the branches are holes punched in a few flat quads — so it is drawn
+   * with an alpha test and no back-face culling.
+   */
+  readonly alphaTest?: boolean;
   readonly hull: string;
   readonly turret?: string;
   readonly texture: string;
@@ -154,6 +165,8 @@ export async function loadContentPack(
   pack: ContentPack,
 ): Promise<Map<string, LoadedModel>> {
   const models = new Map<string, LoadedModel>();
+  // Shared across entries: a dozen doodads converted from one source texture
+  // atlas would otherwise each upload their own copy of it.
   const materials = new Map<string, StandardMaterial>();
 
   for (const entry of pack.entries) {
@@ -193,8 +206,26 @@ export async function loadContentPack(
         // correction in the converter (which is right regardless) does not
         // account for it either. This is a remedy for inconsistent source
         // normals, not a root-cause fix; the root cause is in the art.
-        material.backFaceCulling = true;
-        material.twoSidedLighting = false;
+        if (entry.alphaTest) {
+          // An alpha *test*, not blending: the foliage is binary, so a discard
+          // in the opaque pass renders it correctly from any angle with no
+          // sorting — which thin instances could not give anyway.
+          texture.hasAlpha = true;
+          material.useAlphaFromDiffuseTexture = true;
+          material.transparencyMode = Material.MATERIAL_ALPHATEST;
+          // Below Babylon's 0.4 default. The foliage textures are 64x64 and
+          // their alpha is soft at the edges, so a high threshold eats the
+          // thin outer branches and leaves a tree looking half dead.
+          material.alphaCutOff = 0.2;
+          // Foliage quads are single planes. Culling their back faces deletes
+          // half of every tree depending on which way the camera looks at it,
+          // and this is the one case where the source art really is two-sided.
+          material.backFaceCulling = false;
+          material.twoSidedLighting = true;
+        } else {
+          material.backFaceCulling = true;
+          material.twoSidedLighting = false;
+        }
         // The models carry their own baked shading; a strong specular on top
         // makes them read as plastic.
         material.emissiveColor = new Color3(0.18, 0.18, 0.18);
@@ -206,14 +237,14 @@ export async function loadContentPack(
         ? await loadPart(pack.baseUrl, entry.turret, material)
         : undefined;
 
-      models.set(entry.unitType, {
+      models.set(entry.id, {
         hull,
         ...(turret ? { turret } : {}),
         turretOffsetY: entry.turretOffsetY ?? 0,
       });
     } catch (error) {
       console.warn(
-        `content pack: ${entry.unitType} left as a placeholder — ${
+        `content pack: ${entry.id} left as a placeholder — ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
