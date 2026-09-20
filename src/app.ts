@@ -41,11 +41,13 @@ import type { DoodadPlacement, DoodadRenderer } from './render/doodads.ts';
 import { createRoads } from './render/roads.ts';
 import type { RoadPolyline, RoadRenderer, RoadType } from './render/roads.ts';
 import { createGhostRenderer } from './render/ghosts.ts';
+import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { EXPLORED_DIM, createFogTexture } from './render/fogtexture.ts';
 import {
   setTerrainFog,
   setTerrainFogSoftness,
   setTerrainPalette,
+  setTerrainTextures,
   setTerrainSun,
 } from './render/terrainMaterial.ts';
 import { createSelectionRings } from './render/selectionrings.ts';
@@ -133,6 +135,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   /** A map's scenery, replaced wholesale when another map loads. */
   let doodads: DoodadRenderer | null = null;
   let roads: RoadRenderer | null = null;
+  /** The ground textures the loaded map brought, disposed when it changes. */
+  let terrainTextures: { atlas: Texture; index: Texture } | null = null;
   /** What the content pack offers, empty when there is no pack. */
   let packMaps: PackMap[] = [];
   let currentMap = '';
@@ -209,7 +213,19 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   }): void => {
     renderer.sun.direction.set(lighting.sun.x, lighting.sun.y, lighting.sun.z);
     renderer.sun.diffuse.set(lighting.sunColor.r, lighting.sunColor.g, lighting.sunColor.b);
-    setTerrainSun(terrainMaterial, lighting.sun);
+    // The models were already getting the map's sun; they were not getting its
+    // ambient, so a night map lit its vehicles as if it were noon while the
+    // ground around them went dark. The fill light carries it now, and the
+    // intensities go to 1 because the colours are the whole answer.
+    renderer.sun.intensity = 1;
+    renderer.sky.intensity = 1;
+    renderer.sky.diffuse.set(lighting.ambient.r, lighting.ambient.g, lighting.ambient.b);
+    renderer.sky.groundColor.set(
+      lighting.ambient.r * 0.6,
+      lighting.ambient.g * 0.6,
+      lighting.ambient.b * 0.6,
+    );
+    setTerrainSun(terrainMaterial, lighting.sun, lighting.sunColor, lighting.ambient);
     overlay.set('sun', `${lighting.sun.x.toFixed(2)}, ${lighting.sun.y.toFixed(2)}, ${lighting.sun.z.toFixed(2)}`);
   };
 
@@ -1172,6 +1188,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     doodads = null;
     roads?.dispose();
     roads = null;
+    terrainTextures?.atlas.dispose();
+    terrainTextures?.index.dispose();
+    terrainTextures = null;
+    setTerrainTextures(terrainMaterial, null);
     overlay.set('doodads', '');
     overlay.set('roads', '');
 
@@ -1182,9 +1202,21 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
         palette?: { ground: number[]; cliff: number[] };
         doodads?: DoodadPlacement[];
         roads?: RoadPolyline[];
+        terrain?: {
+          atlas: string;
+          index: string;
+          columns: number;
+          rows: number;
+          slot: number;
+          pad: number;
+        };
       };
       if (meta.lighting) applyMapLighting(meta.lighting);
+      // The palette still matters with the atlas loaded: it is what the
+      // minimap draws with, and what the shader falls back to if the images
+      // do not arrive.
       if (meta.palette) setTerrainPalette(terrainMaterial, meta.palette.ground, meta.palette.cliff);
+      if (meta.terrain) loadTerrainTextures(meta.terrain);
       overlay.set('map', meta.name ?? slug);
       if (meta.doodads?.length) await loadDoodads(CONTENT_PACK_URL, meta.doodads);
       if (meta.roads?.length) await loadRoads(CONTENT_PACK_URL, meta.roads);
@@ -1193,6 +1225,56 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     currentMap = slug;
     menu.refresh();
     return true;
+  }
+
+  /**
+   * Paint the ground with the map's own textures.
+   *
+   * Nearest filtering on the index map, always: it is a lookup table, not a
+   * picture, and interpolating between two slot numbers gives a third slot
+   * that has nothing to do with either.
+   */
+  function loadTerrainTextures(meta: {
+    atlas: string;
+    index: string;
+    columns: number;
+    rows: number;
+    slot: number;
+    pad: number;
+  }): void {
+    terrainTextures?.atlas.dispose();
+    terrainTextures?.index.dispose();
+
+    // No mipmaps on the atlas, deliberately. The shader tiles each slot with
+    // fract(), and the derivative the GPU uses to pick a mip level spikes
+    // wherever that wraps — which draws a crisp grid over the whole map, one
+    // line every few cells. Losing mip filtering costs some sharpening at
+    // full zoom-out; the grid was visible at every zoom. The proper fix is a
+    // texture array or explicit gradients, both of which need a WebGL2-only
+    // shader; see generals/PLAN.md.
+    const atlas = new Texture(`${CONTENT_PACK_URL}/${meta.atlas}`, renderer.scene, true, false);
+    const index = new Texture(
+      `${CONTENT_PACK_URL}/${meta.index}`,
+      renderer.scene,
+      true,
+      false,
+      Texture.NEAREST_SAMPLINGMODE,
+    );
+    atlas.wrapU = Texture.CLAMP_ADDRESSMODE;
+    atlas.wrapV = Texture.CLAMP_ADDRESSMODE;
+    index.wrapU = Texture.CLAMP_ADDRESSMODE;
+    index.wrapV = Texture.CLAMP_ADDRESSMODE;
+
+    terrainTextures = { atlas, index };
+    setTerrainTextures(terrainMaterial, {
+      atlas,
+      index,
+      columns: meta.columns,
+      rows: meta.rows,
+      slot: meta.slot,
+      pad: meta.pad,
+      cells: { width: world.width, height: world.height },
+    });
   }
 
   /**

@@ -24,8 +24,24 @@ import { readObjectModels, resolveModel } from './objectini.ts';
 import { convertModel } from './convert.ts';
 import type { ConvertedModel } from './convert.ts';
 
-/** Objects that are sound emitters rather than geometry. */
-const AMBIENT = /^Amb_/i;
+/**
+ * Objects a map places that are not scenery and never will be.
+ *
+ * Sound emitters are most of them: two naming schemes, `Amb_DesertInsects`
+ * and `AmbientWindCold`, and on some maps a seventh of the placements.
+ * Reporting them as failures buries the ones that matter.
+ */
+const NOT_SCENERY = /^(Amb_|Ambient[A-Z]|AGenericSound$|\d+MeterShroudClear)/;
+
+/**
+ * Bridges, which are declared in `Roads.ini` rather than as objects.
+ *
+ * A bridge's `BridgeModelName` is a *segment*, tiled across the span between
+ * a pair of bridge points, so it is road geometry with a model rather than a
+ * doodad with a position. Listing them separately keeps the failure report
+ * about genuine misses. See generals/PLAN.md.
+ */
+const BRIDGE = /bridge|sectional|^(Tampico|ConcreteWide|ConcreteFourLane|Industrial|IndustrialWide|SimpleUrbanFixed)$/i;
 
 interface MapMeta {
   readonly doodads?: readonly { type: string }[];
@@ -44,7 +60,7 @@ function placedTypes(): { type: string; count: number }[] {
       readFileSync(join(ASSETS_DIR, 'maps', `${map.slug}.json`), 'utf8'),
     ) as MapMeta;
     for (const doodad of meta.doodads ?? []) {
-      if (AMBIENT.test(doodad.type)) continue;
+      if (NOT_SCENERY.test(doodad.type)) continue;
       counts.set(doodad.type, (counts.get(doodad.type) ?? 0) + 1);
     }
   }
@@ -66,11 +82,12 @@ async function main(): Promise<void> {
   const built = new Map<string, ConvertedModel | null>();
   const entries: Record<string, unknown>[] = [];
   const unresolved: string[] = [];
+  const bridges: string[] = [];
 
   for (const { type, count } of types) {
     const model = resolveModel(type, models, exists);
     if (!model) {
-      unresolved.push(`${type} (x${count})`);
+      (BRIDGE.test(type) ? bridges : unresolved).push(`${type} (x${count})`);
       continue;
     }
 
@@ -94,6 +111,9 @@ async function main(): Promise<void> {
     });
   }
 
+  if (bridges.length > 0) {
+    console.log(`\nbridges, which need span geometry: ${bridges.join(', ')}`);
+  }
   if (unresolved.length > 0) {
     console.log(`\nno model for: ${unresolved.join(', ')}`);
   }

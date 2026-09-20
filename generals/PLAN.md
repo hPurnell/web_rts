@@ -595,6 +595,75 @@ Two things worth knowing:
 sweep takes its eye height from the ground, so a helicopter at altitude has no
 extra line of sight. Nothing is wrong, it is simply not modelled.
 
+### G21. Faithful map visuals
+
+**Done.** Four things, in order of how much they changed the picture.
+
+**The ground was two colours.** The shader mixed a height ramp with a cliff
+tint and never sampled anything — M29's real texturing had not landed, so an
+imported map arrived wearing the average of its own terrain textures. Each map
+now exports **an atlas of the textures it paints with** and **a per-cell index
+map** saying which one each cell uses, and the shader lays them down at the
+scale the artist drew them: the green channel carries how many cells a texture
+spans before it repeats, which is the side of the tile grid it was cut into.
+The four cells around a fragment are cross-faded, because the source is one
+texture per cell and nothing finer, so a hard lookup draws a square lattice.
+
+Two things this cost, both worth knowing:
+
+- `BlendTileData` does not carry its own width. The grid is the heightfield's,
+  and assuming it square is right for a square map and shears every other one
+  — which reads as regular stripes across the ground rather than as an
+  indexing bug. It took dumping the tile array as digits to see it.
+- **No mipmaps on the atlas.** The shader tiles each slot with `fract()`, and
+  the derivative the GPU picks a mip level from spikes wherever that wraps,
+  drawing a crisp grid over the whole map. Losing mip filtering costs some
+  sharpening at full zoom-out; the grid was visible at every zoom. The proper
+  fix is a texture array or explicit gradients, both of which need a
+  WebGL2-only shader.
+
+**The map's lighting was read and then thrown away.** `GlobalLighting` carries
+six lights per time of day — three terrain, three object — and the first is the
+sun. That part was right. What was missing is that its *colour* and the
+*ambient* never reached anything: the terrain shader hardcoded its own, and the
+scene's fill light kept the engine's default. So every imported map was lit
+like noon, which is why the shipped tundra maps came out as blazing white snow
+instead of the moonlit blue they are. Both colours now drive the terrain shader
+and the scene lights.
+
+**Scenery was missing because of one keyword.** Object definitions come in
+three forms and the scanner knew two. `ObjectReskin` is the third, 235 blocks
+use it, and it is where the numbered variants live — every bush, fence and wall
+in the game. Adding it took the resolved share from 528 of 602 scenery types to
+567, and it replaced guesswork with the game's own data: `ArborVitae01` is
+`PTCypress01` and `PicketFence02` is `PMWalPckt2`, neither of which any naming
+convention would have found. A header may also carry a trailing comment, which
+anchoring to end-of-line silently dropped along with `GenericTree` and its 370
+placements.
+
+**Doodad buildings were wallpapered with sky.** A W3D mesh can have several
+material passes, and the texture named first is not the one it draws with: a
+reflection or detail map is on the first pass and the real texture on the
+second. `LAKEDUSK.tga` — a photograph of a sky — is the first pass of 395 of
+the 768 multi-pass meshes in the shipped art. The reader now takes the texture
+and the coordinates from the *same* pass, searching last-first, which is the
+invariant that was missing: whatever UVs are used, they are the ones authored
+for the texture used. This fixed the town houses and the helicopter fuselage at
+once.
+
+**Map selection.** `pnpm gen:map --skirmish` imports every map that can
+actually be played, which is a question for the data rather than the file
+names: 62 of the installation's 150 maps have two or more `Player_N_Start`
+waypoints. Two more are larger than the engine's 512-cell limit and are skipped
+by name in the log. `--default <name>` picks the one the game opens on.
+
+**Not done:** bridges. They are declared in `Roads.ini`, not as objects, and a
+bridge's `BridgeModelName` is a segment tiled across the span between a pair of
+bridge points — road geometry with a model, rather than a doodad with a
+position. `gen:doodads` lists them separately so they do not look like
+failures. About a hundred placements across the imported maps. `Scorch`, a
+ground decal, is the only other thing a map places that has no model.
+
 ### G18. Infantry (optional)
 
 Only if the vehicle game is working and you want more.

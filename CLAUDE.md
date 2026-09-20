@@ -121,6 +121,25 @@ gated behind `sv_cheats`, which `joinMatch` locks off: the gate is not about
 fairness, it is that one client inventing units the other never hears about is
 a desync.
 
+## A W3D mesh's first texture is usually not the one it draws with
+
+A mesh can have several material passes. When it has more than one, the first
+carries a reflection or detail map and the *last* carries the diffuse:
+`LAKEDUSK.tga`, a photograph of a sky, is the first pass of 395 of the 768
+multi-pass meshes in the shipped art. Taking the first `TEXTURE_NAME` in the
+chunk tree wallpapers every two-pass building and vehicle with clouds.
+
+`readMeshes` takes the texture *and* the coordinates from the same pass,
+searching last-first, which is the invariant that matters: whatever UVs are
+used are the ones authored for the texture used.
+
+## Object definitions come in three forms
+
+`Object`, `ChildObject` and `ObjectReskin`. The third is not a footnote — 235
+blocks use it and it is where every numbered bush, fence and wall variant
+lives. `ObjectCreationList` starts with the same six letters and is an effect
+list, not an object. A header line may also carry a trailing comment.
+
 ## Aircraft are a separate movement system
 
 `src/sim/flight.ts`, not `movement.ts`. An aircraft ignores the flow field, the

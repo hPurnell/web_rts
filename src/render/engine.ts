@@ -14,6 +14,8 @@ export interface Renderer {
   readonly scene: Scene;
   readonly canvas: HTMLCanvasElement;
   readonly sun: DirectionalLight;
+  /** Fill light, which an imported map's ambient colour replaces. */
+  readonly sky: HemisphericLight;
   /** Seconds since the previous frame, clamped against tab-switch spikes. */
   frameDelta(): number;
   dispose(): void;
@@ -53,6 +55,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     engine,
     scene,
     canvas,
+    sky,
     sun,
     frameDelta: () => Math.min(engine.getDeltaTime() / 1000, MAX_FRAME_DELTA),
     dispose: () => {

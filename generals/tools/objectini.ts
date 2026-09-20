@@ -25,8 +25,25 @@ export interface ObjectModels {
   readonly models: ReadonlyMap<string, string>;
 }
 
-/** `Object Foo` or `ChildObject Foo Bar`, to the end of the block. */
-const OBJECT_BLOCK = /^(Object|ChildObject)\s+(\w+)(?:\s+(\w+))?\s*$/gim;
+/**
+ * `Object Foo`, or a block that inherits: `ChildObject Foo Bar` and
+ * `ObjectReskin Foo Bar`.
+ *
+ * `ObjectReskin` is not a footnote. Two hundred and thirty-five blocks use it,
+ * and they are where most of the scenery lives — every numbered bush, fence
+ * and wall variant is a reskin of the first of its family. Matching only the
+ * other two keywords leaves four thousand placements across the shipped maps
+ * with no model.
+ *
+ * `ObjectCreationList` is deliberately not matched. It begins with the same
+ * six letters and is an effect list, not an object.
+ *
+ * A trailing comment is allowed on the header line. `Object GenericTree ;
+ * Logic side computationally expensive tree.` is a real declaration, and
+ * anchoring straight to the end of the line silently drops it and every other
+ * annotated block.
+ */
+const OBJECT_BLOCK = /^(ObjectReskin|ChildObject|Object)[ \t]+(\w+)(?:[ \t]+(\w+))?[ \t]*(?:;.*)?$/gim;
 
 /**
  * The model a block draws.

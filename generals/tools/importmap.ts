@@ -24,6 +24,8 @@ import { createWorld, setFlags, BUILDABLE, VISION_BLOCKER, WALKABLE } from '../.
 import type { World } from '../../src/sim/world.ts';
 import { cornerStride } from '../../src/sim/terrain.ts';
 import { loadTexture } from './convert.ts';
+import { writePng } from './image.ts';
+import type { Image } from './image.ts';
 
 /**
  * Generals world units per cell, and height units per world unit.
@@ -359,8 +361,37 @@ function terrainTypes(index: AssetIndex): Map<string, string> {
  * map, and on a map with eleven incidental grass variants and one dominant
  * cliff it produces a colour that appears nowhere on it.
  */
-export function readTerrainCoverage(data: Buffer): { name: string; share: number }[] {
+export interface BlendTiles {
+  /** Cells across one row of the *uncropped* grid. */
+  readonly stride: number;
+  /** One tile index per cell, row-major over the uncropped grid. */
+  readonly tiles: Uint16Array;
+  /** The texture table: each owns tile indices [first, first + count). */
+  readonly records: readonly { name: string; first: number; count: number; side: number }[];
+}
+
+/**
+ * Decode `BlendTileData`: which texture every cell of the map is painted with.
+ *
+ * The chunk is a per-cell tile index array followed by a table of texture
+ * records. Each record is `firstTile`, `tileCount`, the square root of that
+ * count, a zero, and a length-prefixed name; `firstTile` accumulates across
+ * the table, which both identifies where the table starts and proves it was
+ * read correctly.
+ *
+ * A texture is subdivided into `side x side` tiles and one tile covers one
+ * cell, so `side` is also how many cells the texture spans before it repeats —
+ * which is what the renderer needs to lay it down at the scale the artist drew
+ * it at.
+ */
+export function readBlendTiles(data: Buffer, rowStride?: number): BlendTiles | null {
   const cells = data.readUInt32LE(0);
+  // The chunk does not carry its own width: the grid is the heightfield's, so
+  // callers that care about layout pass it. Assuming a square grid is only
+  // right for a square map, and gets every other map subtly wrong — the tile
+  // rows shear, which reads as regular stripes across the ground rather than
+  // as an indexing bug.
+  const stride = rowStride && rowStride > 0 ? rowStride : Math.round(Math.sqrt(cells));
   // Four uint16 arrays per cell — tile, blend, extra blend and cliff indices —
   // so the table cannot start before them.
   const afterArrays = 4 + cells * 2 * 4;
@@ -377,9 +408,9 @@ export function readTerrainCoverage(data: Buffer): { name: string; share: number
     start = at;
     break;
   }
-  if (start < 0) return [];
+  if (start < 0) return null;
 
-  const records: { name: string; first: number; count: number }[] = [];
+  const records: { name: string; first: number; count: number; side: number }[] = [];
   let at = start;
   let expected = 0;
   while (at + 18 < data.length) {
@@ -390,23 +421,39 @@ export function readTerrainCoverage(data: Buffer): { name: string; share: number
     // The chain is the check: a record that does not continue where the last
     // one ended means the table is over, or was never really there.
     if (first !== expected || count !== side * side || length < 3 || length > 32) break;
-    records.push({ name: data.toString('latin1', at + 18, at + 18 + length), first, count });
+    records.push({ name: data.toString('latin1', at + 18, at + 18 + length), first, count, side });
     expected = first + count;
     at += 18 + length;
   }
+  if (records.length === 0) return null;
+
+  const tiles = new Uint16Array(cells);
+  for (let i = 0; i < cells; i++) tiles[i] = data.readUInt16LE(4 + i * 2);
+
+  return { stride, tiles, records };
+}
+
+/**
+ * The textures a map paints its ground with, and how much of it each covers.
+ *
+ * The per-cell array is what makes this worth anything. Averaging the *list*
+ * weights a texture used on four cells the same as one used on a third of the
+ * map, and on a map with eleven incidental grass variants and one dominant
+ * cliff it produces a colour that appears nowhere on it.
+ */
+export function readTerrainCoverage(data: Buffer): { name: string; share: number }[] {
+  const blend = readBlendTiles(data);
+  if (!blend) return [];
 
   const used = new Map<number, number>();
-  for (let i = 0; i < cells; i++) {
-    const tile = data.readUInt16LE(4 + i * 2);
-    used.set(tile, (used.get(tile) ?? 0) + 1);
-  }
+  for (const tile of blend.tiles) used.set(tile, (used.get(tile) ?? 0) + 1);
 
-  return records.map((record) => {
+  return blend.records.map((record) => {
     let count = 0;
     for (const [tile, n] of used) {
       if (tile >= record.first && tile < record.first + record.count) count += n;
     }
-    return { name: record.name, share: count / cells };
+    return { name: record.name, share: count / blend.tiles.length };
   });
 }
 
@@ -462,6 +509,151 @@ function readTerrainPalette(
   };
 }
 
+/**
+ * The ground texturing, as the renderer wants it.
+ *
+ * Two images. The **atlas** holds every terrain texture the map uses, one per
+ * slot in a grid; the **index map** holds one texel per cell saying which slot
+ * that cell is painted with and how many cells that texture spans before it
+ * repeats.
+ *
+ * Splitting it this way is what keeps the ground a single draw call. The
+ * alternative — a mesh chunk per texture — is how a terrain renderer ends up
+ * with thirty draw calls for the floor.
+ */
+export interface TerrainTextures {
+  readonly atlas: Image;
+  readonly index: Image;
+  readonly columns: number;
+  readonly rows: number;
+  /** Side of one atlas slot's usable area, in pixels. */
+  readonly slot: number;
+  /** Padding around each slot, in pixels. */
+  readonly pad: number;
+  readonly names: readonly string[];
+}
+
+/** Side of one atlas slot. Terrain art is 256 or smaller; this halves it. */
+const TERRAIN_SLOT = 128;
+/**
+ * Padding around each slot, filled by continuing the texture's own tiling.
+ *
+ * Without it a bilinear tap at a slot edge reaches into the neighbouring
+ * texture, which shows up as a bright fringe wherever two ground types meet.
+ * Eight pixels also keeps the first few mip levels clean.
+ */
+const TERRAIN_PAD = 8;
+
+/** The most textures one map's atlas will hold. */
+const MAX_TERRAIN_TEXTURES = 64;
+
+/**
+ * Build the ground atlas and the per-cell index map.
+ *
+ * Cropped to the playable area exactly as the heightfield is, so cell (x, z)
+ * means the same thing in both.
+ */
+function readTerrainTextures(
+  data: Buffer,
+  index: AssetIndex,
+  border: number,
+  width: number,
+  height: number,
+  rowStride: number,
+): TerrainTextures | null {
+  const blend = readBlendTiles(data, rowStride);
+  if (!blend) return null;
+  const types = terrainTypes(index);
+
+  // Only the textures this map actually paints with, commonest first, so a
+  // map using more than the atlas holds loses the ones nobody will notice.
+  const usage = new Map<number, number>();
+  for (let cz = 0; cz < height; cz++) {
+    for (let cx = 0; cx < width; cx++) {
+      const tile = blend.tiles[(cz + border) * blend.stride + (cx + border)] as number;
+      const record = blend.records.findIndex(
+        (candidate) => tile >= candidate.first && tile < candidate.first + candidate.count,
+      );
+      if (record >= 0) usage.set(record, (usage.get(record) ?? 0) + 1);
+    }
+  }
+
+  const chosen: { record: number; image: Image; side: number; name: string }[] = [];
+  for (const [record] of [...usage].sort((a, b) => b[1] - a[1])) {
+    if (chosen.length >= MAX_TERRAIN_TEXTURES) break;
+    const entry = blend.records[record];
+    if (!entry) continue;
+    const file = types.get(entry.name.toLowerCase());
+    const image = file ? loadTexture(index, file) : null;
+    if (!image) continue;
+    chosen.push({ record, image, side: Math.max(1, entry.side), name: entry.name });
+  }
+  if (chosen.length === 0) return null;
+
+  const slotOf = new Map<number, number>();
+  chosen.forEach((entry, slot) => slotOf.set(entry.record, slot));
+
+  const columns = Math.ceil(Math.sqrt(chosen.length));
+  const rows = Math.ceil(chosen.length / columns);
+  const cell = TERRAIN_SLOT + TERRAIN_PAD * 2;
+  const atlas: Image = {
+    width: columns * cell,
+    height: rows * cell,
+    data: Buffer.alloc(columns * cell * rows * cell * 4),
+  };
+
+  for (let i = 0; i < chosen.length; i++) {
+    const { image } = chosen[i] as (typeof chosen)[number];
+    const originX = (i % columns) * cell;
+    const originY = Math.floor(i / columns) * cell;
+    // Sampled with wrap-around on the source, so the padding continues the
+    // texture rather than smearing its edge: these tile in world space, and a
+    // clamped border would show as a seam every few cells.
+    for (let y = 0; y < cell; y++) {
+      for (let x = 0; x < cell; x++) {
+        const u = (x - TERRAIN_PAD) / TERRAIN_SLOT;
+        const v = (y - TERRAIN_PAD) / TERRAIN_SLOT;
+        const sx = ((Math.floor(u * image.width) % image.width) + image.width) % image.width;
+        const sy = ((Math.floor(v * image.height) % image.height) + image.height) % image.height;
+        const from = (sy * image.width + sx) * 4;
+        const to = ((originY + y) * atlas.width + originX + x) * 4;
+        atlas.data[to] = image.data[from] as number;
+        atlas.data[to + 1] = image.data[from + 1] as number;
+        atlas.data[to + 2] = image.data[from + 2] as number;
+        atlas.data[to + 3] = 255;
+      }
+    }
+  }
+
+  // One texel per cell: the slot in red, and in green how many cells the
+  // texture covers before it repeats, which is the side of its tile grid.
+  const indexMap: Image = { width, height, data: Buffer.alloc(width * height * 4) };
+  for (let cz = 0; cz < height; cz++) {
+    for (let cx = 0; cx < width; cx++) {
+      const tile = blend.tiles[(cz + border) * blend.stride + (cx + border)] as number;
+      const record = blend.records.findIndex(
+        (candidate) => tile >= candidate.first && tile < candidate.first + candidate.count,
+      );
+      const slot = slotOf.get(record) ?? 0;
+      const side = (chosen[slot]?.side ?? 4) as number;
+      const at = (cz * width + cx) * 4;
+      indexMap.data[at] = slot;
+      indexMap.data[at + 1] = side;
+      indexMap.data[at + 3] = 255;
+    }
+  }
+
+  return {
+    atlas,
+    index: indexMap,
+    columns,
+    rows,
+    slot: TERRAIN_SLOT,
+    pad: TERRAIN_PAD,
+    names: chosen.map((entry) => entry.name),
+  };
+}
+
 export interface ImportResult {
   readonly world: World;
   readonly lighting: MapLighting;
@@ -469,6 +661,8 @@ export interface ImportResult {
   readonly roads: readonly RoadPolyline[];
   readonly skipped: number;
   readonly palette: { ground: number[]; cliff: number[]; names: string[] };
+  /** The ground atlas and index map, or null for a map with no blend data. */
+  readonly terrain: TerrainTextures | null;
 }
 
 export function importMap(buffer: Buffer, name: string, index: AssetIndex): ImportResult {
@@ -578,8 +772,37 @@ export function importMap(buffer: Buffer, name: string, index: AssetIndex): Impo
   const palette = blend
     ? readTerrainPalette(blend.data, index)
     : { ground: [0.21, 0.29, 0.2], cliff: [0.3, 0.27, 0.24], names: [] };
+  // The palette stays even with the atlas in hand: it is what the fixture map
+  // and anything without blend data falls back to, and it is what the minimap
+  // draws with.
+  const terrain = blend
+    ? readTerrainTextures(blend.data, index, border, world.width, world.height, heights.width)
+    : null;
 
-  return { world, lighting, doodads, roads, skipped, palette };
+  return { world, lighting, doodads, roads, skipped, palette, terrain };
+}
+
+/**
+ * How many start positions a map has.
+ *
+ * A start is an ordinary waypoint carrying `waypointName = "Player_N_Start"`,
+ * not an object type of its own, which is why this has to walk the property
+ * lists rather than count objects.
+ */
+function startCount(
+  chunks: readonly { name: string; data: Buffer }[],
+  names: ReadonlyMap<number, string>,
+): number {
+  let found = 0;
+  for (const object of readObjects(chunks, names)) {
+    if (START_WAYPOINT.test(object.waypointName)) found++;
+  }
+  return found;
+}
+
+/** A map name as the content pack files it. */
+function slugOf(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
 /** Every `.map` in the installation, by display name. */
@@ -598,7 +821,29 @@ async function main(): Promise<void> {
   const index = indexArchives(install.archives);
   const maps = listMaps(index);
 
-  const wanted = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+  let wanted = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+
+  // `--skirmish` takes every map that can actually be played, which is a
+  // question for the data rather than for the file names: the installation's
+  // 150 maps are mostly campaign missions, and a skirmish map is one with two
+  // or more `Player_N_Start` waypoints on it. Name-matching the campaign
+  // prefixes would need updating for every expansion; this does not.
+  if (process.argv.includes('--skirmish')) {
+    wanted = [...maps.keys()]
+      .filter((name) => {
+        try {
+          const entry = index.entries.get(maps.get(name) as string);
+          if (!entry) return false;
+          const map = readMap(readEntry(index.archivePaths.get(entry.archive) as string, entry));
+          return startCount(findMapChunks(map.chunks, 'Object'), map.names) >= 2;
+        } catch {
+          return false;
+        }
+      })
+      .sort();
+    console.log(`${wanted.length} skirmish maps\n`);
+  }
+
   if (process.argv.includes('--list') || wanted.length === 0) {
     for (const name of [...maps.keys()].sort()) console.log(`  ${name}`);
     console.log(`\n${maps.size} maps`);
@@ -617,10 +862,24 @@ async function main(): Promise<void> {
     }
     const entry = found[0]!;
     const buffer = readEntry(index.archivePaths.get(entry.archive)!, entry);
-    const result = importMap(buffer, name, index);
 
-    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    // One map that will not import must not take the other sixty-three with
+    // it. The engine caps a world at 512 cells a side and a couple of the
+    // eight-player maps are larger, which is a refusal rather than a fault.
+    let result: ImportResult;
+    try {
+      result = importMap(buffer, name, index);
+    } catch (error) {
+      console.error(`  skipped ${name}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+
+    const slug = slugOf(name);
     writeFileSync(join(ASSETS_DIR, 'maps', `${slug}.rtsmap`), encodeMap(result.world));
+    if (result.terrain) {
+      writeFileSync(join(ASSETS_DIR, 'maps', `${slug}.terrain.png`), writePng(result.terrain.atlas));
+      writeFileSync(join(ASSETS_DIR, 'maps', `${slug}.tiles.png`), writePng(result.terrain.index));
+    }
     writeFileSync(
       join(ASSETS_DIR, 'maps', `${slug}.json`),
       `${JSON.stringify(
@@ -630,6 +889,19 @@ async function main(): Promise<void> {
           palette: result.palette,
           doodads: result.doodads,
           roads: result.roads,
+          ...(result.terrain
+            ? {
+                terrain: {
+                  atlas: `maps/${slug}.terrain.png`,
+                  index: `maps/${slug}.tiles.png`,
+                  columns: result.terrain.columns,
+                  rows: result.terrain.rows,
+                  slot: result.terrain.slot,
+                  pad: result.terrain.pad,
+                  names: result.terrain.names,
+                },
+              }
+            : {}),
         },
         null,
         1,
@@ -648,12 +920,17 @@ async function main(): Promise<void> {
     );
   }
 
-  // The first map imported becomes the one the game opens on. Written beside
-  // the models so the app has a single file to ask for.
+  // Which map the game opens on. `--default <name>` names it; otherwise the
+  // first imported wins, which is what a single-map import wants.
   if (imported.length > 0) {
+    const flag = process.argv.indexOf('--default');
+    const named = flag >= 0 ? slugOf(process.argv[flag + 1] ?? '') : '';
+    const fallback = imported[0]?.slug;
+    const chosen = imported.some((entry) => entry.slug === named) ? named : fallback;
+    if (named && chosen !== named) console.error(`  default not imported: ${named}`);
     writeFileSync(
       join(ASSETS_DIR, 'maps', 'index.json'),
-      `${JSON.stringify({ maps: imported, default: imported[0]?.slug }, null, 1)}\n`,
+      `${JSON.stringify({ maps: imported, default: chosen }, null, 1)}\n`,
     );
   }
 }

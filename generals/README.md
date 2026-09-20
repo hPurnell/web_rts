@@ -34,14 +34,18 @@ pnpm gen:verify     what the manifest asks for, and what your install has
 pnpm gen:extract    pull the manifest's files out of the .big archives
 pnpm gen:convert    W3D -> glTF, TGA/DDS -> PNG
 pnpm gen:map --list                 the maps in your installation
-pnpm gen:map "Tournament Tundra"    import one; the first becomes the default
+pnpm gen:map --skirmish --default "Tournament Desert"   every playable map
+pnpm gen:map "Tournament Tundra"    or import one by name
 pnpm gen:doodads    the scenery every imported map places, W3D -> glTF
 pnpm gen:roads      the road textures those maps use, and their widths
 ```
 
-An imported map brings its terrain, its start positions, its own sun and a
-palette taken from the terrain textures it was built with, weighted by how much
-of the map each one actually covers. The game opens on whichever map
+An imported map brings its terrain, its start positions, its own lighting, an
+atlas of the ground textures it paints with and a per-cell map of which one
+goes where. `--skirmish` takes every map with two or more start positions,
+which is what distinguishes a playable map from a campaign mission. It also
+brings a palette — a single averaged ground and cliff colour, weighted by
+coverage — which the minimap draws with and the shader falls back to. The game opens on whichever map
 `generals/assets/maps/index.json` names as the default.
 
 `gen:doodads` and `gen:roads` run **after** `gen:map`, since they convert

@@ -184,31 +184,52 @@ export function readMeshes(chunks: readonly Chunk[]): W3DMesh[] {
       );
     }
 
-    // Texture coordinates live under the first material pass's texture stage.
-    //
-    // Only a stage with exactly one pair per vertex is taken. A mesh with more
-    // than one material pass has more than one of these chunks, and picking
-    // the first at any depth can land on one belonging to a different pass
-    // with a different vertex count — which yields coordinates read from the
-    // wrong offsets, and shows up as a stray -1.7e38 among otherwise sane UVs.
-    const uvs: { u: number; v: number }[] = [];
-    for (const stage of findChunks(mesh.children, CHUNK.STAGE_TEXCOORDS)) {
-      if (stage.data.length !== vertices.length * 8) continue;
-      for (let i = 0; i + 8 <= stage.data.length; i += 8) {
-        // Values are sanity-bounded, not merely finite-checked. Unset slots
-        // in the shipped art carry a near-FLT_MAX sentinel, which is a
-        // perfectly finite float and would otherwise stretch an atlas slot
-        // across the entire texture.
-        uvs.push({ u: sane(stage.data.readFloatLE(i)), v: sane(stage.data.readFloatLE(i + 4)) });
-      }
-      break;
-    }
-
-    const textures: string[] = [];
+    // Every texture the mesh names, in declaration order. This is the table
+    // a pass's TEXTURE_IDS indexes into; it is not a priority order.
+    const named: string[] = [];
     for (const texture of findChunks(mesh.children, CHUNK.TEXTURE_NAME)) {
       const value = readName(texture.data, 0, texture.data.length);
-      if (value.length > 0) textures.push(value);
+      if (value.length > 0) named.push(value);
     }
+
+    // The diffuse texture and its coordinates, taken from the *same* material
+    // pass — which is the whole point of doing it this way.
+    //
+    // A mesh with two passes has a reflection or detail map on the first and
+    // the real texture on the second: `LAKEDUSK.tga`, a photograph of a sky,
+    // is the first pass of 395 of the 768 multi-pass meshes in the shipped
+    // art, and most of the rest are `*_n` maps. Taking the first texture name
+    // in the chunk tree therefore wallpapers every two-pass building and
+    // vehicle with clouds, which is exactly what it did.
+    //
+    // Passes are searched last-first because the diffuse is the later one, and
+    // a pass only qualifies if it carries one texture coordinate per vertex —
+    // so the coordinates used are always the ones authored for the texture
+    // used. Unset slots in the shipped art carry a near-FLT_MAX sentinel,
+    // which is perfectly finite, so the values are bounded rather than merely
+    // finite-checked.
+    const uvs: { u: number; v: number }[] = [];
+    const textures: string[] = [];
+    const passes = findChunks(mesh.children, CHUNK.MATERIAL_PASS);
+    for (let p = passes.length - 1; p >= 0 && uvs.length === 0; p--) {
+      const stage = findChunks((passes[p] as Chunk).children, CHUNK.TEXTURE_STAGE)[0];
+      if (!stage) continue;
+      const coords = findChunk(stage.children, CHUNK.STAGE_TEXCOORDS);
+      if (!coords || coords.data.length !== vertices.length * 8) continue;
+
+      const ids = findChunk(stage.children, CHUNK.TEXTURE_IDS);
+      const id = ids && ids.data.length >= 4 ? ids.data.readUInt32LE(0) : 0;
+      const chosen = named[id];
+      if (chosen) textures.push(chosen);
+
+      for (let i = 0; i + 8 <= coords.data.length; i += 8) {
+        uvs.push({ u: sane(coords.data.readFloatLE(i)), v: sane(coords.data.readFloatLE(i + 4)) });
+      }
+    }
+
+    // A mesh with no usable pass still declares its textures, and the effect
+    // filters downstream read them.
+    for (const value of named) if (!textures.includes(value)) textures.push(value);
 
     meshes.push({
       name,
