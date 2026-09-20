@@ -42,7 +42,9 @@ const HEIGHT_PER_CELL = 16;
  * A road is stored as a run of paired points, one bit for each end of a
  * segment. Testing only one of them keeps half of every road.
  */
-const ROAD_SEGMENT = (1 << 1) | (1 << 2);
+const ROAD_POINT_START = 1 << 1;
+const ROAD_POINT_END = 1 << 2;
+const ROAD_SEGMENT = ROAD_POINT_START | ROAD_POINT_END;
 
 /** Objects whose type name marks them as a player's start position. */
 const START_WAYPOINT = /^Player_(\d+)_Start$/i;
@@ -59,6 +61,12 @@ export interface ImportedObject {
   readonly angle: number;
   /** Empty unless the object is a waypoint. Start positions live here. */
   readonly waypointName: string;
+}
+
+/** A road, rail line or pavement, as a chain of points in cells. */
+export interface RoadPolyline {
+  readonly type: string;
+  readonly points: readonly { x: number; z: number }[];
 }
 
 export interface MapLighting {
@@ -89,6 +97,111 @@ function readHeightMap(data: Buffer): HeightMap {
   }
   const length = r.uint32();
   return { width, height, borderWidth, samples: data.subarray(r.at, r.at + length) };
+}
+
+/**
+ * The roads, rails and pavements.
+ *
+ * These share the object list with the scenery but are a different kind of
+ * thing: a road is a run of **paired** control points, one flag for each end
+ * of a segment, which the source engine draws as a textured ribbon draped over
+ * the terrain. There is no model to import.
+ *
+ * Segments arrive in order and share their endpoints, so they chain back into
+ * the polylines the map's author drew. Chaining matters for more than tidiness:
+ * a ribbon built per segment has a visible notch at every corner, where one
+ * built along a polyline can mitre the join.
+ *
+ * Positions stay fractional here, unlike the scenery, which rounds to a cell.
+ * A road that snapped to cell centres would visibly zigzag.
+ */
+function readRoads(chunks: readonly { name: string; data: Buffer }[]): RoadPolyline[] {
+  interface Point {
+    readonly type: string;
+    readonly x: number;
+    readonly z: number;
+    readonly flags: number;
+  }
+
+  const points: Point[] = [];
+  for (const chunk of chunks) {
+    const r = new Reader(chunk.data);
+    try {
+      const x = r.float();
+      const y = r.float();
+      r.float();
+      r.float(); // angle, which a road point does not use
+      const flags = r.uint32();
+      const type = r.string();
+      if ((flags & ROAD_SEGMENT) === 0) continue;
+      points.push({ type, x: x / XY_PER_CELL, z: y / XY_PER_CELL, flags });
+    } catch {
+      continue;
+    }
+  }
+
+  // Pair them up. A start followed by an end is a segment; anything else is
+  // skipped rather than guessed at.
+  const segments: { type: string; a: Point; b: Point }[] = [];
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i] as Point;
+    const b = points[i + 1] as Point;
+    if ((a.flags & ROAD_POINT_START) === 0 || (b.flags & ROAD_POINT_END) === 0) continue;
+    if (a.type !== b.type) continue;
+    segments.push({ type: a.type, a, b });
+    i++;
+  }
+
+  // Chain segments that share an endpoint into polylines, per road type. The
+  // key is quantised because the shared endpoint is the same stored float on
+  // both segments, but nothing in the format promises that.
+  const key = (p: Point): string => `${Math.round(p.x * 1000)},${Math.round(p.z * 1000)}`;
+  const polylines: RoadPolyline[] = [];
+
+  for (const type of new Set(segments.map((segment) => segment.type))) {
+    const mine = segments.filter((segment) => segment.type === type);
+    const used = new Set<number>();
+    const at = new Map<string, number[]>();
+    for (let i = 0; i < mine.length; i++) {
+      for (const end of [(mine[i] as (typeof mine)[number]).a, (mine[i] as (typeof mine)[number]).b]) {
+        const list = at.get(key(end));
+        if (list) list.push(i);
+        else at.set(key(end), [i]);
+      }
+    }
+
+    /** The one unused segment continuing from a point, if it is unambiguous. */
+    const next = (from: Point): number => {
+      const candidates = (at.get(key(from)) ?? []).filter((i) => !used.has(i));
+      // A junction has three or more ways on. Stopping there keeps each
+      // polyline a single unbranched run, which is all the ribbon can draw.
+      return candidates.length === 1 ? (candidates[0] as number) : -1;
+    };
+
+    for (let i = 0; i < mine.length; i++) {
+      if (used.has(i)) continue;
+      used.add(i);
+      const seed = mine[i] as (typeof mine)[number];
+      const chain: Point[] = [seed.a, seed.b];
+
+      for (const forward of [true, false]) {
+        for (;;) {
+          const end = forward ? (chain[chain.length - 1] as Point) : (chain[0] as Point);
+          const found = next(end);
+          if (found < 0) break;
+          used.add(found);
+          const segment = mine[found] as (typeof mine)[number];
+          const other = key(segment.a) === key(end) ? segment.b : segment.a;
+          if (forward) chain.push(other);
+          else chain.unshift(other);
+        }
+      }
+
+      polylines.push({ type, points: chain.map((p) => ({ x: p.x, z: p.z })) });
+    }
+  }
+
+  return polylines;
 }
 
 /**
@@ -353,6 +466,7 @@ export interface ImportResult {
   readonly world: World;
   readonly lighting: MapLighting;
   readonly doodads: readonly ImportedObject[];
+  readonly roads: readonly RoadPolyline[];
   readonly skipped: number;
   readonly palette: { ground: number[]; cliff: number[]; names: string[] };
 }
@@ -419,7 +533,9 @@ export function importMap(buffer: Buffer, name: string, index: AssetIndex): Impo
     world.flags[cell] = WALKABLE | BUILDABLE;
   }
 
-  const objects = readObjects(findMapChunks(map.chunks, 'Object'), map.names);
+  const objectChunks = findMapChunks(map.chunks, 'Object');
+  const objects = readObjects(objectChunks, map.names);
+  const roads = readRoads(objectChunks);
   const doodads: ImportedObject[] = [];
   let skipped = 0;
 
@@ -463,7 +579,7 @@ export function importMap(buffer: Buffer, name: string, index: AssetIndex): Impo
     ? readTerrainPalette(blend.data, index)
     : { ground: [0.21, 0.29, 0.2], cliff: [0.3, 0.27, 0.24], names: [] };
 
-  return { world, lighting, doodads, skipped, palette };
+  return { world, lighting, doodads, roads, skipped, palette };
 }
 
 /** Every `.map` in the installation, by display name. */
@@ -513,6 +629,7 @@ async function main(): Promise<void> {
           lighting: result.lighting,
           palette: result.palette,
           doodads: result.doodads,
+          roads: result.roads,
         },
         null,
         1,
@@ -524,7 +641,8 @@ async function main(): Promise<void> {
     console.log(
       `  ${name}: ${result.world.width}x${result.world.height} cells,` +
         ` ${result.world.startLocations.length} starts,` +
-        ` ${result.doodads.length} doodads` +
+        ` ${result.doodads.length} doodads,` +
+        ` ${result.roads.length} roads` +
         (result.skipped > 0 ? `, ${result.skipped} outside the playable area` : '') +
         `, ${result.palette.names.length} terrain textures`,
     );

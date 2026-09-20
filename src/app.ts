@@ -38,6 +38,8 @@ import { loadContentPack } from './render/models.ts';
 import type { ContentPackEntry } from './render/models.ts';
 import { createDoodads } from './render/doodads.ts';
 import type { DoodadPlacement, DoodadRenderer } from './render/doodads.ts';
+import { createRoads } from './render/roads.ts';
+import type { RoadPolyline, RoadRenderer, RoadType } from './render/roads.ts';
 import { createGhostRenderer } from './render/ghosts.ts';
 import { EXPLORED_DIM, createFogTexture } from './render/fogtexture.ts';
 import {
@@ -130,6 +132,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   let world = createTestMap();
   /** A map's scenery, replaced wholesale when another map loads. */
   let doodads: DoodadRenderer | null = null;
+  let roads: RoadRenderer | null = null;
   const renderer = createRenderer(canvas);
   const input = attachInput(canvas);
   const overlay = createDevOverlay(overlayRoot);
@@ -1128,16 +1131,38 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
           lighting?: Parameters<typeof applyMapLighting>[0];
           palette?: { ground: number[]; cliff: number[] };
           doodads?: DoodadPlacement[];
+          roads?: RoadPolyline[];
         };
         if (meta.lighting) applyMapLighting(meta.lighting);
         if (meta.palette) setTerrainPalette(terrainMaterial, meta.palette.ground, meta.palette.cliff);
         if (meta.name) overlay.set('map', meta.name);
         if (meta.doodads?.length) await loadDoodads(baseUrl, meta.doodads);
+        if (meta.roads?.length) await loadRoads(baseUrl, meta.roads);
       }
     } catch {
       // No pack, or a bad one: the fixture map is already loaded.
     }
   })();
+
+  /**
+   * Lay a map's roads over the terrain.
+   *
+   * The ribbon geometry is built here rather than shipped, because the same
+   * polyline over different terrain is different geometry — the road has to
+   * follow whatever the heightfield does.
+   */
+  async function loadRoads(baseUrl: string, polylines: RoadPolyline[]): Promise<void> {
+    const response = await fetch(`${baseUrl}/roads.json`);
+    if (!response.ok) return;
+    const listed = ((await response.json()) as { types: RoadType[] }).types;
+    const types = new Map(listed.map((type) => [type.id, type]));
+
+    roads?.dispose();
+    roads = createRoads(renderer.scene, baseUrl, types, polylines, (x, z) =>
+      groundHeightAt(world, heightOverrides(), x, z),
+    );
+    if (roads.count > 0) overlay.set('roads', `${roads.count} in ${roads.types} types`);
+  }
 
   /**
    * Put a map's scenery on screen.
