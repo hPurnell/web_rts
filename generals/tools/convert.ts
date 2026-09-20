@@ -517,7 +517,7 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
   if (skinned.length > 0) {
     console.error(
       `  ${id}: skinned meshes are not supported (${skinned.map((m) => m.name).join(', ')}) —` +
-        ' see PLAN.md G13',
+        ' see PLAN.md G18',
     );
     return null;
   }

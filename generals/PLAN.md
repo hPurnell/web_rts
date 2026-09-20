@@ -115,7 +115,7 @@ the renderer already expects. Generals infantry are skinned and animated, and do
 not fit at all.
 
 Take the part that fits. Vehicles and structures are most of Generals' visual
-identity anyway, and a tank game is a complete game. Infantry are **G13**,
+identity anyway, and a tank game is a complete game. Infantry are **G18**,
 optional, and need vertex-animation textures rather than skeletons — see that
 milestone for why.
 
@@ -403,7 +403,85 @@ whether the result is a game or a tech demo.
 **Done when:** you have played twenty minutes without wanting to stop and fix
 something.
 
-### G13. Infantry (optional)
+### G14. Reading a Generals map
+
+`generals/tools/refpack.ts` and `generals/tools/map.ts`. A `.map` is an `EAR\0`
+container holding a **RefPack** stream — EA's LZ77 variant, four command forms
+distinguished by the top bits of the first byte — wrapping a `CkMp` chunk file:
+
+```
+"CkMp"
+uint32 count                 name dictionary entries
+count x: uint8 length, char name[length], uint32 index
+chunks to the end: uint32 nameIndex, uint16 version, uint32 length, bytes data
+```
+
+The chunks that matter are `HeightMapData`, `ObjectsList`, `GlobalLighting` and
+`WorldInfo`; `BlendTileData` is terrain texturing and belongs with **G7**.
+Scripts, triggers and teams are walked past.
+
+**Done when:** a shipped map decompresses, its dictionary resolves every chunk
+name, and the chunk sizes account for the file exactly.
+
+### G15. Importing the heightfield
+
+`HeightMapData` is a byte per sample: width, height, a border width, the
+playable-area corners, then `width * height` bytes. Generals' horizontal cell is
+ten world units to this engine's one, and its height unit is a sixteenth of
+that, so a sample converts to cells by dividing by sixteen.
+
+Import into the engine's own `.rtsmap` rather than inventing a second world
+format. The engine's heights live on cell **corners** and Generals' live on
+samples, which line up: a Generals heightmap of *w* x *h* samples is a world of
+*w-1* x *h-1* cells.
+
+Crop to the playable area. The border is scenery the player can never reach,
+and carrying it costs nav grid and fog for ground nobody visits.
+
+Start positions come from `ObjectsList` — the waypoints named `Player_N_Start`
+— not from the map header.
+
+**Done when:** a shipped multiplayer map loads, validates clean, both starts
+connect, and a match plays on it.
+
+### G16. Global lighting
+
+`GlobalLighting` carries the map's sun: a direction and ambient and diffuse
+colours, per time of day. Import the one the map is set to and feed it to the
+terrain shader and the scene's directional light.
+
+This is what makes a snow map read as snow rather than as a white desert — the
+light on those maps is low, blue and flat, and the terrain textures alone do
+not carry it.
+
+**Done when:** two maps with different lighting look different, and the
+direction the sun comes from matches where shadows fall in the source game.
+
+### G17. Doodads: trees, rocks and civilian buildings
+
+`ObjectsList` holds every placed object: a position, an angle, a type name and
+a property list. On a multiplayer map that is a thousand-odd trees, rocks and
+neutral structures.
+
+Three parts to this:
+
+- **Convert the models.** Tree and rock W3Ds go through the same pipeline as
+  vehicles. They are rigid and mostly single-texture, so they are easier than
+  the vehicles were.
+- **Render them instanced.** One thin-instanced mesh per doodad type, not one
+  mesh per doodad; a map with 1,700 trees is otherwise 1,700 draw calls.
+- **Make them matter.** A tree already has somewhere to live in the simulation:
+  the `VISION_BLOCKER` flag, which the fog sweep stops at. Importing a tree
+  line as blockers turns scenery into cover for free.
+
+Objects whose type has no converted model are skipped rather than guessed at,
+and the importer reports which ones, so the manifest can grow deliberately.
+
+**Done when:** a shipped map's trees appear where the source game puts them, a
+tree line casts a vision shadow, and the frame time is within 20% of M16 with
+the full doodad count on screen.
+
+### G18. Infantry (optional)
 
 Only if the vehicle game is working and you want more.
 
@@ -429,7 +507,7 @@ draw-call budget is unchanged.
   against OpenSAGE before writing a parser. Treat this plan's format notes as
   orientation, not specification.
 - **W3D animation is the hardest part of the pipeline** and is only needed for
-  G13. If infantry get dropped, the parser only needs meshes and hierarchies,
+  G18. If infantry get dropped, the parser only needs meshes and hierarchies,
   which is perhaps a fifth of the work.
 - **Draw calls are the real budget.** Generals has a material per vehicle; this
   engine wants a handful of draw calls total. Atlasing in G3 is what makes G5
@@ -447,6 +525,13 @@ draw-call budget is unchanged.
 ## Order
 
 G0 → G1 → G2 → G3 → G4 → G5 gets one real tank on screen, and is the half of
-this plan that proves the idea. Everything after it is content and polish, and
-can be reordered freely — except G7, which should come before G11, because
-authoring maps against placeholder terrain textures means authoring them twice.
+this plan that proves the idea.
+
+After that, **G14 → G15 → G16** is the next thing worth doing, because a
+shipped multiplayer map is a better map than anything you will author by hand
+in the editor, and it arrives with its own lighting. G17's doodads need G14's
+reader and the vehicle pipeline, so they follow.
+
+Everything else is content and polish and can be reordered freely — except G7,
+which should come before G11, because authoring maps against placeholder
+terrain textures means authoring them twice.

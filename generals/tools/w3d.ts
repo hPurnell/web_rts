@@ -12,7 +12,7 @@
  * Verified against the shipped models rather than from documentation. Only what
  * this project needs is decoded — meshes, their materials and textures, and the
  * HLOD that names sub-objects so a turret can be told from a hull. Animation is
- * deliberately absent: PLAN.md G13 is the milestone that would need it, and it
+ * deliberately absent: PLAN.md G18 is the milestone that would need it, and it
  * is optional.
  */
 import { readFileSync } from 'node:fs';
