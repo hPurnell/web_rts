@@ -386,7 +386,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /** Find a texture in the archives, preferring the DDS the game actually ships. */
-function loadTexture(index: AssetIndex, name: string): Image | null {
+export function loadTexture(index: AssetIndex, name: string): Image | null {
   const stem = name.replace(/\.(tga|dds)$/i, '');
   for (const candidate of [`${stem}.dds`, `${stem}.tga`]) {
     const found = findByBasename(index, candidate);

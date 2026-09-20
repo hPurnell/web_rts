@@ -148,6 +148,37 @@ export interface TerrainMaterialOptions {
  */
 export const DEFAULT_FOG_SOFTNESS = 0.9;
 
+/**
+ * Recolour the ground and cliffs.
+ *
+ * A content pack's map can carry the palette of the terrain textures it was
+ * built from, which is most of what makes an imported map recognisable before
+ * real terrain texturing lands.
+ */
+export function setTerrainPalette(
+  material: ShaderMaterial,
+  ground: readonly number[],
+  cliff: readonly number[],
+): void {
+  const [r = 0.21, g = 0.29, b = 0.2] = ground;
+  // The high tint is the same hue lifted, so height still reads as height.
+  material.setColor3('groundLow', new Color3(r * 0.8, g * 0.8, b * 0.8));
+  material.setColor3('groundHigh', new Color3(
+    Math.min(1, r * 1.25),
+    Math.min(1, g * 1.25),
+    Math.min(1, b * 1.25),
+  ));
+  material.setColor3('cliffColor', new Color3(cliff[0] ?? 0.3, cliff[1] ?? 0.27, cliff[2] ?? 0.24));
+}
+
+/** Point the terrain shader at a different sun. */
+export function setTerrainSun(
+  material: ShaderMaterial,
+  direction: { x: number; y: number; z: number },
+): void {
+  material.setVector3('lightDirection', new Vector3(direction.x, direction.y, direction.z).normalize());
+}
+
 /** Set the blur radius the fog is sampled with, in texels. */
 export function setTerrainFogSoftness(material: ShaderMaterial, texels: number): void {
   material.setFloat('fogSoftness', texels);

@@ -13,6 +13,7 @@
     "gen:extract": "tsx generals/tools/extract.ts",
     "gen:golden": "tsx tools/gen-trig-golden.ts",
     "gen:golden-sim": "tsx tools/gen-sim-golden.ts",
+    "gen:map": "tsx generals/tools/importmap.ts",
     "gen:trig": "tsx tools/gen-trig.ts",
     "gen:verify": "tsx generals/tools/verify.ts",
     "lint": "eslint .",

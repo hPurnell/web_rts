@@ -32,8 +32,14 @@ non-zero and says so; nothing runs against a partial cache.
 ```
 pnpm gen:verify     what the manifest asks for, and what your install has
 pnpm gen:extract    pull the manifest's files out of the .big archives
-pnpm gen:convert    W3D -> glTF, TGA/DDS -> KTX2, WAV/MP3 -> Ogg
+pnpm gen:convert    W3D -> glTF, TGA/DDS -> PNG
+pnpm gen:map --list           the maps in your installation
+pnpm gen:map "Fortress Avalanche"   import one; the first becomes the default
 ```
+
+An imported map brings its terrain, its start positions, its own sun and a
+palette taken from the terrain textures it was built with. The game opens on
+whichever map `generals/assets/maps/index.json` names as the default.
 
 ## What is committed
 

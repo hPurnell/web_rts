@@ -58,7 +58,7 @@ export class RtsCamera {
   /** Multiplier on pan speed, driven by the `cam_speed` cvar. */
   panScale = 1;
   private readonly minHeight: number;
-  private readonly maxHeight: number;
+  private maxHeight: number;
   private height: number;
   private targetHeight: number;
   /** Horizontal distance from camera to focus, per unit of height. */
@@ -96,6 +96,18 @@ export class RtsCamera {
   }
 
   /** Re-bound the camera, e.g. after loading a map of a different size. */
+  /**
+   * Let the camera pull back far enough to see the whole map.
+   *
+   * The default ceiling suits the fixture; an imported multiplayer map can be
+   * four times its width, and a camera that cannot rise above ninety units
+   * shows a corner of it and no way to find the rest.
+   */
+  setMaxHeight(height: number): void {
+    this.maxHeight = Math.max(this.minHeight + 1, height);
+    this.targetHeight = clamp(this.targetHeight, this.minHeight, this.maxHeight);
+  }
+
   setBounds(bounds: CameraBounds, recentre = false): void {
     this.bounds = bounds;
     if (recentre) {

@@ -38,7 +38,12 @@ import { loadContentPack } from './render/models.ts';
 import type { ContentPackEntry } from './render/models.ts';
 import { createGhostRenderer } from './render/ghosts.ts';
 import { EXPLORED_DIM, createFogTexture } from './render/fogtexture.ts';
-import { setTerrainFog, setTerrainFogSoftness } from './render/terrainMaterial.ts';
+import {
+  setTerrainFog,
+  setTerrainFogSoftness,
+  setTerrainPalette,
+  setTerrainSun,
+} from './render/terrainMaterial.ts';
 import { createSelectionRings } from './render/selectionrings.ts';
 import { SelectionController } from './game/selectioncontroller.ts';
 import { dispatchOrder } from './game/orderdispatch.ts';
@@ -180,6 +185,24 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
    */
   let unitRenderer = createUnitRenderer(renderer.scene);
 
+  /**
+   * Scene lighting a content pack's map asked for.
+   *
+   * A map that ships with its own sun is most of why it looks like the place
+   * it is meant to be — an alpine map's light is low and cold, and the terrain
+   * textures alone do not carry that.
+   */
+  const applyMapLighting = (lighting: {
+    sun: { x: number; y: number; z: number };
+    sunColor: { r: number; g: number; b: number };
+    ambient: { r: number; g: number; b: number };
+  }): void => {
+    renderer.sun.direction.set(lighting.sun.x, lighting.sun.y, lighting.sun.z);
+    renderer.sun.diffuse.set(lighting.sunColor.r, lighting.sunColor.g, lighting.sunColor.b);
+    setTerrainSun(terrainMaterial, lighting.sun);
+    overlay.set('sun', `${lighting.sun.x.toFixed(2)}, ${lighting.sun.y.toFixed(2)}, ${lighting.sun.z.toFixed(2)}`);
+  };
+
   void (async () => {
     // Development only, and structurally so. The pack is served by a Vite dev
     // middleware, so a production build has nothing to fetch — and probing for
@@ -207,6 +230,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     unitRenderer = replacement;
     overlay.set('models', `${models.size} loaded`);
   })();
+
   const ghostRenderer = createGhostRenderer(renderer.scene);
   const selectionRings = createSelectionRings(renderer.scene);
   let fogTexture = createFogTexture(renderer.scene, world.width, world.height);
@@ -351,6 +375,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     costGrid = createCostGrid(world);
     nav.setGrid(costGrid);
     const cell = toFloat(world.cellSize);
+    // Enough height to frame the larger dimension; an imported map can be four
+    // times the fixture's width.
+    camera.setMaxHeight(Math.max(90, Math.max(world.width, world.height) * cell * 0.75));
     camera.setBounds(
       { minX: 0, maxX: world.width * cell, minZ: 0, maxZ: world.height * cell },
       true,
@@ -391,7 +418,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   function startMatch(seed = 1): void {
     stopPlayback();
     const before = hashWorld(world);
-    const playerCount = Math.max(1, world.startLocations.length);
+    // Capped rather than one per start position. An imported eight-player map
+    // opens with eight bots on a 180,000-cell world, and the fog sweep and the
+    // bot both scale with that — it costs twice the tick budget before anyone
+    // has done anything. Four is a skirmish; eight is a stress test.
+    const playerCount = Math.max(1, Math.min(4, world.startLocations.length));
     recorder = createRecorder({
       seed,
       playerCount,
@@ -1059,6 +1090,48 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   // up cost a working multiplayer check and a confusing temporal-dead-zone
   // error that named the console rather than the URL parameter.
   // ---------------------------------------------------------------------
+  // A content pack may also bring a map, with its own lighting.
+  void (async () => {
+    if (!import.meta.env.DEV) return;
+    // Never while joining a relay. This swaps the world out asynchronously,
+    // and a networked match whose two clients disagree about the map is a
+    // desync on tick zero — the loser being whichever client's fetch was
+    // slower. A networked match gets the map it booted with.
+    if (new URLSearchParams(window.location.search).get('relay')) return;
+    try {
+      const index = await fetch(`${CONTENT_PACK_URL}/maps/index.json`);
+      if (!index.ok) return;
+      const listing = (await index.json()) as { default?: string };
+      const slug = listing.default;
+      if (!slug) return;
+
+      const [mapResponse, metaResponse] = await Promise.all([
+        fetch(`${CONTENT_PACK_URL}/maps/${slug}.rtsmap`),
+        fetch(`${CONTENT_PACK_URL}/maps/${slug}.json`),
+      ]);
+      if (!mapResponse.ok) return;
+
+      const { decodeMap } = await import('./editor/mapfile.ts');
+      loadWorld(decodeMap(new Uint8Array(await mapResponse.arrayBuffer())));
+      // The editor holds the World it mounted with, so it has to be rebound or
+      // it goes on reporting the fixture's size and contents.
+      void mode.remount();
+
+      if (metaResponse.ok) {
+        const meta = (await metaResponse.json()) as {
+          name?: string;
+          lighting?: Parameters<typeof applyMapLighting>[0];
+          palette?: { ground: number[]; cliff: number[] };
+        };
+        if (meta.lighting) applyMapLighting(meta.lighting);
+        if (meta.palette) setTerrainPalette(terrainMaterial, meta.palette.ground, meta.palette.cliff);
+        if (meta.name) overlay.set('map', meta.name);
+      }
+    } catch {
+      // No pack, or a bad one: the fixture map is already loaded.
+    }
+  })();
+
   const params = new URLSearchParams(window.location.search);
   const relayUrl = params.get('relay');
 
