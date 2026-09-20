@@ -54,6 +54,12 @@ varying vec2 vMapUv;
 uniform vec3 lightDirection;
 uniform vec3 sunColor;
 uniform vec3 ambientColor;
+/** Two more lights, which a map's fills land in. Black when it has none. */
+uniform vec3 fillDirection0;
+uniform vec3 fillColor0;
+uniform vec3 fillDirection1;
+uniform vec3 fillColor1;
+uniform float lightScale;
 uniform vec3 groundLow;
 uniform vec3 groundHigh;
 uniform vec3 cliffColor;
@@ -165,8 +171,24 @@ void main(void) {
   // The upward term stays as a small addition rather than the whole ambient:
   // flat ground catching a little more sky than a slope does is true, and the
   // map's ambient is a single colour with no direction in it.
-  float lambert = clamp(dot(n, -normalize(lightDirection)), 0.0, 1.0);
-  vec3 color = base * (ambientColor * (0.85 + 0.15 * up) + sunColor * lambert);
+  // Three lights, not one. A Generals map carries three per time of day for
+  // the ground and three more for what stands on it, and most maps use a
+  // primary plus two fills from other directions. Reading only the primary
+  // leaves the unlit sides of hills far darker than the game shows them.
+  vec3 received = ambientColor * (0.85 + 0.15 * up);
+  received += sunColor * clamp(dot(n, -normalize(lightDirection)), 0.0, 1.0);
+  received += fillColor0 * clamp(dot(n, -normalize(fillDirection0)), 0.0, 1.0);
+  received += fillColor1 * clamp(dot(n, -normalize(fillDirection1)), 0.0, 1.0);
+
+  // Scaled, because the map's numbers do not fix an exposure on their own.
+  // GameData.ini gives them as 0-255 colours with no multiplier alongside,
+  // and taken at face value they land flat morning ground at about 60% of the
+  // texture's own brightness — measurably darker than the previews the game
+  // ships, which are close to the raw texture. The fixed-function terrain
+  // blend of that era doubled; doubling here blows the red channel out. So
+  // this is a knob with a measured default rather than a derived constant,
+  // and it is r_lightscale at the console.
+  vec3 color = base * received * lightScale;
 
   // Steep ground is darkened a little beyond what the lambert term gives it,
   // so a slope reads as a slope even when the sun is behind the camera.
@@ -219,6 +241,23 @@ export interface TerrainMaterialOptions {
  * not know what a wall is.
  */
 export const DEFAULT_FOG_SOFTNESS = 0.9;
+
+/**
+ * How much of the map's own lighting reaches the screen.
+ *
+ * Chosen by measurement, not derived: at 1.0 a morning desert renders at
+ * roughly 60% of its texture's brightness, and at 2.0 — the doubling the
+ * source game's texture stage did — the red channel clips. 1.6 puts flat
+ * flat morning ground at about three quarters of the unlit texture, which
+ * reads as a warm desert; 1.6 and above turns the same sand neon orange,
+ * because a warm light multiplying a warm texture compounds the cast.
+ */
+export const DEFAULT_LIGHT_SCALE = 1.15;
+
+/** How brightly the map's lighting is applied. */
+export function setTerrainLightScale(material: ShaderMaterial, scale: number): void {
+  material.setFloat('lightScale', scale);
+}
 
 /**
  * Recolour the ground and cliffs.
@@ -282,10 +321,28 @@ export function setTerrainSun(
   direction: { x: number; y: number; z: number },
   sunColor?: { r: number; g: number; b: number },
   ambient?: { r: number; g: number; b: number },
+  fills: readonly {
+    direction: { x: number; y: number; z: number };
+    color: { r: number; g: number; b: number };
+  }[] = [],
 ): void {
   material.setVector3('lightDirection', new Vector3(direction.x, direction.y, direction.z).normalize());
   if (sunColor) material.setColor3('sunColor', new Color3(sunColor.r, sunColor.g, sunColor.b));
   if (ambient) material.setColor3('ambientColor', new Color3(ambient.r, ambient.g, ambient.b));
+
+  for (let i = 0; i < 2; i++) {
+    const fill = fills[i];
+    material.setVector3(
+      `fillDirection${i}`,
+      fill
+        ? new Vector3(fill.direction.x, fill.direction.y, fill.direction.z).normalize()
+        : new Vector3(0, -1, 0),
+    );
+    material.setColor3(
+      `fillColor${i}`,
+      fill ? new Color3(fill.color.r, fill.color.g, fill.color.b) : new Color3(0, 0, 0),
+    );
+  }
 }
 
 /** Set the blur radius the fog is sampled with, in texels. */
@@ -320,6 +377,11 @@ export function createTerrainMaterial(
       'lightDirection',
       'sunColor',
       'ambientColor',
+      'fillDirection0',
+      'fillColor0',
+      'fillDirection1',
+      'fillColor1',
+      'lightScale',
       'groundLow',
       'groundHigh',
       'cliffColor',
@@ -338,8 +400,13 @@ export function createTerrainMaterial(
 
   const light = options.lightDirection;
   material.setVector3('lightDirection', new Vector3(light.x, light.y, light.z).normalize());
-  material.setColor3('sunColor', new Color3(0.9, 0.87, 0.8));
-  material.setColor3('ambientColor', new Color3(0.42, 0.44, 0.48));
+  material.setColor3('sunColor', new Color3(0.45, 0.43, 0.4));
+  material.setColor3('ambientColor', new Color3(0.21, 0.22, 0.24));
+  material.setVector3('fillDirection0', new Vector3(0, -1, 0));
+  material.setColor3('fillColor0', new Color3(0, 0, 0));
+  material.setVector3('fillDirection1', new Vector3(0, -1, 0));
+  material.setColor3('fillColor1', new Color3(0, 0, 0));
+  material.setFloat('lightScale', DEFAULT_LIGHT_SCALE);
   material.setColor3('groundLow', new Color3(0.21, 0.29, 0.2));
   material.setColor3('groundHigh', new Color3(0.38, 0.44, 0.3));
   material.setColor3('cliffColor', new Color3(0.3, 0.27, 0.24));

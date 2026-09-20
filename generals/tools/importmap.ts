@@ -71,11 +71,21 @@ export interface RoadPolyline {
   readonly points: readonly { x: number; z: number }[];
 }
 
+/** One directional light: where it points, and what colour it casts. */
+export interface MapLight {
+  readonly direction: { x: number; y: number; z: number };
+  readonly color: { r: number; g: number; b: number };
+}
+
 export interface MapLighting {
-  /** Direction the sun points, normalised, in engine axes. */
+  /** Direction the primary sun points, normalised, in engine axes. */
   readonly sun: { x: number; y: number; z: number };
   readonly sunColor: { r: number; g: number; b: number };
   readonly ambient: { r: number; g: number; b: number };
+  /** The three lights the ground is lit by, primary first. */
+  readonly terrain: readonly MapLight[];
+  /** The three lights units and scenery are lit by, primary first. */
+  readonly object: readonly MapLight[];
 }
 
 interface HeightMap {
@@ -288,29 +298,76 @@ const LIGHTS_PER_TIME_OF_DAY = 6;
 const FLOATS_PER_LIGHT = 9;
 
 function readLighting(data: Buffer): MapLighting {
-  const r = new Reader(data);
-  const timeOfDay = r.uint32();
+  const timeOfDay = data.readUInt32LE(0);
   const index = Math.max(0, Math.min(3, timeOfDay - 1));
-  r.at = 4 + index * LIGHTS_PER_TIME_OF_DAY * FLOATS_PER_LIGHT * 4;
+  const base = 4 + index * LIGHTS_PER_TIME_OF_DAY * FLOATS_PER_LIGHT * 4;
 
-  const colour = (): { r: number; g: number; b: number } => ({
-    r: r.float(),
-    g: r.float(),
-    b: r.float(),
-  });
+  /** One light: ambient RGB, diffuse RGB, then a direction. */
+  const read = (slot: number): { ambient: { r: number; g: number; b: number }; light: MapLight } => {
+    const at = base + slot * FLOATS_PER_LIGHT * 4;
+    const f = (k: number): number => data.readFloatLE(at + k * 4);
+    // Generals is Z-up with Y north; the engine is Y-up with Z north.
+    const direction = { x: f(6), y: f(8), z: f(7) };
+    const length = Math.hypot(direction.x, direction.y, direction.z) || 1;
+    return {
+      ambient: { r: f(0), g: f(1), b: f(2) },
+      light: {
+        direction: {
+          x: direction.x / length,
+          y: direction.y / length,
+          z: direction.z / length,
+        },
+        color: { r: f(3), g: f(4), b: f(5) },
+      },
+    };
+  };
 
-  const ambient = colour();
-  const sunColor = colour();
-  const direction = { x: r.float(), y: r.float(), z: r.float() };
+  // Six lights per time of day, interleaved: terrain and object share each
+  // slot, so the ground is lit by 0, 2 and 4 and everything standing on it by
+  // 1, 3 and 5. Verified across the shipped maps, where light 0 always matches
+  // light 1, light 2 matches light 4 and light 3 matches light 5 — which only
+  // holds if the two sets are interleaved rather than laid end to end.
+  //
+  // Reading the first light and stopping, which is what this did, drops two
+  // thirds of the illumination on every map that uses fill lights.
+  const terrain = [read(0), read(2), read(4)];
+  const object = [read(1), read(3), read(5)];
+  const lit = (entry: (typeof terrain)[number]): boolean =>
+    entry.light.color.r + entry.light.color.g + entry.light.color.b > 0;
 
-  // Generals is Z-up with Y north; the engine is Y-up with Z north.
-  const sun = { x: direction.x, y: direction.z, z: direction.y };
-  const length = Math.hypot(sun.x, sun.y, sun.z) || 1;
+  /**
+   * Identical lights count once.
+   *
+   * Every shipped map writes its two fills as the same light — slot 2 always
+   * matches slot 4, and slot 3 slot 5 — so applying both doubles a fill that
+   * was only ever meant to be cast once. On Alpine Assault, whose fill is
+   * magenta, doubling it turns the whole town pink and blows the ground out.
+   */
+  const distinct = (entries: typeof terrain): MapLight[] => {
+    const out: MapLight[] = [];
+    for (const { light } of entries.filter(lit)) {
+      const same = out.some(
+        (other) =>
+          other.color.r === light.color.r &&
+          other.color.g === light.color.g &&
+          other.color.b === light.color.b &&
+          other.direction.x === light.direction.x &&
+          other.direction.y === light.direction.y &&
+          other.direction.z === light.direction.z,
+      );
+      if (!same) out.push(light);
+    }
+    return out;
+  };
 
+  const primary = terrain[0] as (typeof terrain)[number];
   return {
-    sun: { x: sun.x / length, y: sun.y / length, z: sun.z / length },
-    sunColor,
-    ambient,
+    sun: primary.light.direction,
+    sunColor: primary.light.color,
+    // Only the primary carries an ambient; the fills are pure diffuse.
+    ambient: primary.ambient,
+    terrain: distinct(terrain),
+    object: distinct(object),
   };
 }
 
@@ -766,6 +823,8 @@ export function importMap(buffer: Buffer, name: string, index: AssetIndex): Impo
         sun: { x: -0.45, y: -1, z: 0.6 },
         sunColor: { r: 1, g: 0.97, b: 0.9 },
         ambient: { r: 0.3, g: 0.3, b: 0.35 },
+        terrain: [],
+        object: [],
       };
 
   const blend = findMapChunk(map.chunks, 'BlendTileData');

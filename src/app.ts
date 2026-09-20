@@ -46,6 +46,8 @@ import { EXPLORED_DIM, createFogTexture } from './render/fogtexture.ts';
 import {
   setTerrainFog,
   setTerrainFogSoftness,
+  DEFAULT_LIGHT_SCALE,
+  setTerrainLightScale,
   setTerrainPalette,
   setTerrainTextures,
   setTerrainSun,
@@ -135,6 +137,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   /** A map's scenery, replaced wholesale when another map loads. */
   let doodads: DoodadRenderer | null = null;
   let roads: RoadRenderer | null = null;
+  /** How brightly a map's own lighting is applied; see r_lightscale. */
+  let lightScale = DEFAULT_LIGHT_SCALE;
   /** The ground textures the loaded map brought, disposed when it changes. */
   let terrainTextures: { atlas: Texture; index: Texture } | null = null;
   /** What the content pack offers, empty when there is no pack. */
@@ -210,22 +214,58 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     sun: { x: number; y: number; z: number };
     sunColor: { r: number; g: number; b: number };
     ambient: { r: number; g: number; b: number };
+    terrain?: { direction: { x: number; y: number; z: number }; color: { r: number; g: number; b: number } }[];
+    object?: { direction: { x: number; y: number; z: number }; color: { r: number; g: number; b: number } }[];
   }): void => {
-    renderer.sun.direction.set(lighting.sun.x, lighting.sun.y, lighting.sun.z);
-    renderer.sun.diffuse.set(lighting.sunColor.r, lighting.sunColor.g, lighting.sunColor.b);
+    // Units and scenery get the *object* lights, which are a separate set from
+    // the ground's and on some maps point somewhere else entirely.
+    const object = lighting.object ?? [];
+    const primary = object[0];
+    renderer.sun.direction.set(
+      primary?.direction.x ?? lighting.sun.x,
+      primary?.direction.y ?? lighting.sun.y,
+      primary?.direction.z ?? lighting.sun.z,
+    );
+    renderer.sun.diffuse.set(
+      primary?.color.r ?? lighting.sunColor.r,
+      primary?.color.g ?? lighting.sunColor.g,
+      primary?.color.b ?? lighting.sunColor.b,
+    );
     // The models were already getting the map's sun; they were not getting its
     // ambient, so a night map lit its vehicles as if it were noon while the
     // ground around them went dark. The fill light carries it now, and the
     // intensities go to 1 because the colours are the whole answer.
-    renderer.sun.intensity = 1;
-    renderer.sky.intensity = 1;
-    renderer.sky.diffuse.set(lighting.ambient.r, lighting.ambient.g, lighting.ambient.b);
+    renderer.sun.intensity = lightScale;
+    renderer.sky.intensity = lightScale;
+    // The object fill lights fold into the sky light rather than becoming two
+    // more directional lights: they are dim, they point in different
+    // directions on every map, and a hemispheric fill is a fair approximation
+    // of two of them at a fraction of the shader cost.
+    let fillR = 0;
+    let fillG = 0;
+    let fillB = 0;
+    for (const fill of object.slice(1)) {
+      fillR += fill.color.r;
+      fillG += fill.color.g;
+      fillB += fill.color.b;
+    }
+    renderer.sky.diffuse.set(
+      lighting.ambient.r + fillR,
+      lighting.ambient.g + fillG,
+      lighting.ambient.b + fillB,
+    );
     renderer.sky.groundColor.set(
       lighting.ambient.r * 0.6,
       lighting.ambient.g * 0.6,
       lighting.ambient.b * 0.6,
     );
-    setTerrainSun(terrainMaterial, lighting.sun, lighting.sunColor, lighting.ambient);
+    setTerrainSun(
+      terrainMaterial,
+      lighting.sun,
+      lighting.sunColor,
+      lighting.ambient,
+      (lighting.terrain ?? []).slice(1),
+    );
     overlay.set('sun', `${lighting.sun.x.toFixed(2)}, ${lighting.sun.y.toFixed(2)}, ${lighting.sun.z.toFixed(2)}`);
   };
 
@@ -1060,6 +1100,15 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       terrainMaterial.wireframe = enabled;
     },
     setFogSoftness: (texels) => setTerrainFogSoftness(terrainMaterial, texels),
+    setLightScale: (scale) => {
+      lightScale = scale;
+      setTerrainLightScale(terrainMaterial, scale);
+      // Models are lit by the scene's own lights rather than the terrain
+      // shader, so the same scale has to reach them or the ground and the
+      // things standing on it drift apart.
+      renderer.sun.intensity = scale;
+      renderer.sky.intensity = scale;
+    },
     setStatsVisible: (visible) => overlay.setVisible(visible),
     setCameraSpeed: (scale) => {
       camera.panScale = scale;

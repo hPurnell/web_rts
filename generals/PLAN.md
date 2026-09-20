@@ -623,13 +623,30 @@ Two things this cost, both worth knowing:
   WebGL2-only shader.
 
 **The map's lighting was read and then thrown away.** `GlobalLighting` carries
-six lights per time of day — three terrain, three object — and the first is the
-sun. That part was right. What was missing is that its *colour* and the
-*ambient* never reached anything: the terrain shader hardcoded its own, and the
-scene's fill light kept the engine's default. So every imported map was lit
-like noon, which is why the shipped tundra maps came out as blazing white snow
-instead of the moonlit blue they are. Both colours now drive the terrain shader
-and the scene lights.
+six lights per time of day and only one reached the renderer, without its
+colours. Three separate faults:
+
+- The sun's *colour* and the *ambient* never reached anything: the terrain
+  shader hardcoded its own and the scene's fill light kept the engine default,
+  so every map was lit like noon. That is why the tundra maps came out as
+  blazing white snow instead of the moonlit blue they are.
+- **The six slots are two interleaved sets of three**, terrain in 0/2/4 and
+  objects in 1/3/5. `GameData.ini` settles it: it names the defaults
+  `TerrainLighting*` and `TerrainObjectsLighting*` with `2` and `3` suffixes
+  for the fills, in exactly that interleaved order, and Tournament Desert's
+  stored values are those morning defaults verbatim — which also confirms the
+  ambient, diffuse and direction fields are being read correctly.
+- **Identical lights count once.** Every shipped map writes its two fills as
+  the same light, so applying both doubles a fill meant to be cast once. On
+  Alpine Assault, whose fill is magenta, that turned the entire town pink.
+
+What the data does *not* settle is exposure. The colours are 0-255 with no
+multiplier recorded beside them, and taken literally they land flat morning
+ground at about 60% of its texture's own brightness. The map previews the game
+ships are close to the raw texture, so 60% is measurably dark; the era's
+fixed-function terrain stage doubled, and doubling here blows the red channel
+out and turns desert sand neon. So it is a knob — `r_lightscale`, default 1.15
+— documented as measured rather than derived.
 
 **Scenery was missing because of one keyword.** Object definitions come in
 three forms and the scanner knew two. `ObjectReskin` is the third, 235 blocks

@@ -20,6 +20,7 @@ import type { Match } from '../sim/match.ts';
 import { UNIT_TYPES, unitType, unitTypeById } from '../sim/unittypes.ts';
 import { NULL_HANDLE, OrderKind, resolve } from '../sim/units.ts';
 import type { UnitHandle } from '../sim/units.ts';
+import { DEFAULT_LIGHT_SCALE } from '../render/terrainMaterial.ts';
 import { fromInt } from '../sim/fixed.ts';
 import { hashMatch } from '../sim/statehash.ts';
 import { cellCentreHeight, cellSlope } from '../sim/terrain.ts';
@@ -71,6 +72,8 @@ export interface ConsoleGame {
   setWireframe(enabled: boolean): void;
   /** Blur radius the fog edge is sampled with, in cells. */
   setFogSoftness(texels: number): void;
+  /** How brightly a map's own lighting is applied. */
+  setLightScale(scale: number): void;
   setStatsVisible(visible: boolean): void;
   setCameraSpeed(scale: number): void;
 }
@@ -100,6 +103,16 @@ export function registerGameCommands(console: GameConsole, game: ConsoleGame): v
     help: `Debug terrain overlay: off, or one of ${game.overlayLayers().join(', ')}.`,
     value: 'off',
     onChange: (value) => game.setOverlayLayer(value === 'off' ? null : String(value)),
+  });
+
+  console.cvar({
+    name: 'r_lightscale',
+    help: "How brightly a map's own lighting is applied. 1 is literal, 2 is the era's doubling.",
+    value: DEFAULT_LIGHT_SCALE,
+    min: 0.25,
+    max: 3,
+    archive: true,
+    onChange: (value) => game.setLightScale(Number(value)),
   });
 
   console.cvar({
