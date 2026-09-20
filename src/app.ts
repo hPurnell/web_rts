@@ -315,6 +315,20 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
           queue: false,
         });
         return;
+      case 'takeoff':
+      case 'land':
+        pendingCommands.push({
+          kind: CommandKind.IssueOrders,
+          player: LOCAL_PLAYER,
+          handles: [...handles],
+          order: {
+            kind: action.kind === 'takeoff' ? OrderKind.TakeOff : OrderKind.Land,
+            cell: -1,
+            target: NULL_HANDLE,
+          },
+          queue: false,
+        });
+        return;
       case 'attack-move':
       case 'gather':
         // Both need a target the player has not picked yet; the next

@@ -100,6 +100,18 @@ export interface PickOptions {
 }
 
 /**
+ * The world Y a unit is drawn at: the ground under it plus its altitude.
+ *
+ * A helicopter is drawn several units above the ground, and projecting it at
+ * ground height puts its selection box under the terrain it is flying over —
+ * the same class of bug as the hard-coded zero above, and invisible until
+ * something actually flies.
+ */
+function drawnY(store: UnitStore, index: number, x: number, z: number, options: PickOptions): number {
+  return (options.groundY?.(x, z) ?? 0) + toFloat(store.altitude[index] as number);
+}
+
+/**
  * Units whose centre projects inside a screen rect.
  *
  * Ownership is filtered first because it is a byte compare, and it removes
@@ -120,7 +132,7 @@ export function unitsInRect(
     const point = projectPoint(
       viewProjection,
       x,
-      options.groundY?.(x, z) ?? 0,
+      drawnY(store, i, x, z, options),
       z,
       options.width,
       options.height,
@@ -150,7 +162,7 @@ export function unitAtPoint(
     const point = projectPoint(
       viewProjection,
       x,
-      options.groundY?.(x, z) ?? 0,
+      drawnY(store, i, x, z, options),
       z,
       options.width,
       options.height,

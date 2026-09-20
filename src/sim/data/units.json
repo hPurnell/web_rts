@@ -1,5 +1,5 @@
 {
-  "note": "Unit type table. Every value is an integer in the unit named by its suffix, so loading never parses a float (invariant 2). hasTurret marks types whose weapon rotates independently of the hull; isStructure marks types that do not move and that players remember once scouted. A projectile speed of zero means the weapon is hitscan; anything else spawns a travelling projectile. footprintCells is the side of the square a structure occupies. Order is part of the determinism contract: append, never reorder.",
+  "note": "Unit type table. Every value is an integer in the unit named by its suffix, so loading never parses a float (invariant 2). hasTurret marks types whose weapon rotates independently of the hull; isStructure marks types that do not move and that players remember once scouted. isAircraft marks types that fly: they ignore the flow field and the ground, carry an altitude, and take off and land. A projectile speed of zero means the weapon is hitscan; anything else spawns a travelling projectile. footprintCells is the side of the square a structure occupies. Order is part of the determinism contract: append, never reorder.",
   "types": [
     {
       "id": "worker",
@@ -121,6 +121,30 @@
         "raider",
         "siege"
       ]
+    },
+    {
+      "id": "gunship",
+      "name": "RAH-66 Comanche",
+      "hp": 140,
+      "speedMilliCellsPerSecond": 6200,
+      "sightRadiusMilliCells": 13000,
+      "attackRangeMilliCells": 6500,
+      "damage": 14,
+      "cooldownTicks": 12,
+      "radiusMilliCells": 600,
+      "buildTicks": 420,
+      "mineralCost": 300,
+      "gasCost": 100,
+      "hasTurret": true,
+      "isStructure": false,
+      "projectileSpeedMilliCellsPerSecond": 14000,
+      "footprintCells": 0,
+      "produces": [],
+      "isAircraft": true,
+      "cruiseAltitudeMilliCells": 4200,
+      "climbRateMilliCellsPerSecond": 2600,
+      "accelerationMilliCellsPerSecondSq": 5200,
+      "turnRateMilliRadiansPerSecond": 2600
     }
   ]
 }

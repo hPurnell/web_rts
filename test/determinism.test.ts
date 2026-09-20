@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import golden from './golden/sim.json' with { type: 'json' };
 import {
+  AIRCRAFT_P0,
+  AIRCRAFT_P1,
   SCRIPT,
   SCRIPT_PLAYERS,
   SCRIPT_SEED,
@@ -10,6 +12,8 @@ import {
   runScriptHash,
 } from './determinism.ts';
 import { createMatch } from '../src/sim/match.ts';
+import { resolve } from '../src/sim/units.ts';
+import { unitType, unitTypeById } from '../src/sim/unittypes.ts';
 import { diffComponents, hashComponents, hashMatch } from '../src/sim/statehash.ts';
 import { CommandKind } from '../src/sim/commands.ts';
 import { stepMatch } from '../src/sim/tick.ts';
@@ -128,4 +132,52 @@ describe('float contamination is caught', () => {
     const ids = (result?.messages ?? []).map((m) => m.ruleId);
     expect(ids).toContain('rts/no-nondeterminism');
   }, 30_000);
+});
+
+describe('the scripted aircraft', () => {
+  it('are the units the flight orders name', () => {
+    // The handles are spelled out in the script rather than derived, and
+    // `MoveUnits` silently drops any it cannot resolve or that the ordering
+    // player does not own. That is exactly how a third of the flight orders
+    // came to do nothing while every test still passed, so the mapping is
+    // pinned here: if the slot arithmetic ever shifts, this fails rather than
+    // the coverage quietly evaporating.
+    const match = runScript({ ticks: 365 });
+    const store = match.units;
+
+    for (const [owner, handles] of [
+      [0, AIRCRAFT_P0],
+      [1, AIRCRAFT_P1],
+    ] as const) {
+      for (const handle of handles) {
+        const index = resolve(store, handle);
+        expect(index, `handle ${handle} resolves`).toBeGreaterThanOrEqual(0);
+        expect(store.ownerId[index], `handle ${handle} owner`).toBe(owner);
+        expect(
+          unitType(store.typeId[index] as number).isAircraft,
+          `handle ${handle} flies`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('actually fly: the script reaches every air state', () => {
+    const seen = new Set<number>();
+    let highest = 0;
+    runScript({
+      onTick: (match) => {
+        const store = match.units;
+        for (let i = 0; i < store.count; i++) {
+          if (store.isAlive[i] !== 1) continue;
+          if (!unitType(store.typeId[i] as number).isAircraft) continue;
+          seen.add(store.airState[i] as number);
+          highest = Math.max(highest, store.altitude[i] as number);
+        }
+      },
+    });
+    // Grounded, taking off, airborne and landing. A script that never left the
+    // ground would hash flight state that is always zero.
+    expect([...seen].sort()).toEqual([0, 1, 2, 3]);
+    expect(highest).toBe(unitTypeById('gunship').cruiseAltitude);
+  });
 });

@@ -117,6 +117,10 @@ export function stepMovement(match: Match, context: MovementContext): SpatialHas
     // Anything with a goal walks, whatever it thinks it is doing: a worker on
     // its way to a patch is Gathering, not Moving, and still has to get there.
     if ((store.goalCell[i] as number) < 0) continue;
+    // Except aircraft, which `flight.ts` has already moved this tick. They
+    // route around nothing and collide with nothing, so the flow field and the
+    // separation pass below have no opinion worth hearing.
+    if (unitType(store.typeId[i] as number).isAircraft) continue;
 
     const goalCell = store.goalCell[i] as number;
     if (goalCell < 0) {
@@ -248,6 +252,9 @@ function resolveOverlaps(store: Match['units'], hash: SpatialHash, context: Move
     if (store.state[i] !== UnitState.Idle) continue;
 
     const type = unitType(store.typeId[i] as number);
+    // A parked helicopter is not in anyone's way, and one in the air is not
+    // even on the same plane.
+    if (type.isAircraft) continue;
     const push = separation(store, hash, i, type.radius);
     if (push.x === 0 && push.z === 0) continue;
 
@@ -348,6 +355,9 @@ function separation(
   forEachNeighbour(hash, x, z, (other) => {
     if (other === index) return;
     if (store.isAlive[other] !== 1) return;
+    // Aircraft are not on this plane. A helicopter passing overhead would
+    // otherwise plough a furrow through the infantry underneath it.
+    if (unitType(store.typeId[other] as number).isAircraft) return;
     const otherRadius = unitType(store.typeId[other] as number).radius;
     const minimum = add(radius, otherRadius);
 

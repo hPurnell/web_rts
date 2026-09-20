@@ -44,6 +44,21 @@ export interface UnitType {
   readonly footprint: number;
   /** Type ids this structure can produce. */
   readonly produces: readonly number[];
+
+  /**
+   * True for types that fly. An aircraft ignores the flow field, the
+   * navigation grid and other units, carries an altitude, and has to take off
+   * before it can go anywhere.
+   */
+  readonly isAircraft: boolean;
+  /** Height it holds while airborne, in cells above the ground below it. */
+  readonly cruiseAltitude: Fixed;
+  /** Cells per tick it climbs and descends. */
+  readonly climbRate: Fixed;
+  /** Cells per tick per tick its speed may change by. */
+  readonly acceleration: Fixed;
+  /** Radians per tick it may turn by. */
+  readonly turnRate: Fixed;
 }
 
 interface RawUnitType {
@@ -64,6 +79,11 @@ interface RawUnitType {
   projectileSpeedMilliCellsPerSecond: number;
   footprintCells: number;
   produces: string[];
+  isAircraft?: boolean;
+  cruiseAltitudeMilliCells?: number;
+  climbRateMilliCellsPerSecond?: number;
+  accelerationMilliCellsPerSecondSq?: number;
+  turnRateMilliRadiansPerSecond?: number;
 }
 
 function build(raw: RawUnitType, typeId: number): UnitType {
@@ -92,6 +112,16 @@ function build(raw: RawUnitType, typeId: number): UnitType {
     produces: (raw.produces ?? []).map((id) =>
       RAW_TYPES.findIndex((candidate) => candidate.id === id),
     ).filter((index) => index >= 0),
+
+    isAircraft: raw.isAircraft === true,
+    cruiseAltitude: fromRatio(raw.cruiseAltitudeMilliCells ?? 0, MILLI),
+    climbRate: fromRatio(raw.climbRateMilliCellsPerSecond ?? 0, MILLI * TICKS_PER_SECOND),
+    // Per tick per tick, so the rate divides by the tick rate twice.
+    acceleration: fromRatio(
+      raw.accelerationMilliCellsPerSecondSq ?? 0,
+      MILLI * TICKS_PER_SECOND * TICKS_PER_SECOND,
+    ),
+    turnRate: fromRatio(raw.turnRateMilliRadiansPerSecond ?? 0, MILLI * TICKS_PER_SECOND),
   };
 }
 

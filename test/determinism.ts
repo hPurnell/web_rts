@@ -14,7 +14,7 @@ import { cellIndex } from '../src/sim/world.ts';
 import type { ScheduledCommand, SimCommand } from '../src/sim/commands.ts';
 import { CommandKind } from '../src/sim/commands.ts';
 import { fromInt, fromRatio } from '../src/sim/fixed.ts';
-import { OrderKind, makeHandle } from '../src/sim/units.ts';
+import { NULL_HANDLE, OrderKind, makeHandle } from '../src/sim/units.ts';
 import { unitTypeById } from '../src/sim/unittypes.ts';
 import { hashMatch } from '../src/sim/statehash.ts';
 import { stepMatch } from '../src/sim/tick.ts';
@@ -27,6 +27,26 @@ export const SCRIPT_WORLD = createTestMap();
 export const SCRIPT_SEED = 0xc0ffee;
 export const SCRIPT_PLAYERS = 2;
 export const SCRIPT_TICKS = 600; // 30 seconds at 20Hz
+
+/**
+ * The handles the scripted gunships land on.
+ *
+ * Spelled out rather than taken as a range, because the slots the tick-360
+ * spawns fall into are neither contiguous nor all at generation 1: one is a
+ * slot recycled from the tick-140 despawns, so it is at generation 2. A range
+ * starting at 23 silently failed to resolve that one, and `MoveUnits` drops
+ * handles it cannot resolve or that the ordering player does not own — so a
+ * third of the flight orders did nothing at all and the script still passed.
+ *
+ * `test/determinism.test.ts` asserts these are live aircraft of the owner the
+ * orders name, so the next time the slot arithmetic shifts it fails loudly.
+ */
+export const AIRCRAFT_P0: readonly number[] = [
+  makeHandle(23, 2),
+  makeHandle(25, 1),
+  makeHandle(26, 1),
+];
+export const AIRCRAFT_P1: readonly number[] = [makeHandle(27, 1), makeHandle(28, 1)];
 
 /**
  * The scripted command list. Append to it in every simulation milestone; do not
@@ -198,7 +218,98 @@ export const SCRIPT: readonly ScheduledCommand[] = [
       goalCell: cellIndex(SCRIPT_WORLD, 70, 64),
     },
   },
+
+  // Flight. Aircraft carry an altitude and an air state, they accelerate and
+  // turn at limited rates rather than instantly, and they cross terrain that
+  // would stop anything on the ground — all of which is hashed state.
+  //
+  // The route is chosen to exercise what is different about them rather than
+  // just to move them: the gunships take off, fly *over the ridge* that the
+  // squad above has to walk around, reverse course so the turn-rate limit
+  // bites, and land. Sending them across the plateau instead would hash the
+  // same as a slow ground unit.
+  ...spawnWave(360, 0, 'gunship', 3, 20, 22),
+  ...spawnWave(360, 1, 'gunship', 2, 46, 42),
+  // A landing order to an aircraft still on the ground: must be a no-op
+  // everywhere rather than a state nobody agrees on.
+  {
+    tick: 362,
+    command: {
+      kind: CommandKind.IssueOrders,
+      player: 0,
+      handles: [...AIRCRAFT_P0],
+      order: { kind: OrderKind.Land, cell: -1, target: NULL_HANDLE },
+      queue: false,
+    },
+  },
+  // Straight over the ridge, which no ground unit in this script can cross.
+  {
+    tick: 380,
+    command: {
+      kind: CommandKind.MoveUnits,
+      player: 0,
+      handles: [...AIRCRAFT_P0],
+      goalCell: cellIndex(SCRIPT_WORLD, 63, 60),
+    },
+  },
+  // Reverse course mid-flight, so the turn rate and the acceleration limit
+  // both have to resolve the same way everywhere.
+  {
+    tick: 440,
+    command: {
+      kind: CommandKind.MoveUnits,
+      player: 0,
+      handles: [...AIRCRAFT_P0],
+      goalCell: cellIndex(SCRIPT_WORLD, 12, 14),
+    },
+  },
+  // An explicit takeoff for the other player's pair, then a landing, so both
+  // ends of the state machine are in the hash.
+  {
+    tick: 400,
+    command: {
+      kind: CommandKind.IssueOrders,
+      player: 1,
+      handles: [...AIRCRAFT_P1],
+      order: { kind: OrderKind.TakeOff, cell: -1, target: NULL_HANDLE },
+      queue: false,
+    },
+  },
+  {
+    tick: 500,
+    command: {
+      kind: CommandKind.IssueOrders,
+      player: 0,
+      handles: [...AIRCRAFT_P0],
+      order: { kind: OrderKind.Land, cell: -1, target: NULL_HANDLE },
+      queue: false,
+    },
+  },
+  // Player 1's pair is left airborne and mid-turn when the run ends, on
+  // purpose. With every aircraft landed by the last tick their headings have
+  // all converged and the final hash stops depending on the turn rate at all:
+  // halving it was detected, nudging it by a thousandth was not. Something has
+  // to still be turning when the hash is taken.
+  {
+    tick: 560,
+    command: {
+      kind: CommandKind.MoveUnits,
+      player: 1,
+      handles: [...AIRCRAFT_P1],
+      goalCell: cellIndex(SCRIPT_WORLD, 8, 56),
+    },
+  },
+  {
+    tick: 585,
+    command: {
+      kind: CommandKind.MoveUnits,
+      player: 1,
+      handles: [...AIRCRAFT_P1],
+      goalCell: cellIndex(SCRIPT_WORLD, 60, 10),
+    },
+  },
 ];
+
 
 /** Handles for slots [from, to), all at generation 1. */
 function handleRange(from: number, to: number): number[] {

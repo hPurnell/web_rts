@@ -8,6 +8,7 @@ import type { SimCommand } from './commands.ts';
 import { applyCommand } from './commands.ts';
 import type { Match } from './match.ts';
 import { ensureField } from './navcache.ts';
+import { stepFlight } from './flight.ts';
 import { stepMovement } from './movement.ts';
 import { stepOrders } from './orders.ts';
 import { FOG_INTERVAL_TICKS, updateFog } from './fog.ts';
@@ -53,6 +54,11 @@ export function stepMatch(
     stepOrders(match, context);
     stepBuildings(match, context);
     stepEconomy(match, context);
+    // Flight before ground movement, and separately: an aircraft reads no
+    // flow field and pushes no one around, so it has nothing to say to the
+    // spatial hash that movement rebuilds.
+    stepFlight(match, context);
+
     match.spatialHash = stepMovement(match, {
       world: context.world,
       grid,

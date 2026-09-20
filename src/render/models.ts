@@ -27,11 +27,19 @@ export interface LoadedPart {
   readonly material: StandardMaterial;
 }
 
+/** A part that spins about its own hub: a helicopter's rotor disc. */
+export interface LoadedRotor {
+  readonly part: LoadedPart;
+  readonly offset: { x: number; y: number; z: number };
+}
+
 export interface LoadedModel {
   readonly hull: LoadedPart;
   readonly turret?: LoadedPart;
   /** How far above the ground the turret's origin sits, in world units. */
   readonly turretOffsetY: number;
+  /** Rotor discs, empty for anything that does not fly. */
+  readonly rotors: readonly LoadedRotor[];
 }
 
 /** What a content pack declares. */
@@ -52,6 +60,15 @@ export interface ContentPackEntry {
   readonly turret?: string;
   readonly texture: string;
   readonly turretOffsetY?: number;
+  /**
+   * Spinning parts, each with the hub it turns about, in world units. A rotor
+   * disc is always a cut-out — the blades are alpha in the texture — whatever
+   * the rest of the model is.
+   */
+  readonly rotors?: readonly {
+    readonly gltf: string;
+    readonly offset: { x: number; y: number; z: number };
+  }[];
 }
 
 export interface ContentPack {
@@ -237,10 +254,41 @@ export async function loadContentPack(
         ? await loadPart(pack.baseUrl, entry.turret, material)
         : undefined;
 
+      const rotors: LoadedRotor[] = [];
+      if ((entry.rotors ?? []).length > 0) {
+        // A second material over the same texture: the disc needs the alpha
+        // test and the two-sided lighting that goes with it, and the fuselage
+        // it is bolted to needs neither.
+        const key = `${entry.texture}#cutout`;
+        let discMaterial = materials.get(key);
+        if (!discMaterial) {
+          discMaterial = new StandardMaterial(`pack_${key}`, scene);
+          discMaterial.diffuseTexture = material.diffuseTexture;
+          discMaterial.specularColor = new Color3(0, 0, 0);
+          discMaterial.emissiveColor = new Color3(0.1, 0.1, 0.1);
+          discMaterial.useAlphaFromDiffuseTexture = true;
+          discMaterial.transparencyMode = Material.MATERIAL_ALPHATEST;
+          discMaterial.alphaCutOff = 0.2;
+          discMaterial.backFaceCulling = false;
+          discMaterial.twoSidedLighting = true;
+          materials.set(key, discMaterial);
+        }
+        // The texture is shared, so it has to carry alpha for the disc even
+        // though the hull's material ignores it.
+        if (material.diffuseTexture) material.diffuseTexture.hasAlpha = true;
+        for (const rotor of entry.rotors ?? []) {
+          rotors.push({
+            part: await loadPart(pack.baseUrl, rotor.gltf, discMaterial),
+            offset: rotor.offset,
+          });
+        }
+      }
+
       models.set(entry.id, {
         hull,
         ...(turret ? { turret } : {}),
         turretOffsetY: entry.turretOffsetY ?? 0,
+        rotors,
       });
     } catch (error) {
       console.warn(

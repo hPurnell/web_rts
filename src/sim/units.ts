@@ -31,6 +31,23 @@ export const enum OrderKind {
   Attack = 3,
   Gather = 4,
   Hold = 5,
+  /** Aircraft only: climb to cruise altitude and hold there. */
+  TakeOff = 6,
+  /** Aircraft only: come down where it is, or over the order's cell. */
+  Land = 7,
+}
+
+/**
+ * Where an aircraft is in the takeoff-and-landing cycle.
+ *
+ * A ground unit stays `Grounded` forever and never costs anything: the flight
+ * system skips types that do not fly at all.
+ */
+export const enum AirState {
+  Grounded = 0,
+  TakingOff = 1,
+  Airborne = 2,
+  Landing = 3,
 }
 
 /** Handle layout: index in the low 20 bits, generation above it. */
@@ -75,6 +92,12 @@ export interface UnitStore {
   readonly facing: Int32Array;
   /** Flow-field goal this unit is walking to, or -1. */
   readonly goalCell: Int32Array;
+
+  // --- flight ------------------------------------------------------------
+  /** Height above the ground below, in Q16.16 cells. Zero for ground units. */
+  readonly altitude: Int32Array;
+  /** An `AirState`. Always `Grounded` for anything that cannot fly. */
+  readonly airState: Uint8Array;
   /** Consecutive ticks spent making no real progress toward that goal. */
   readonly stuckTicks: Int32Array;
   /** Best flow-field distance to the goal this unit has reached so far. */
@@ -139,6 +162,8 @@ export function createUnitStore(): UnitStore {
     targetHandle: new Int32Array(MAX_UNITS),
     cooldown: new Int32Array(MAX_UNITS),
     facing: new Int32Array(MAX_UNITS),
+    altitude: new Int32Array(MAX_UNITS),
+    airState: new Uint8Array(MAX_UNITS),
     goalCell: new Int32Array(MAX_UNITS).fill(-1),
     stuckTicks: new Int32Array(MAX_UNITS),
     bestProgress: new Int32Array(MAX_UNITS).fill(0x7fffffff),
@@ -231,6 +256,11 @@ export function spawnUnit(store: UnitStore, request: SpawnRequest): UnitHandle {
   store.targetHandle[index] = NULL_HANDLE;
   store.cooldown[index] = 0;
   store.facing[index] = request.facing ?? 0;
+  // Aircraft are spawned on the ground, the way the source game does it: a
+  // gunship built at a helipad sits there with its rotor turning until it is
+  // given somewhere to be.
+  store.altitude[index] = 0;
+  store.airState[index] = AirState.Grounded;
   store.goalCell[index] = -1;
   store.stuckTicks[index] = 0;
   store.bestProgress[index] = 0x7fffffff;
@@ -293,6 +323,8 @@ export function resetUnitStore(store: UnitStore): void {
   store.targetHandle.fill(0);
   store.cooldown.fill(0);
   store.facing.fill(0);
+  store.altitude.fill(0);
+  store.airState.fill(0);
   store.goalCell.fill(-1);
   store.stuckTicks.fill(0);
   store.bestProgress.fill(0x7fffffff);
@@ -339,6 +371,8 @@ export function unitHashableArrays(store: UnitStore): { name: string; data: Arra
     { name: 'unit.targetHandle', data: store.targetHandle.subarray(0, n) },
     { name: 'unit.cooldown', data: store.cooldown.subarray(0, n) },
     { name: 'unit.facing', data: store.facing.subarray(0, n) },
+    { name: 'unit.altitude', data: store.altitude.subarray(0, n) },
+    { name: 'unit.airState', data: store.airState.subarray(0, n) },
     { name: 'unit.goalCell', data: store.goalCell.subarray(0, n) },
     { name: 'unit.stuckTicks', data: store.stuckTicks.subarray(0, n) },
     { name: 'unit.bestProgress', data: store.bestProgress.subarray(0, n) },

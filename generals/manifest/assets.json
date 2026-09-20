@@ -1,8 +1,8 @@
 {
   "note": "Source file NAMES only, never content. A reference to a file on your disk, the way a .gitignore entry is. See ../PLAN.md ground rule 1.",
   "factions": {
-    "nato": "NATO — Western equipment, drawn from the game's USA models.",
-    "ea": "Eastern Axis — Soviet-pattern armour and improvised technicals, drawn from the game's China and GLA models."
+    "nato": "NATO \u2014 Western equipment, drawn from the game's USA models.",
+    "ea": "Eastern Axis \u2014 Soviet-pattern armour and improvised technicals, drawn from the game's China and GLA models."
   },
   "vehicles": [
     {
@@ -44,7 +44,6 @@
       "model": "AvAmbulance.W3D",
       "unitType": "worker"
     },
-
     {
       "id": "ea_t54",
       "name": "T-54",
@@ -100,6 +99,14 @@
       "faction": "ea",
       "role": "improvised demolition",
       "model": "UVBmbtruk.W3D"
+    },
+    {
+      "id": "nato_comanche",
+      "name": "RAH-66 Comanche",
+      "faction": "NATO",
+      "role": "Attack helicopter",
+      "model": "AVComanche.w3d",
+      "unitType": "gunship"
     }
   ]
 }

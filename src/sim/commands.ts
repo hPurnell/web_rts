@@ -149,6 +149,11 @@ function validOrder(order: UnitOrder): boolean {
       return Number.isInteger(order.target) && order.target !== NULL_HANDLE;
     case OrderKind.Hold:
       return true;
+    case OrderKind.TakeOff:
+      return true;
+    case OrderKind.Land:
+      // A cell is optional: without one the aircraft comes down where it is.
+      return !Number.isInteger(order.cell) || order.cell >= -1;
     case OrderKind.None:
       return false;
     default:

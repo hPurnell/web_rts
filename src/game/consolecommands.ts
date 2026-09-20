@@ -17,8 +17,8 @@
 import type { GameConsole } from '../ui/console.ts';
 import { CommandKind } from '../sim/commands.ts';
 import type { Match } from '../sim/match.ts';
-import { UNIT_TYPES, unitTypeById } from '../sim/unittypes.ts';
-import { resolve } from '../sim/units.ts';
+import { UNIT_TYPES, unitType, unitTypeById } from '../sim/unittypes.ts';
+import { NULL_HANDLE, OrderKind, resolve } from '../sim/units.ts';
 import type { UnitHandle } from '../sim/units.ts';
 import { fromInt } from '../sim/fixed.ts';
 import { hashMatch } from '../sim/statehash.ts';
@@ -380,6 +380,48 @@ export function registerGameCommands(console: GameConsole, game: ConsoleGame): v
       print(`queued ${selected.length} removals`);
     },
   });
+
+  /**
+   * Takeoff and landing, for the aircraft in the selection.
+   *
+   * Not cheats: they are ordinary orders a player can give, and like every
+   * order they go on the command queue rather than touching the store.
+   */
+  for (const [name, kind, help] of [
+    ['takeoff', OrderKind.TakeOff, 'Order the selected aircraft into the air.'],
+    ['land', OrderKind.Land, 'Order the selected aircraft to land where they are.'],
+  ] as const) {
+    console.register({
+      name,
+      help,
+      run({ console: c, print }) {
+        const match = game.match();
+        const selected = game.selection();
+        if (!match || selected.length === 0) {
+          print('nothing selected', 'warn');
+          return;
+        }
+
+        const aircraft = selected.filter((handle) => {
+          const index = resolve(match.units, handle);
+          return index >= 0 && unitType(match.units.typeId[index] as number).isAircraft;
+        });
+        if (aircraft.length === 0) {
+          print('nothing selected that can fly', 'warn');
+          return;
+        }
+
+        c.queue({
+          kind: CommandKind.IssueOrders,
+          player: game.localPlayer(),
+          handles: [...aircraft],
+          order: { kind, cell: -1, target: NULL_HANDLE },
+          queue: false,
+        });
+        print(`${name}: ${aircraft.length} aircraft`);
+      },
+    });
+  }
 
   console.register({
     name: 'stress',

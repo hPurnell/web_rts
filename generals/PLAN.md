@@ -529,6 +529,72 @@ Draw calls, which are the thing the design was actually protecting, go from 12
 to 30 for those 777 objects. Treat the 20% bound as unverified for the same
 reason the root PLAN.md treats 60fps as unverified.
 
+### G19. Roads
+
+**Done.** Roads share the map's object list with the scenery and are not
+objects: a road is a run of paired control points that the source engine draws
+as a textured ribbon over the terrain. See G17 above for the flag that tells
+them apart, and `generals/tools/roads.ts` for where the straight-road strip
+sits in a road texture and how that placement was established.
+
+The geometry is built at load time rather than shipped, because the same
+polyline over different terrain is different geometry. `src/render/roads.ts`
+mitres the corners and subdivides along the length so the ribbon follows the
+ground.
+
+### G20. A helicopter
+
+**Done.** An aircraft is not a ground unit with the collision turned off, so
+this is a simulation feature rather than a renderer one.
+
+`src/sim/flight.ts` owns it. An aircraft ignores the flow field, the navigation
+grid and every other unit, carries an **altitude** and an **air state**, and
+cannot go anywhere until it has taken off — a move order on a parked helicopter
+takes off first rather than being refused, because anything else makes every
+order on an aircraft into two orders.
+
+**The physics are rate-limited rather than instant**, which is the whole
+difference from the ground movement next door. A ground unit reads a direction
+and moves at its top speed that tick; a helicopter has an acceleration and a
+turn rate, so it leans into a course change, overshoots slightly and settles,
+and slides to a stop rather than halting. That lag is what the source game's
+helicopters feel like.
+
+It is also what gives the renderer something honest to work from. **Bank and
+pitch are not animations**: `render/units.ts` takes the change in velocity
+between two ticks, splits it into the component along the heading and the one
+across it, and tips the aircraft against them — nose down to accelerate, roll
+into a turn. They are a function of state the simulation already stores, so
+they are not stored themselves; putting them in the unit store would mean
+hashing two more arrays for a purely visual effect.
+
+The rotor is a separate part, found in the art rather than named: a helicopter
+model has several `PROPELLER`-named meshes and most are hubs and shafts that
+must stay welded to the hull. The disc is the one that is *flat* — the
+Comanche's is 0.2 units thick across 52, where its hubs are 16% to 68% as thick
+as they are wide. It spins on wall-clock time, spools up before the aircraft
+lifts, and each one starts at its own angle so a flight does not beat in
+unison.
+
+Two things worth knowing:
+
+- **A rotor disc is alpha and a fuselage is not**, and they share one texture
+  sheet. Measuring the sheet as a whole marks the aircraft a cut-out, which
+  puts the *hull* on the two-sided path that `render/models.ts` already records
+  as making a vehicle render almost black. The rotors carry their own material.
+- **The determinism script needed real handles, not a range.** The gunships
+  land in slots that are neither contiguous nor all at generation 1, and
+  `MoveUnits` silently drops handles it cannot resolve — so a third of the
+  flight orders did nothing while every test still passed. The handles are
+  pinned and asserted now. With that fixed the golden hash moves for a change
+  of one milli-radian per second in the turn rate, one milli-cell in the cruise
+  altitude, and the smallest change to acceleration that survives fixed-point
+  quantisation.
+
+**Not done:** an aircraft sees over hills no better than a tank does. The fog
+sweep takes its eye height from the ground, so a helicopter at altitude has no
+extra line of sight. Nothing is wrong, it is simply not modelled.
+
 ### G18. Infantry (optional)
 
 Only if the vehicle game is working and you want more.

@@ -28,6 +28,7 @@ import type { World } from '../sim/world.ts';
 import { cellFromWorld } from '../sim/world.ts';
 import { isVisible } from '../sim/fog.ts';
 import { UNIT_TYPES } from '../sim/unittypes.ts';
+import { AirState, UnitState } from '../sim/units.ts';
 import { toFloat } from '../sim/fixed.ts';
 import type { HeightOverrides } from '../sim/terrain.ts';
 import { cellCornerY } from './terrain.ts';
@@ -77,6 +78,13 @@ function turretShape(radius: number): PartShape {
   return { width: size, height: size * 0.55, depth: size * 1.15, lift: radius * 1.05 };
 }
 
+/** A rotor's mesh and the buffer its instances are written into. */
+interface RotorGroup {
+  readonly mesh: Mesh;
+  readonly offset: { x: number; y: number; z: number };
+  data: Float32Array;
+}
+
 interface InstanceGroup {
   readonly hull: Mesh;
   /** Null for types whose weapon does not rotate, such as workers. */
@@ -86,6 +94,10 @@ interface InstanceGroup {
   readonly turretLift: number;
   /** How strongly the player colour tints this group, 0 none to 1 fully. */
   readonly tintStrength: number;
+  /** Spinning parts. Empty for everything that does not fly. */
+  readonly rotors: RotorGroup[];
+  /** True for types that fly: they bank instead of leaning on the ground. */
+  readonly isAircraft: boolean;
   /** Scratch buffers, grown on demand and reused between frames. */
   hullData: Float32Array;
   turretData: Float32Array;
@@ -126,6 +138,28 @@ const FLOATS_PER_MATRIX = 16;
  * a box has nothing else to look at.
  */
 const MODEL_TINT = 0.3;
+
+// --- flight attitude -------------------------------------------------------
+// Gains chosen by eye against the source game rather than derived: a Comanche
+// accelerating hard should read as clearly nose-down without looking like it
+// is diving, and a hard turn should roll it well over but not knife-edge.
+/** Radians of roll per world-unit-per-tick of lateral acceleration. */
+const BANK_PER_ACCEL = 260;
+/** Radians of nose-down pitch per unit of along-track acceleration. */
+const PITCH_PER_ACCEL = 150;
+const MAX_BANK = 0.55;
+const MAX_PITCH = 0.32;
+/** How fast the attitude eases toward the wanted one, per frame. */
+const ATTITUDE_BLEND = 0.12;
+
+/** Rotor revolutions per second while flying. */
+const ROTOR_SPEED = 5.5;
+/** How fast the rotor spools up and down, as a fraction per second. */
+const ROTOR_SPOOL = 1.6;
+
+function clamp(value: number, min: number, max: number): number {
+  return value < min ? min : value > max ? max : value;
+}
 
 function makePart(
   scene: Scene,
@@ -181,6 +215,12 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
       hullLift: model ? 0 : hullShape(radius, type.footprint).lift,
       turretLift: model ? model.turretOffsetY : turretShape(radius).lift,
       tintStrength: model ? MODEL_TINT : 1,
+      rotors: (model?.rotors ?? []).map((rotor, r) => ({
+        mesh: buildPartMesh(scene, `rotor${r}_t${typeId}`, rotor.part),
+        offset: rotor.offset,
+        data: new Float32Array(0),
+      })),
+      isAircraft: type.isAircraft,
       hullData: new Float32Array(0),
       turretData: new Float32Array(0),
       colorData: new Float32Array(0),
@@ -192,8 +232,23 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
   let prevX = new Int32Array(0);
   let prevZ = new Int32Array(0);
   let prevFacing = new Int32Array(0);
+  let prevAltitude = new Int32Array(0);
+  // Previous-tick velocity, which is where a helicopter's attitude comes from:
+  // the change between two ticks is its acceleration, and banking and pitching
+  // are that acceleration made visible.
+  let prevVelX = new Int32Array(0);
+  let prevVelZ = new Int32Array(0);
   let prevTick = -1;
   let written = 0;
+
+  // Smoothed flight attitude, one per unit slot, and the rotor's phase.
+  // Render-only, like the terrain normals below: none of it is simulation
+  // state, and putting it there would mean hashing two arrays for a look.
+  let bank = new Float32Array(0);
+  let pitch = new Float32Array(0);
+  let rotorPhase = new Float32Array(0);
+  let spool = new Float32Array(0);
+  let lastFrame = 0;
 
   // Smoothed terrain normals, one per unit slot. Render-only state, so plain
   // floats: nothing here reaches the simulation or the state hash.
@@ -218,6 +273,35 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
     normalZ = nz;
   };
 
+  /**
+   * Grow the per-unit attitude arrays.
+   *
+   * `attitude` is only a length marker for the three that travel together;
+   * they are separate arrays for the same reason the normals are.
+   */
+  let attitude = new Float32Array(0);
+  const growAttitude = (count: number): void => {
+    const size = Math.max(16, count * 2);
+    const next = new Float32Array(size);
+    const nextBank = new Float32Array(size);
+    const nextPitch = new Float32Array(size);
+    const nextPhase = new Float32Array(size);
+    const nextSpool = new Float32Array(size);
+    nextBank.set(bank);
+    nextPitch.set(pitch);
+    nextPhase.set(rotorPhase);
+    nextSpool.set(spool);
+    // Start each rotor at its own angle, so a flight of helicopters does not
+    // beat in unison like one machine.
+    for (let i = rotorPhase.length; i < size; i++) nextPhase[i] = (i * 2.399963) % (Math.PI * 2);
+    attitude = next;
+    bank = nextBank;
+    pitch = nextPitch;
+    rotorPhase = nextPhase;
+    spool = nextSpool;
+    if (normalX.length < size) growNormals(size);
+  };
+
   const ensure = (group: InstanceGroup, needed: number): void => {
     const floats = needed * FLOATS_PER_MATRIX;
     if (group.hullData.length >= floats) return;
@@ -227,6 +311,7 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
     while (size < needed) size *= 2;
     group.hullData = new Float32Array(size * FLOATS_PER_MATRIX);
     group.turretData = new Float32Array(size * FLOATS_PER_MATRIX);
+    for (const rotor of group.rotors) rotor.data = new Float32Array(size * FLOATS_PER_MATRIX);
     group.colorData = new Float32Array(size * 4);
   };
 
@@ -293,6 +378,70 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
     out[offset + 15] = 1;
   };
 
+  /**
+   * One rotor instance: the hull's frame, then a hub offset and a spin.
+   *
+   * The offset is rotated by the hull's own basis rather than added in world
+   * axes. A helicopter banked thirty degrees still carries its mast
+   * perpendicular to its deck, and adding the offset in world Y would leave
+   * the disc hanging in the air beside the aircraft.
+   */
+  const writeRotor = (
+    out: Float32Array,
+    offset: number,
+    x: number,
+    y: number,
+    z: number,
+    sin: number,
+    cos: number,
+    upX: number,
+    upY: number,
+    upZ: number,
+    hub: { x: number; y: number; z: number },
+    phase: number,
+  ): void => {
+    // The same basis `writeMatrix` builds, so the two parts agree exactly.
+    const dot = sin * upX + cos * upZ;
+    let fx = sin - upX * dot;
+    let fy = -upY * dot;
+    let fz = cos - upZ * dot;
+    const flen = Math.hypot(fx, fy, fz) || 1;
+    fx /= flen;
+    fy /= flen;
+    fz /= flen;
+    const rx = upY * fz - upZ * fy;
+    const ry = upZ * fx - upX * fz;
+    const rz = upX * fy - upY * fx;
+
+    // Spin about the mast, which is the hull's up axis.
+    const s = Math.sin(phase);
+    const c = Math.cos(phase);
+    // Rotor basis = hull basis pre-rotated about up by the phase.
+    const arx = rx * c + fx * s;
+    const ary = ry * c + fy * s;
+    const arz = rz * c + fz * s;
+    const afx = fx * c - rx * s;
+    const afy = fy * c - ry * s;
+    const afz = fz * c - rz * s;
+
+    out[offset] = arx;
+    out[offset + 1] = ary;
+    out[offset + 2] = arz;
+    out[offset + 3] = 0;
+    out[offset + 4] = upX;
+    out[offset + 5] = upY;
+    out[offset + 6] = upZ;
+    out[offset + 7] = 0;
+    out[offset + 8] = afx;
+    out[offset + 9] = afy;
+    out[offset + 10] = afz;
+    out[offset + 11] = 0;
+    out[offset + 12] = x + rx * hub.x + upX * hub.y + fx * hub.z;
+    out[offset + 13] = y + ry * hub.x + upY * hub.y + fy * hub.z;
+    out[offset + 14] = z + rz * hub.x + upZ * hub.y + fz * hub.z;
+    out[offset + 15] = 1;
+  };
+
   return {
     captureTick(match) {
       const units = match.units;
@@ -300,10 +449,16 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
         prevX = new Int32Array(units.posX.length);
         prevZ = new Int32Array(units.posZ.length);
         prevFacing = new Int32Array(units.facing.length);
+        prevAltitude = new Int32Array(units.altitude.length);
+        prevVelX = new Int32Array(units.velX.length);
+        prevVelZ = new Int32Array(units.velZ.length);
       }
       prevX.set(units.posX);
       prevZ.set(units.posZ);
       prevFacing.set(units.facing);
+      prevAltitude.set(units.altitude);
+      prevVelX.set(units.velX);
+      prevVelZ.set(units.velZ);
       prevTick = match.tick;
     },
 
@@ -313,6 +468,15 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
       const units = match.units;
       // Before the first captured tick there is nothing to interpolate from.
       const blend = prevTick >= 0 ? Math.max(0, Math.min(1, alpha)) : 1;
+
+      // Seconds since the last frame, for the one thing here that runs on
+      // wall-clock time rather than on ticks: the rotor. It has to look right
+      // at any frame rate and it feeds nothing back into the simulation, so a
+      // real clock is the honest source. Clamped so a stalled tab does not
+      // spin the blades through a thousand revolutions on the next frame.
+      const now = performance.now();
+      const dt = lastFrame === 0 ? 0 : Math.min(0.1, (now - lastFrame) / 1000);
+      lastFrame = now;
 
       for (const group of groups) group.count = 0;
 
@@ -367,23 +531,66 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
         const sin = Math.sin(facing);
         const cos = Math.cos(facing);
 
-        const y = groundHeightAt(world, overrides, x, z);
+        let y = groundHeightAt(world, overrides, x, z);
 
-        // Blend the normal toward the ground rather than snapping to it. A
-        // unit crossing a ridge changes its footing over one frame, and
-        // without this the model visibly flicks over as it crests.
-        const sampled = terrainNormalAt(world, overrides, x, z);
-        if (normalX.length <= i) growNormals(units.count);
-        let upX = (normalX[i] as number) + (sampled.x - (normalX[i] as number)) * NORMAL_BLEND;
-        let upY = (normalY[i] as number) + (sampled.y - (normalY[i] as number)) * NORMAL_BLEND;
-        let upZ = (normalZ[i] as number) + (sampled.z - (normalZ[i] as number)) * NORMAL_BLEND;
-        const upLen = Math.hypot(upX, upY, upZ) || 1;
-        upX /= upLen;
-        upY /= upLen;
-        upZ /= upLen;
-        normalX[i] = upX;
-        normalY[i] = upY;
-        normalZ[i] = upZ;
+        if (attitude.length <= i) growAttitude(units.count);
+        let upX: number;
+        let upY: number;
+        let upZ: number;
+
+        if (group.isAircraft) {
+          // An aircraft flies at an altitude the simulation owns, interpolated
+          // like its position so a climb is smooth between ticks.
+          const fromAltitude = toFloat(prevAltitude[i] as number);
+          y += fromAltitude + (toFloat(units.altitude[i] as number) - fromAltitude) * blend;
+
+          // Attitude comes from acceleration, not from an animation. The
+          // change in velocity over the last tick, split into the component
+          // along the heading and the one across it, is exactly what a
+          // helicopter leans against: it noses down to accelerate and rolls
+          // into a turn. Because the simulation rate-limits both, this is a
+          // real quantity rather than a guess.
+          const ax = toFloat((units.velX[i] as number) - (prevVelX[i] as number));
+          const az = toFloat((units.velZ[i] as number) - (prevVelZ[i] as number));
+          const along = ax * sin + az * cos;
+          const across = ax * cos - az * sin;
+
+          const wantBank = clamp(across * BANK_PER_ACCEL, -MAX_BANK, MAX_BANK);
+          const wantPitch = clamp(along * PITCH_PER_ACCEL, -MAX_PITCH, MAX_PITCH);
+          bank[i] = (bank[i] as number) + (wantBank - (bank[i] as number)) * ATTITUDE_BLEND;
+          pitch[i] = (pitch[i] as number) + (wantPitch - (pitch[i] as number)) * ATTITUDE_BLEND;
+
+          // Tip the up vector: toward the right wing to bank, and backward to
+          // put the nose down. `writeMatrix` re-orthogonalises the heading
+          // against it, so this is enough to describe the whole attitude.
+          const sinBank = Math.sin(bank[i] as number);
+          const sinPitch = Math.sin(pitch[i] as number);
+          upX = cos * sinBank + sin * -sinPitch;
+          upY = Math.cos(bank[i] as number) * Math.cos(pitch[i] as number);
+          upZ = -sin * sinBank + cos * -sinPitch;
+          const len = Math.hypot(upX, upY, upZ) || 1;
+          upX /= len;
+          upY /= len;
+          upZ /= len;
+          normalX[i] = upX;
+          normalY[i] = upY;
+          normalZ[i] = upZ;
+        } else {
+          // Blend the normal toward the ground rather than snapping to it. A
+          // unit crossing a ridge changes its footing over one frame, and
+          // without this the model visibly flicks over as it crests.
+          const sampled = terrainNormalAt(world, overrides, x, z);
+          upX = (normalX[i] as number) + (sampled.x - (normalX[i] as number)) * NORMAL_BLEND;
+          upY = (normalY[i] as number) + (sampled.y - (normalY[i] as number)) * NORMAL_BLEND;
+          upZ = (normalZ[i] as number) + (sampled.z - (normalZ[i] as number)) * NORMAL_BLEND;
+          const upLen = Math.hypot(upX, upY, upZ) || 1;
+          upX /= upLen;
+          upY /= upLen;
+          upZ /= upLen;
+          normalX[i] = upX;
+          normalY[i] = upY;
+          normalZ[i] = upZ;
+        }
 
         const offset = group.count * FLOATS_PER_MATRIX;
         writeMatrix(group.hullData, offset, x, y + group.hullLift, z, sin, cos, upX, upY, upZ);
@@ -401,6 +608,27 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
             upY,
             upZ,
           );
+        }
+
+        for (const rotor of group.rotors) {
+          // Spin rate follows the flight state rather than being constant: a
+          // parked helicopter's rotor is stopped, and it spools up before it
+          // lifts rather than the instant it is told to.
+          const wanted =
+            (units.airState[i] as number) === AirState.Grounded &&
+            (units.state[i] as number) === UnitState.Idle
+              ? 0
+              : 1;
+          const current = spool[i] as number;
+          spool[i] = current + clamp(wanted - current, -ROTOR_SPOOL * dt, ROTOR_SPOOL * dt);
+          rotorPhase[i] =
+            ((rotorPhase[i] as number) + (spool[i] as number) * ROTOR_SPEED * Math.PI * 2 * dt) %
+            (Math.PI * 2);
+
+          // The disc rides on the hull, so it is placed by the hull's own
+          // frame: the offset is rotated by the attitude rather than added in
+          // world axes, or the rotor slides off the mast whenever it banks.
+          writeRotor(rotor.data, offset, x, y, z, sin, cos, upX, upY, upZ, rotor.offset, rotorPhase[i] as number);
         }
 
         // The instance colour multiplies the material, which is how one mesh
@@ -425,6 +653,7 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
         if (group.count === 0) {
           group.hull.setEnabled(false);
           group.turret?.setEnabled(false);
+          for (const rotor of group.rotors) rotor.mesh.setEnabled(false);
           continue;
         }
         group.hull.thinInstanceSetBuffer('matrix', group.hullData, FLOATS_PER_MATRIX, false);
@@ -437,6 +666,12 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
           group.turret.thinInstanceCount = group.count;
           group.turret.setEnabled(true);
         }
+        for (const rotor of group.rotors) {
+          rotor.mesh.thinInstanceSetBuffer('matrix', rotor.data, FLOATS_PER_MATRIX, false);
+          rotor.mesh.thinInstanceSetBuffer('color', group.colorData, 4, false);
+          rotor.mesh.thinInstanceCount = group.count;
+          rotor.mesh.setEnabled(true);
+        }
       }
     },
 
@@ -447,6 +682,7 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
         group.count = 0;
         group.hull.setEnabled(false);
         group.turret?.setEnabled(false);
+        for (const rotor of group.rotors) rotor.mesh.setEnabled(false);
       }
     },
 
@@ -454,6 +690,7 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
       for (const group of groups) {
         group.hull.dispose();
         group.turret?.dispose();
+        for (const rotor of group.rotors) rotor.mesh.dispose();
       }
       material.dispose();
     },

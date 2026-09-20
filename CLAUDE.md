@@ -121,6 +121,24 @@ gated behind `sv_cheats`, which `joinMatch` locks off: the gate is not about
 fairness, it is that one client inventing units the other never hears about is
 a desync.
 
+## Aircraft are a separate movement system
+
+`src/sim/flight.ts`, not `movement.ts`. An aircraft ignores the flow field, the
+navigation grid and every other unit, and carries an `altitude` and an
+`airState` in the unit store — both hashed. Ground movement skips them and so
+does separation, or a helicopter ploughs a furrow through the infantry below.
+
+Its physics are **rate-limited**: an acceleration and a turn rate, rather than
+the instant top speed a ground unit gets. That is deliberate, and the renderer
+depends on it — bank and pitch are derived from the change in velocity between
+two ticks, not animated, so they are not stored and not hashed.
+
+The determinism script drives the gunships by **explicit handles**, not a
+range: they land in slots that are neither contiguous nor all at generation 1,
+and `MoveUnits` silently drops handles it cannot resolve. A range looked fine
+and quietly ordered nothing. `test/determinism.test.ts` asserts the handles are
+live aircraft of the right owner, so the next slot shift fails loudly.
+
 ## Verifying
 
 `pnpm test` runs the suite and then the serial performance budgets. The budgets

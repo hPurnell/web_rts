@@ -9,6 +9,7 @@
 import type { Match } from './match.ts';
 import type { UnitStore } from './units.ts';
 import {
+  AirState,
   OrderKind,
   UnitState,
   headOrder,
@@ -95,6 +96,15 @@ function begin(store: UnitStore, index: number, order: ReturnType<typeof headOrd
       store.state[index] = UnitState.Idle;
       return;
     }
+    case OrderKind.TakeOff:
+    case OrderKind.Land: {
+      // The flight system owns these: it reads the head order each tick and
+      // drives the state machine. Setting a goal here would have movement
+      // fight it for the same unit.
+      store.goalCell[index] = -1;
+      store.state[index] = UnitState.Idle;
+      return;
+    }
   }
 }
 
@@ -128,6 +138,11 @@ function isFinished(
     }
     case OrderKind.Hold:
       return false; // holding lasts until it is replaced
+    case OrderKind.TakeOff:
+      // Done once it is up and holding altitude.
+      return store.airState[index] === AirState.Airborne;
+    case OrderKind.Land:
+      return store.airState[index] === AirState.Grounded;
     case OrderKind.None:
       return true;
   }

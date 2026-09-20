@@ -27,6 +27,8 @@ export type CommandAction =
   | { readonly kind: 'hold' }
   | { readonly kind: 'attack-move' }
   | { readonly kind: 'gather' }
+  | { readonly kind: 'takeoff' }
+  | { readonly kind: 'land' }
   | { readonly kind: 'produce'; readonly typeId: number }
   | { readonly kind: 'build'; readonly typeId: number };
 
@@ -116,6 +118,17 @@ export function commandsFor(
       enabled: true,
     },
   ];
+
+  // Aircraft get the two orders only they understand. Shown whenever one is
+  // selected rather than only when it is grounded or only when it is flying:
+  // a mixed flight has some of each, and a button that comes and went would
+  // be worse than one that is occasionally a no-op.
+  if (mobile.some((index) => unitType(store.typeId[index] as number).isAircraft)) {
+    buttons.push(
+      { id: 'takeoff', label: 'Take off', hotkey: 't', action: { kind: 'takeoff' }, enabled: true },
+      { id: 'land', label: 'Land', hotkey: 'l', action: { kind: 'land' }, enabled: true },
+    );
+  }
 
   const canGather = mobile.some((index) => unitType(store.typeId[index] as number).id === 'worker');
   if (canGather) {

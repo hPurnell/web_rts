@@ -414,6 +414,14 @@ interface ConvertedPart {
   readonly offsetY: number;
 }
 
+/** A spinning part: a helicopter's rotor disc. */
+export interface ConvertedRotor {
+  readonly gltf: string;
+  readonly texture: string;
+  /** The hub the disc turns about, in world units relative to the hull. */
+  readonly offset: { x: number; y: number; z: number };
+}
+
 export interface ConvertedModel {
   readonly id: string;
   /**
@@ -425,8 +433,37 @@ export interface ConvertedModel {
   readonly cutout: boolean;
   readonly hull: ConvertedPart;
   readonly turret?: ConvertedPart;
+  /** Rotor discs, each spinning about its own hub. Empty for ground units. */
+  readonly rotors: readonly ConvertedRotor[];
   /** Bounding radius in world units, for sanity-checking against unit stats. */
   readonly radius: number;
+}
+
+/**
+ * Is this mesh a rotor disc?
+ *
+ * Named like one *and* shaped like one. A helicopter model has several
+ * `PROPELLER`-named meshes and most of them are hubs and shafts, which must
+ * stay welded to the hull; the disc is the one that is flat. Measured on the
+ * shipped art: the Comanche's disc is 0.2 units thick across 52, and its
+ * Helix counterpart 1.7 across 91, where the hubs are between 16% and 68% as
+ * thick as they are wide.
+ */
+const ROTOR_MESH = /PROP/i;
+const ROTOR_FLATNESS = 0.05;
+
+function isRotorDisc(mesh: W3DMesh): boolean {
+  if (!ROTOR_MESH.test(mesh.name)) return false;
+  let lo = [Infinity, Infinity, Infinity];
+  let hi = [-Infinity, -Infinity, -Infinity];
+  for (const vertex of mesh.vertices) {
+    const v = [vertex.x, vertex.y, vertex.z];
+    lo = lo.map((value, axis) => Math.min(value, v[axis] as number));
+    hi = hi.map((value, axis) => Math.max(value, v[axis] as number));
+  }
+  const extent = hi.map((value, axis) => value - (lo[axis] as number));
+  const widest = Math.max(...extent);
+  return widest > 0 && Math.min(...extent) < widest * ROTOR_FLATNESS;
 }
 
 /** glTF with a side-car .bin, which keeps the writer to arithmetic. */
@@ -544,6 +581,7 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
 
   const hull: { mesh: W3DMesh; matrix: Mat4 }[] = [];
   const turret: { mesh: W3DMesh; matrix: Mat4 }[] = [];
+  const rotors: { mesh: W3DMesh; matrix: Mat4 }[] = [];
   const wanted = new Map<string, Image>();
 
   for (const mesh of meshes) {
@@ -551,7 +589,8 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
     if (EFFECT_TEXTURE.test(mesh.textures[0] ?? '')) continue;
     const bone = boneOf.get(mesh.name) ?? 0;
     const matrix = (matrices[bone] as Mat4) ?? identity();
-    (turretBones.has(bone) ? turret : hull).push({ mesh, matrix });
+    if (isRotorDisc(mesh)) rotors.push({ mesh, matrix });
+    else (turretBones.has(bone) ? turret : hull).push({ mesh, matrix });
 
     const texture = (mesh.textures[0] ?? '').toLowerCase();
     if (texture.length > 0 && !wanted.has(texture)) {
@@ -580,7 +619,7 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
     return clear * 4 > texture.data.length * CUTOUT_SHARE;
   });
 
-  const { image, remap } = atlas(wanted, uvBoundsByTexture([...hull, ...turret]));
+  const { image, remap } = atlas(wanted, uvBoundsByTexture([...hull, ...turret, ...rotors]));
   const textureFile = `${id}.png`;
   mkdirSync(join(ASSETS_DIR, 'models'), { recursive: true });
   writeFileSync(join(ASSETS_DIR, 'models', textureFile), writePng(image));
@@ -605,6 +644,27 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
     };
   }
 
+  // Each rotor is rebased onto its own hub, so spinning it turns the disc
+  // about its mast rather than swinging it around the fuselage.
+  const rotorOut: ConvertedRotor[] = [];
+  for (let r = 0; r < rotors.length; r++) {
+    const { matrix } = rotors[r] as { mesh: W3DMesh; matrix: Mat4 };
+    const hub: Vec3 = { x: matrix[12] as number, y: matrix[13] as number, z: matrix[14] as number };
+    const part = buildPart([rotors[r] as { mesh: W3DMesh; matrix: Mat4 }], hub, remap);
+    const name = `${id}_rotor${r}`;
+    writeGltf(join(ASSETS_DIR, 'models', name), part, textureFile);
+    const rendered = toRendererAxes(hub);
+    rotorOut.push({
+      gltf: `${name}.gltf`,
+      texture: textureFile,
+      offset: {
+        x: rendered.x * MODEL_SCALE,
+        y: rendered.y * MODEL_SCALE,
+        z: rendered.z * MODEL_SCALE,
+      },
+    });
+  }
+
   let radius = 0;
   for (let i = 0; i < hullPart.positions.length; i += 3) {
     radius = Math.max(
@@ -615,9 +675,17 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
 
   return {
     id,
-    cutout,
+    // A rotor disc is alpha whatever else the model is, and it is packed into
+    // the same sheet as the fuselage — so a helicopter measures as a cut-out
+    // on the strength of its blades alone. Reporting that for the whole model
+    // would put the *hull* on the cut-out path, which turns off back-face
+    // culling and lights it two-sided, and `render/models.ts` already records
+    // what that does to a vehicle: it renders almost black. The rotors carry
+    // their own flag instead.
+    cutout: rotorOut.length > 0 ? false : cutout,
     hull: { gltf: `${id}_hull.gltf`, texture: textureFile, offsetY: 0 },
     ...(turretOut ? { turret: turretOut } : {}),
+    rotors: rotorOut,
     radius,
   };
 }
@@ -655,6 +723,14 @@ async function main(): Promise<void> {
         ...(model.turret ? { turret: `models/${model.turret.gltf}` } : {}),
         texture: `models/${model.hull.texture}`,
         ...(model.turret ? { turretOffsetY: model.turret.offsetY } : {}),
+        ...(model.rotors.length > 0
+          ? {
+              rotors: model.rotors.map((rotor) => ({
+                gltf: `models/${rotor.gltf}`,
+                offset: rotor.offset,
+              })),
+            }
+          : {}),
       });
     }
   }
