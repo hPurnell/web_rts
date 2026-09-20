@@ -406,3 +406,43 @@ describe('queueing simulation commands', () => {
     expect(output(console)).toContain('no match is running');
   });
 });
+
+describe('completing arguments', () => {
+  it('completes a command first argument from the command itself', () => {
+    const console = createConsole();
+    console.register({
+      name: 'map',
+      help: 'load a map',
+      complete: (prefix) =>
+        ['tournament-tundra', 'tournament-desert', 'whiteout'].filter((slug) =>
+          slug.startsWith(prefix),
+        ),
+      run: () => {},
+    });
+
+    const result = console.complete('map tournament-');
+    expect(result.matches).toEqual(['tournament-desert', 'tournament-tundra']);
+    // Tab inserts the shared prefix, keeping the command name in front of it.
+    expect(result.common).toBe('map tournament-');
+
+    expect(console.complete('map w').common).toBe('map whiteout');
+  });
+
+  it('leaves a command with no completer alone', () => {
+    const console = createConsole();
+    console.register({ name: 'give', help: 'give', run: () => {} });
+    expect(console.complete('give 10').matches).toEqual([]);
+  });
+
+  it('does not complete past the first argument', () => {
+    const console = createConsole();
+    console.register({
+      name: 'map',
+      help: 'load a map',
+      complete: () => ['whiteout'],
+      run: () => {},
+    });
+    // Completing here would overwrite the text that follows.
+    expect(console.complete('map whiteout 7').matches).toEqual([]);
+  });
+});

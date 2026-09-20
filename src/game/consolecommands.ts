@@ -28,6 +28,14 @@ import type { World } from '../sim/world.ts';
 import { toFloat } from '../sim/fixed.ts';
 
 /** Everything the console needs from the running application. */
+/** One map the content pack offers. */
+export interface PackMap {
+  readonly slug: string;
+  readonly name: string;
+  readonly width: number;
+  readonly height: number;
+}
+
 export interface ConsoleGame {
   world(): World;
   match(): Match | null;
@@ -36,6 +44,13 @@ export interface ConsoleGame {
   /** Where the camera is looking, so `spawn` has somewhere to put things. */
   focus(): { x: number; z: number };
   localPlayer(): number;
+
+  /** Maps the content pack brought. Empty when there is no pack. */
+  availableMaps(): readonly PackMap[];
+  /** The slug of the loaded pack map, or '' for the built-in fixture. */
+  currentMap(): string;
+  /** Swap the world for a pack map. Resolves false if it could not load. */
+  loadMap(slug: string): Promise<boolean>;
 
   startMatch(seed?: number): void;
   stopMatch(): void;
@@ -126,14 +141,49 @@ export function registerGameCommands(console: GameConsole, game: ConsoleGame): v
 
   console.register({
     name: 'map',
-    help: 'Start a match on the loaded map. An integer argument seeds it.',
-    usage: 'map [seed]',
+    help:
+      'Start a match on the loaded map, or on a named one. With no arguments,' +
+      ' lists the maps the content pack brought.',
+    usage: 'map [name|seed]',
+    complete: (prefix) =>
+      game
+        .availableMaps()
+        .map((entry) => entry.slug)
+        .filter((slug) => slug.startsWith(prefix)),
     run({ args, print }) {
-      const seed = args[0] === undefined ? 1 : Number(args[0]);
-      if (!Number.isFinite(seed)) throw new Error('seed must be a number');
-      game.stopMatch();
-      game.startMatch(seed);
-      print(`started a match with seed ${seed}`);
+      const maps = game.availableMaps();
+
+      if (args.length === 0) {
+        if (maps.length === 0) {
+          print('no content pack maps; `map <seed>` starts on the loaded one');
+          return;
+        }
+        for (const entry of maps) {
+          const mark = entry.slug === game.currentMap() ? '*' : ' ';
+          print(`${mark} ${entry.slug}  ${entry.width}x${entry.height}  ${entry.name}`);
+        }
+        return;
+      }
+
+      // A bare number is a seed, the way this command has always worked; a
+      // name is a map to load. Nothing named a map after a number, and
+      // checking the list first would make `map 7` ambiguous forever.
+      const seed = Number(args[0]);
+      if (Number.isFinite(seed)) {
+        game.stopMatch();
+        game.startMatch(Math.trunc(seed));
+        print(`started a match with seed ${Math.trunc(seed)}`);
+        return;
+      }
+
+      const slug = String(args[0]);
+      if (!maps.some((entry) => entry.slug === slug)) {
+        throw new Error(`no such map: ${slug}`);
+      }
+      print(`loading ${slug}...`);
+      void game.loadMap(slug).then((loaded) => {
+        print(loaded ? `loaded ${slug}` : `could not load ${slug}`);
+      });
     },
   });
 

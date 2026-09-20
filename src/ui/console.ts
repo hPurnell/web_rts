@@ -67,6 +67,12 @@ export interface ConsoleCommandDef {
   /** Shown by `help <name>`, e.g. "give <minerals> [gas]". */
   readonly usage?: string;
   readonly cheat?: boolean;
+  /**
+   * Completions for the command's first argument. Without one, Tab after a
+   * command name does nothing, which is the right default: most arguments
+   * here are numbers or free text.
+   */
+  complete?(prefix: string): readonly string[];
   run(context: CommandContext): void;
 }
 
@@ -349,6 +355,25 @@ export function createConsole(host: ConsoleHost = {}): GameConsole {
     },
 
     complete(prefix) {
+      // Past the first word, the command being typed decides. `map <Tab>`
+      // should offer maps, not every command in the registry.
+      const separator = prefix.search(/\s/);
+      if (separator >= 0) {
+        const command = commands.get(prefix.slice(0, separator).toLowerCase());
+        const argument = prefix.slice(separator + 1);
+        // Only the first argument, and only while it is still the last word:
+        // completing into the middle of a line would overwrite what follows.
+        if (!command?.complete || /\s/.test(argument)) {
+          return { matches: [], common: prefix };
+        }
+        const matches = [...command.complete(argument)].sort();
+        const head = prefix.slice(0, separator + 1);
+        return {
+          matches,
+          common: matches.length > 0 ? head + commonPrefix(matches) : prefix,
+        };
+      }
+
       const lower = prefix.toLowerCase();
       const names = [
         ...commands.keys(),

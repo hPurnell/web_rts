@@ -37,6 +37,9 @@ function fakeGame(overrides: Partial<ConsoleGame> = {}): {
     selection: () => [],
     focus: () => ({ x: 0, z: 0 }),
     localPlayer: () => 0,
+    availableMaps: () => [],
+    currentMap: () => '',
+    loadMap: () => Promise.resolve(false),
     startMatch: count('startMatch'),
     stopMatch: count('stopMatch'),
     connect: count('connect'),
@@ -413,5 +416,79 @@ describe('the console panel', () => {
     const { view } = mountConsole();
     view.dispose();
     expect(overlay.querySelector('.console')).toBeNull();
+  });
+});
+
+describe('choosing a map', () => {
+  const MAPS = [
+    { slug: 'tournament-tundra', name: 'tournament tundra', width: 269, height: 269 },
+    { slug: 'whiteout', name: 'whiteout', width: 419, height: 419 },
+  ];
+
+  it('offers nothing to choose when there is no content pack', () => {
+    // One map — the built-in fixture — and a dropdown with a single entry in
+    // it is worse than no dropdown.
+    const { menu } = mount();
+    menu.open('skirmish');
+    expect(overlay.querySelectorAll('select')).toHaveLength(0);
+  });
+
+  it('lists the pack maps, with the loaded one selected', () => {
+    const { menu } = mount({ availableMaps: () => MAPS, currentMap: () => 'whiteout' });
+    menu.open('skirmish');
+    const select = overlay.querySelector('select') as HTMLSelectElement;
+    expect([...select.options].map((option) => option.value)).toEqual([
+      'tournament-tundra',
+      'whiteout',
+    ]);
+    expect(select.value).toBe('whiteout');
+  });
+
+  it('starts on the loaded map without reloading it', async () => {
+    const loaded: string[] = [];
+    const { menu, calls } = mount({
+      availableMaps: () => MAPS,
+      currentMap: () => 'whiteout',
+      loadMap: (slug) => {
+        loaded.push(slug);
+        return Promise.resolve(true);
+      },
+    });
+    menu.open('skirmish');
+    click('Start');
+    await Promise.resolve();
+    expect(loaded).toEqual([]);
+    expect(calls['startMatch']).toBe(1);
+  });
+
+  it('loads a different map before starting, not after', async () => {
+    const order: string[] = [];
+    let finishLoad = (): void => {};
+    const { menu } = mount({
+      availableMaps: () => MAPS,
+      currentMap: () => 'whiteout',
+      loadMap: (slug) => {
+        order.push(`load ${slug}`);
+        return new Promise<boolean>((resolve) => {
+          finishLoad = () => resolve(true);
+        });
+      },
+      startMatch: () => {
+        order.push('start');
+      },
+    });
+    menu.open('skirmish');
+
+    const select = overlay.querySelector('select') as HTMLSelectElement;
+    select.value = 'tournament-tundra';
+    select.dispatchEvent(new Event('change'));
+
+    click('Start');
+    // The match must not start on the world that is about to be replaced.
+    expect(order).toEqual(['load tournament-tundra']);
+
+    finishLoad();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(order).toEqual(['load tournament-tundra', 'start']);
   });
 });

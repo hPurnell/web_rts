@@ -65,7 +65,7 @@ import { createConsole } from './ui/console.ts';
 import { createConsoleView } from './ui/consoleview.ts';
 import { createMainMenu } from './ui/menu.ts';
 import { registerGameCommands } from './game/consolecommands.ts';
-import type { ConsoleGame } from './game/consolecommands.ts';
+import type { ConsoleGame, PackMap } from './game/consolecommands.ts';
 import { createHud } from './ui/hud.ts';
 import type { CommandAction } from './ui/hud.ts';
 import { createMinimap } from './ui/minimap.ts';
@@ -133,6 +133,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   /** A map's scenery, replaced wholesale when another map loads. */
   let doodads: DoodadRenderer | null = null;
   let roads: RoadRenderer | null = null;
+  /** What the content pack offers, empty when there is no pack. */
+  let packMaps: PackMap[] = [];
+  let currentMap = '';
   const renderer = createRenderer(canvas);
   const input = attachInput(canvas);
   const overlay = createDevOverlay(overlayRoot);
@@ -991,6 +994,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     focus: () => ({ x: camera.focusX, z: camera.focusZ }),
     localPlayer: () => (lockstep ? netPlayer : LOCAL_PLAYER),
 
+    availableMaps: () => packMaps,
+    currentMap: () => currentMap,
+    loadMap: (slug) => loadPackMap(slug),
+
     startMatch,
     stopMatch,
     connect: (url, matchId) => void joinMatch(url, matchId),
@@ -1097,7 +1104,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   // up cost a working multiplayer check and a confusing temporal-dead-zone
   // error that named the console rather than the URL parameter.
   // ---------------------------------------------------------------------
-  // A content pack may also bring a map, with its own lighting.
+  // A content pack may also bring maps, with their own lighting.
   void (async () => {
     if (!import.meta.env.DEV) return;
     // Never while joining a relay. This swaps the world out asynchronously,
@@ -1106,43 +1113,73 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     // slower. A networked match gets the map it booted with.
     if (new URLSearchParams(window.location.search).get('relay')) return;
     try {
-      const baseUrl = CONTENT_PACK_URL;
-      const index = await fetch(`${baseUrl}/maps/index.json`);
+      const index = await fetch(`${CONTENT_PACK_URL}/maps/index.json`);
       if (!index.ok) return;
-      const listing = (await index.json()) as { default?: string };
-      const slug = listing.default;
-      if (!slug) return;
-
-      const [mapResponse, metaResponse] = await Promise.all([
-        fetch(`${baseUrl}/maps/${slug}.rtsmap`),
-        fetch(`${baseUrl}/maps/${slug}.json`),
-      ]);
-      if (!mapResponse.ok) return;
-
-      const { decodeMap } = await import('./editor/mapfile.ts');
-      loadWorld(decodeMap(new Uint8Array(await mapResponse.arrayBuffer())));
-      // The editor holds the World it mounted with, so it has to be rebound or
-      // it goes on reporting the fixture's size and contents.
-      void mode.remount();
-
-      if (metaResponse.ok) {
-        const meta = (await metaResponse.json()) as {
-          name?: string;
-          lighting?: Parameters<typeof applyMapLighting>[0];
-          palette?: { ground: number[]; cliff: number[] };
-          doodads?: DoodadPlacement[];
-          roads?: RoadPolyline[];
-        };
-        if (meta.lighting) applyMapLighting(meta.lighting);
-        if (meta.palette) setTerrainPalette(terrainMaterial, meta.palette.ground, meta.palette.cliff);
-        if (meta.name) overlay.set('map', meta.name);
-        if (meta.doodads?.length) await loadDoodads(baseUrl, meta.doodads);
-        if (meta.roads?.length) await loadRoads(baseUrl, meta.roads);
-      }
+      const listing = (await index.json()) as {
+        maps?: PackMap[];
+        default?: string;
+      };
+      packMaps = listing.maps ?? [];
+      menu.refresh();
+      if (listing.default) await loadPackMap(listing.default);
     } catch {
       // No pack, or a bad one: the fixture map is already loaded.
     }
   })();
+
+  /**
+   * Swap the world for one of the content pack's maps.
+   *
+   * Everything a map brings arrives together — terrain, lighting, palette,
+   * scenery and roads — because they are only consistent with each other. A
+   * world loaded without its palette is an imported map wearing the fixture's
+   * colours, which looks like a broken import rather than a half-finished
+   * load.
+   *
+   * Any match running is stopped first. A match holds indices into the unit
+   * store and cells of the world it started on, so carrying one across a map
+   * change is meaningless at best.
+   */
+  async function loadPackMap(slug: string): Promise<boolean> {
+    const [mapResponse, metaResponse] = await Promise.all([
+      fetch(`${CONTENT_PACK_URL}/maps/${slug}.rtsmap`),
+      fetch(`${CONTENT_PACK_URL}/maps/${slug}.json`),
+    ]);
+    if (!mapResponse.ok) return false;
+
+    const { decodeMap } = await import('./editor/mapfile.ts');
+    stopMatch();
+    loadWorld(decodeMap(new Uint8Array(await mapResponse.arrayBuffer())));
+    // The editor holds the World it mounted with, so it has to be rebound or
+    // it goes on reporting the previous map's size and contents.
+    void mode.remount();
+
+    doodads?.dispose();
+    doodads = null;
+    roads?.dispose();
+    roads = null;
+    overlay.set('doodads', '');
+    overlay.set('roads', '');
+
+    if (metaResponse.ok) {
+      const meta = (await metaResponse.json()) as {
+        name?: string;
+        lighting?: Parameters<typeof applyMapLighting>[0];
+        palette?: { ground: number[]; cliff: number[] };
+        doodads?: DoodadPlacement[];
+        roads?: RoadPolyline[];
+      };
+      if (meta.lighting) applyMapLighting(meta.lighting);
+      if (meta.palette) setTerrainPalette(terrainMaterial, meta.palette.ground, meta.palette.cliff);
+      overlay.set('map', meta.name ?? slug);
+      if (meta.doodads?.length) await loadDoodads(CONTENT_PACK_URL, meta.doodads);
+      if (meta.roads?.length) await loadRoads(CONTENT_PACK_URL, meta.roads);
+    }
+
+    currentMap = slug;
+    menu.refresh();
+    return true;
+  }
 
   /**
    * Lay a map's roads over the terrain.

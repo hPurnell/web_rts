@@ -91,6 +91,9 @@ export function createMainMenu(context: MenuContext): MainMenu {
   // coming back does not lose what was typed.
   let seed = String(Math.floor(Date.now() % 100000));
   let relayUrl = 'ws://localhost:8787';
+  /** The map the Start button will load, empty for whatever is already up. */
+  let chosenMap = '';
+  let loadingMap = false;
   let matchId = 'default';
 
   const textField = (
@@ -110,6 +113,31 @@ export function createMainMenu(context: MenuContext): MainMenu {
     // Arrow keys belong to the text box while it has focus, not to the menu.
     disposer.listen(input, 'keydown', (event) => event.stopPropagation());
     row.append(caption, input);
+    return row;
+  };
+
+  const selectField = (
+    label: string,
+    options: readonly { value: string; text: string }[],
+    selected: string,
+    onChange: (value: string) => void,
+  ): HTMLElement => {
+    const row = document.createElement('label');
+    row.className = 'menu-field';
+    const caption = document.createElement('span');
+    caption.textContent = label;
+    const select = document.createElement('select');
+    for (const option of options) {
+      const element = document.createElement('option');
+      element.value = option.value;
+      element.textContent = option.text;
+      if (option.value === selected) element.selected = true;
+      select.appendChild(element);
+    }
+    disposer.listen(select, 'change', () => onChange(select.value));
+    // Arrows belong to the dropdown while it has focus, not to the menu.
+    disposer.listen(select, 'keydown', (event) => event.stopPropagation());
+    row.append(caption, select);
     return row;
   };
 
@@ -231,20 +259,69 @@ export function createMainMenu(context: MenuContext): MainMenu {
   }
 
   function buildSkirmish(): MenuItem[] {
+    const maps = game.availableMaps();
+
+    // Only offered when a content pack brought maps. With no pack there is one
+    // map — the built-in fixture — and a dropdown with a single entry is
+    // worse than no dropdown.
+    if (maps.length > 0) {
+      fields.appendChild(
+        selectField(
+          'Map',
+          maps.map((entry) => ({
+            value: entry.slug,
+            text: `${entry.name}  (${entry.width}x${entry.height})`,
+          })),
+          chosenMap || game.currentMap(),
+          (value) => {
+            chosenMap = value;
+            // Re-render so Start's hint says what it will actually do. The
+            // dropdown has already closed by the time this fires, so rebuilding
+            // the fields costs nothing visible.
+            render();
+          },
+        ),
+      );
+    }
+
     fields.appendChild(
       textField('Seed', seed, (value) => {
         seed = value;
       }),
     );
+
+    // Read at activation as well as here: the dropdown writes `chosenMap`,
+    // and a closure that captured it at build time would start a match on the
+    // map that was showing when the screen was drawn.
+    const pendingMap = (): string =>
+      chosenMap && chosenMap !== game.currentMap() ? chosenMap : '';
+
     return [
       {
         label: 'Start',
-        hint: 'Begin a match on the loaded map',
-        enabled: true,
+        hint: pendingMap() ? `Load ${pendingMap()} and begin` : 'Begin a match on the loaded map',
+        enabled: !loadingMap,
         activate: () => {
           const parsed = Number(seed);
+          const startSeed = Number.isFinite(parsed) ? Math.trunc(parsed) : 1;
+          const pending = pendingMap();
+
+          // Loading a map swaps the world out, so the match has to start after
+          // it lands rather than on the world that is about to be replaced.
+          if (pending) {
+            loadingMap = true;
+            render();
+            void game.loadMap(pending).finally(() => {
+              loadingMap = false;
+              game.stopMatch();
+              game.startMatch(startSeed);
+              menu.close();
+            });
+            return;
+          }
+
           game.stopMatch();
-          game.startMatch(Number.isFinite(parsed) ? Math.trunc(parsed) : 1);
+          game.startMatch(startSeed);
           menu.close();
         },
       },
