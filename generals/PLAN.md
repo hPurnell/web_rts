@@ -23,6 +23,33 @@ It is not a Generals clone and not a remaster. The target is roughly:
 - **Two maps**, authored in this project's own editor
 - Enough rules to make a twenty-minute skirmish against the existing bot
 
+### The two factions
+
+**NATO** and the **Eastern Axis**, and everything in them is named after the
+real vehicle it most resembles rather than after its Generals original. A
+Crusader is an *M1A2 Abrams*; a Humvee is an *HMMWV*; a Battlemaster is a
+*T-54*. This is not only flavour — it decides what the game is about, and
+"Crusader versus Scorpion" says nothing while "Abrams versus T-72" says quite a
+lot.
+
+The Eastern Axis deliberately mixes the game's China and GLA art. Soviet-pattern
+armour fights alongside improvised technicals, which is what a modern war
+between a conventional army and a partly-improvised one actually looks like —
+Ukraine being the obvious reference. The GLA models are what make that
+possible: a pickup with a ZU-23-2 bolted to the bed is not a Generals fantasy,
+it is a photograph.
+
+| Faction | Source art | Reads as |
+|---|---|---|
+| NATO | the game's USA models | uniform, expensive, few |
+| Eastern Axis | the game's China **and** GLA models | mixed, improvised, many |
+
+That asymmetry is the one **G10** should build on: it is already in the art, so
+the rules only have to agree with it.
+
+See `manifest/assets.json` for the mapping. Where no real counterpart is close
+enough, keep the honest generic — a `VBIED` is a VBIED.
+
 ---
 
 ## Ground rules
@@ -48,8 +75,8 @@ rather than relying on anyone remembering.
 5. **`generals/` does not leak into `src/`.** The engine gains *generic*
    extension points — a model registry, a content-pack loader — that know
    nothing about Generals. All Generals-specific code lives here. The test for
-   this is mechanical: `grep -rn "generals/" src/` returns nothing — no module
-   under `src/` may import from here. (Prose references are fine and one
+   this is mechanical: `grep -rn "from '.*generals" src/` returns nothing — no
+   module under `src/` may import from here. (Prose references are fine and one
    already exists: `src/sim/building.ts` cites Generals as the precedent for
    levelling a building's footprint.)
 
@@ -237,7 +264,7 @@ the meshes came from. Keep `createUnitRenderer`'s thin-instance path exactly as
 it is — swap the *source* of the mesh, not the instancing.
 
 **Done when:** with no content pack the game renders boxes as it does today;
-with one, it renders models; and `grep -rn "generals/" src/` is empty. Draw
+with one, it renders models; and no module under `src/` imports from here. Draw
 calls and frame time are within 20% of the M16 budget with 2,000 units.
 
 ### G6. Audio conversion
@@ -291,20 +318,35 @@ block vision where the flag says they do.
 `src/sim/data/units.json`. Two factions, around eight vehicles and six
 structures. Your numbers, not Generals'.
 
-A sensible starting shape, if you want one: a cheap scout, a main battle tank, a
-long-range artillery piece, an anti-air vehicle, and a transport per faction;
-command centre, power plant, barracks-equivalent, war factory, defensive
-structure, and a resource collector.
+The art is already converted and named, so this milestone is mostly deciding
+what each vehicle does:
+
+| NATO | Eastern Axis | Role |
+|---|---|---|
+| M1A2 Abrams | T-54, T-62, T-72B | armour |
+| HMMWV | ZU-23-2 technical | scout |
+| M142 HIMARS | BM-21 Grad | rocket artillery |
+| M109 Paladin | 9K72 Elbrus | long range |
+| — | ZSU-23-4 Shilka | anti-air |
+| — | VBIED | improvised demolition |
+
+The Eastern Axis has more entries on purpose: it should field more, cheaper,
+less uniform vehicles, and the roster is where that stops being a look and
+becomes a way to play.
 
 **Done when:** the roster loads, every entry has a model and a sound, and the
 determinism harness still passes — because none of this touched `src/sim/`.
 
 ### G10. Faction asymmetry
 
-The smallest thing that makes two factions feel different rather than recoloured.
-Pick one axis and commit to it: one faction's units cost more and hit harder,
-the other's are cheap and fast. Resist adding special abilities until the
-symmetric version is fun.
+The art has already chosen the axis: NATO is uniform, expensive and few; the
+Eastern Axis is mixed, improvised and many. Make the numbers agree with it and
+stop there. Resist adding special abilities until the plain version is fun.
+
+The one Eastern Axis unit worth a rule of its own is the VBIED, because a
+one-shot vehicle that trades itself for a building is a *decision* rather than a
+statistic, and it is the single thing that makes the faction play differently
+rather than merely cost differently.
 
 **Done when:** a bot-versus-bot match between the two factions runs to a
 conclusion and the golden replay is reproducible.

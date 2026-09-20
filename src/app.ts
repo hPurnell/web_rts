@@ -34,6 +34,8 @@ import { describeFlags, pickCell, screenRay } from './render/pick.ts';
 import { FLAG_LAYERS, createFlagOverlay } from './render/flagoverlay.ts';
 import { createGizmos } from './render/gizmos.ts';
 import { createUnitRenderer, groundHeightAt } from './render/units.ts';
+import { loadContentPack } from './render/models.ts';
+import type { ContentPackEntry } from './render/models.ts';
 import { createGhostRenderer } from './render/ghosts.ts';
 import { EXPLORED_DIM, createFogTexture } from './render/fogtexture.ts';
 import { setTerrainFog, setTerrainFogSoftness } from './render/terrainMaterial.ts';
@@ -75,6 +77,13 @@ const SAVE_REPLAY_KEY = 'F6';
 const LOAD_REPLAY_KEY = 'F7';
 /** Where archived cvars and key binds are kept between sessions. */
 const CONFIG_KEY = 'web_rts.config';
+/**
+ * Where an optional content pack is served from.
+ *
+ * Served by a dev-only Vite middleware (see vite.config.ts), so a production
+ * build cannot include it however it is run. Absent, units stay boxes.
+ */
+const CONTENT_PACK_URL = '/generals-assets';
 
 export interface App {
   /** The map currently loaded. Replaced when the editor opens a file. */
@@ -157,7 +166,45 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   let costGrid: CostGrid = createCostGrid(world);
   const nav: NavClient = createNavClient(createWorkerTransport());
   nav.setGrid(costGrid);
-  const unitRenderer = createUnitRenderer(renderer.scene);
+  /**
+   * Units render as placeholder boxes until a content pack replaces them.
+   *
+   * The pack is optional and loads over the network, so the renderer is built
+   * immediately without it and swapped when it arrives. Building the boxes
+   * first rather than awaiting means a missing or slow pack costs a few frames
+   * of placeholder geometry instead of a blank screen, which is the behaviour
+   * `generals/PLAN.md` ground rule 3 asks for: absent the pack, the game runs
+   * exactly as it does today.
+   */
+  let unitRenderer = createUnitRenderer(renderer.scene);
+
+  void (async () => {
+    // Development only, and structurally so. The pack is served by a Vite dev
+    // middleware, so a production build has nothing to fetch — and probing for
+    // it there would log a 404 to the console, which `check:browser` rightly
+    // treats as a failure. `import.meta.env.DEV` is replaced with `false` at
+    // build time, so this whole block is dropped from the shipped bundle.
+    if (!import.meta.env.DEV) return;
+
+    const baseUrl = CONTENT_PACK_URL;
+    let entries: ContentPackEntry[];
+    try {
+      const response = await fetch(`${baseUrl}/pack.json`);
+      if (!response.ok) return; // no pack installed: boxes it is
+      entries = ((await response.json()) as { entries: ContentPackEntry[] }).entries;
+    } catch {
+      return;
+    }
+    if (entries.length === 0) return;
+
+    const models = await loadContentPack(renderer.scene, { baseUrl, entries });
+    if (models.size === 0) return;
+
+    const replacement = createUnitRenderer(renderer.scene, models);
+    unitRenderer.dispose();
+    unitRenderer = replacement;
+    overlay.set('models', `${models.size} loaded`);
+  })();
   const ghostRenderer = createGhostRenderer(renderer.scene);
   const selectionRings = createSelectionRings(renderer.scene);
   let fogTexture = createFogTexture(renderer.scene, world.width, world.height);

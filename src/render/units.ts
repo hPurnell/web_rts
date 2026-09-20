@@ -17,6 +17,8 @@
 import '@babylonjs/core/Meshes/thinInstanceMesh';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
+import { buildPartMesh } from './models.ts';
+import type { LoadedModel } from './models.ts';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Scene } from '@babylonjs/core/scene';
@@ -79,6 +81,11 @@ interface InstanceGroup {
   readonly hull: Mesh;
   /** Null for types whose weapon does not rotate, such as workers. */
   readonly turret: Mesh | null;
+  /** How far above the ground each part's origin sits, in world units. */
+  readonly hullLift: number;
+  readonly turretLift: number;
+  /** How strongly the player colour tints this group, 0 none to 1 fully. */
+  readonly tintStrength: number;
   /** Scratch buffers, grown on demand and reused between frames. */
   hullData: Float32Array;
   turretData: Float32Array;
@@ -111,6 +118,15 @@ export interface UnitRenderer {
 
 const FLOATS_PER_MATRIX = 16;
 
+/**
+ * How much of the player colour a textured model takes.
+ *
+ * Enough to tell two armies apart at a glance, little enough that the art still
+ * looks like the vehicle it is. Placeholder boxes keep the full colour, because
+ * a box has nothing else to look at.
+ */
+const MODEL_TINT = 0.3;
+
 function makePart(
   scene: Scene,
   name: string,
@@ -130,7 +146,7 @@ function makePart(
   return mesh;
 }
 
-export function createUnitRenderer(scene: Scene): UnitRenderer {
+export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, LoadedModel>): UnitRenderer {
   // One material for every unit. Player colour rides on a per-instance colour
   // buffer instead of a material per player, so the draw-call count depends on
   // how many unit *types* are on screen and not on how many players are in the
@@ -140,14 +156,31 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
   material.emissiveColor = new Color3(0.22, 0.22, 0.22);
   material.specularColor = new Color3(0.15, 0.15, 0.16);
 
-  /** One group per unit type; owner is a per-instance colour. */
+  /**
+   * One group per unit type; owner is a per-instance colour.
+   *
+   * A registered model replaces the placeholder box for that type and brings
+   * its own material. The draw-call count does not move: it was one per type
+   * per part before and it is one per type per part now, because a model still
+   * draws as a single thin-instanced mesh.
+   */
   const groups: InstanceGroup[] = UNIT_TYPES.map((type, typeId) => {
     const radius = toFloat(type.radius);
+    const model = models?.get(type.id);
     return {
-      hull: makePart(scene, `hull_t${typeId}`, hullShape(radius, type.footprint), material),
-      turret: type.hasTurret
-        ? makePart(scene, `turret_t${typeId}`, turretShape(radius), material)
-        : null,
+      hull: model
+        ? buildPartMesh(scene, `hull_t${typeId}`, model.hull)
+        : makePart(scene, `hull_t${typeId}`, hullShape(radius, type.footprint), material),
+      turret: model?.turret
+        ? buildPartMesh(scene, `turret_t${typeId}`, model.turret)
+        : type.hasTurret && !model
+          ? makePart(scene, `turret_t${typeId}`, turretShape(radius), material)
+          : null,
+      // A model's parts are already positioned relative to the ground and to
+      // the turret pivot by the pipeline, so they need no extra lift.
+      hullLift: model ? 0 : hullShape(radius, type.footprint).lift,
+      turretLift: model ? model.turretOffsetY : turretShape(radius).lift,
+      tintStrength: model ? MODEL_TINT : 1,
       hullData: new Float32Array(0),
       turretData: new Float32Array(0),
       colorData: new Float32Array(0),
@@ -353,17 +386,14 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
         normalZ[i] = upZ;
 
         const offset = group.count * FLOATS_PER_MATRIX;
-        const unitKind = UNIT_TYPES[units.typeId[i] as number];
-        const radius = toFloat(unitKind?.radius ?? 0);
-        const lift = hullShape(radius, unitKind?.footprint ?? 0).lift;
-        writeMatrix(group.hullData, offset, x, y + lift, z, sin, cos, upX, upY, upZ);
+        writeMatrix(group.hullData, offset, x, y + group.hullLift, z, sin, cos, upX, upY, upZ);
         if (group.turret) {
           // The turret shares the hull's footing, so it leans with it.
           writeMatrix(
             group.turretData,
             offset,
             x,
-            y + turretShape(radius).lift,
+            y + group.turretLift,
             z,
             sin,
             cos,
@@ -373,11 +403,18 @@ export function createUnitRenderer(scene: Scene): UnitRenderer {
           );
         }
 
+        // The instance colour multiplies the material, which is how one mesh
+        // serves every player. A placeholder box wants the player colour at
+        // full strength; a textured model does not — multiplying desert tan by
+        // saturated blue gives a near-black vehicle, which is exactly what it
+        // looked like. Models get the colour pulled most of the way to white,
+        // so the art reads and the team is still legible.
         const color = PLAYER_COLORS[units.ownerId[i] as number] ?? PLAYER_COLORS[0];
+        const tint = group.tintStrength;
         const colorOffset = group.count * 4;
-        group.colorData[colorOffset] = color?.r ?? 1;
-        group.colorData[colorOffset + 1] = color?.g ?? 1;
-        group.colorData[colorOffset + 2] = color?.b ?? 1;
+        group.colorData[colorOffset] = 1 - tint * (1 - (color?.r ?? 1));
+        group.colorData[colorOffset + 1] = 1 - tint * (1 - (color?.g ?? 1));
+        group.colorData[colorOffset + 2] = 1 - tint * (1 - (color?.b ?? 1));
         group.colorData[colorOffset + 3] = 1;
 
         group.count++;

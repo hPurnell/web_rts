@@ -1,0 +1,243 @@
+/**
+ * Loading unit models from a content pack.
+ *
+ * Generic on purpose: this knows about glTF and about the engine's hull-and-
+ * turret convention, and nothing whatever about where the art came from. The
+ * Generals pipeline is one possible producer and lives entirely outside `src/`.
+ *
+ * **The glTF reader here is deliberately narrow.** It handles the exact shape
+ * the pipeline emits — one mesh, one primitive, `POSITION`, `NORMAL`,
+ * `TEXCOORD_0` and `SCALAR` indices in a side-car `.bin` — and refuses anything
+ * else. A general loader is `@babylonjs/loaders`, which is a few hundred
+ * kilobytes of bundle for features a rigid RTS part never uses. Writing to a
+ * format that standard tools can inspect is worth it; shipping a parser for
+ * all of it is not.
+ */
+import { Mesh } from '@babylonjs/core/Meshes/mesh';
+import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
+import { Texture } from '@babylonjs/core/Materials/Textures/texture';
+import { Color3 } from '@babylonjs/core/Maths/math.color';
+import type { Scene } from '@babylonjs/core/scene';
+
+/** One loaded part: geometry plus the material its texture is on. */
+export interface LoadedPart {
+  readonly vertexData: VertexData;
+  readonly material: StandardMaterial;
+}
+
+export interface LoadedModel {
+  readonly hull: LoadedPart;
+  readonly turret?: LoadedPart;
+  /** How far above the ground the turret's origin sits, in world units. */
+  readonly turretOffsetY: number;
+}
+
+/** What a content pack declares. */
+export interface ContentPackEntry {
+  /** The engine unit type id this model is for, e.g. `raider`. */
+  readonly unitType: string;
+  readonly hull: string;
+  readonly turret?: string;
+  readonly texture: string;
+  readonly turretOffsetY?: number;
+}
+
+export interface ContentPack {
+  readonly baseUrl: string;
+  readonly entries: readonly ContentPackEntry[];
+}
+
+interface GltfAccessor {
+  bufferView: number;
+  componentType: number;
+  count: number;
+  type: string;
+}
+
+interface GltfDocument {
+  meshes: { primitives: { attributes: Record<string, number>; indices: number }[] }[];
+  accessors: GltfAccessor[];
+  bufferViews: { buffer: number; byteOffset: number; byteLength: number }[];
+  buffers: { uri: string; byteLength: number }[];
+}
+
+const FLOAT = 5126;
+const UNSIGNED_INT = 5125;
+const UNSIGNED_SHORT = 5123;
+
+function readAccessor(
+  doc: GltfDocument,
+  bin: ArrayBuffer,
+  index: number,
+): Float32Array | Uint32Array {
+  const accessor = doc.accessors[index];
+  if (!accessor) throw new Error(`glTF: no accessor ${index}`);
+  const view = doc.bufferViews[accessor.bufferView];
+  if (!view) throw new Error(`glTF: accessor ${index} has no bufferView`);
+
+  const components = accessor.type === 'VEC3' ? 3 : accessor.type === 'VEC2' ? 2 : 1;
+  const count = accessor.count * components;
+
+  if (accessor.componentType === FLOAT) {
+    return new Float32Array(bin.slice(view.byteOffset, view.byteOffset + view.byteLength), 0, count);
+  }
+  if (accessor.componentType === UNSIGNED_INT) {
+    return new Uint32Array(bin.slice(view.byteOffset, view.byteOffset + view.byteLength), 0, count);
+  }
+  if (accessor.componentType === UNSIGNED_SHORT) {
+    const shorts = new Uint16Array(
+      bin.slice(view.byteOffset, view.byteOffset + view.byteLength),
+      0,
+      count,
+    );
+    return Uint32Array.from(shorts);
+  }
+  throw new Error(`glTF: unsupported componentType ${accessor.componentType}`);
+}
+
+async function loadPart(
+  baseUrl: string,
+  file: string,
+  material: StandardMaterial,
+): Promise<LoadedPart> {
+  const response = await fetch(`${baseUrl}/${file}`);
+  if (!response.ok) throw new Error(`${file}: ${response.status}`);
+  const doc = (await response.json()) as GltfDocument;
+
+  const primitive = doc.meshes[0]?.primitives[0];
+  if (!primitive) throw new Error(`${file}: no primitive`);
+
+  const buffer = doc.buffers[0];
+  if (!buffer) throw new Error(`${file}: no buffer`);
+  // A glTF buffer URI is relative to the glTF file, not to the pack root.
+  // Resolving it against the root finds nothing for any model in a
+  // subdirectory, which is every model the pipeline emits.
+  const dir = file.includes('/') ? file.slice(0, file.lastIndexOf('/') + 1) : '';
+  const binResponse = await fetch(`${baseUrl}/${dir}${buffer.uri}`);
+  if (!binResponse.ok) throw new Error(`${buffer.uri}: ${binResponse.status}`);
+  const bin = await binResponse.arrayBuffer();
+
+  const vertexData = new VertexData();
+
+  // glTF is right-handed; Babylon's scene is left-handed. Babylon's own glTF
+  // importer converts on the way in, and this narrow reader has to do the same
+  // job by hand: negate z, and reverse triangle winding to undo the flip that
+  // negating one axis causes.
+  //
+  // Skipping it does not look like a handedness bug. Every face ends up
+  // back-facing, so back-face culling hides the outside of the model and
+  // leaves you looking at its unlit interior — which reads as "the texture did
+  // not load" and sends you off to check the atlas.
+  const positions = Array.from(readAccessor(doc, bin, primitive.attributes['POSITION'] as number));
+  for (let i = 2; i < positions.length; i += 3) positions[i] = -(positions[i] as number);
+  vertexData.positions = positions;
+
+  const normal = primitive.attributes['NORMAL'];
+  if (normal !== undefined) {
+    const normals = Array.from(readAccessor(doc, bin, normal));
+    for (let i = 2; i < normals.length; i += 3) normals[i] = -(normals[i] as number);
+    vertexData.normals = normals;
+  }
+
+  const uv = primitive.attributes['TEXCOORD_0'];
+  if (uv !== undefined) vertexData.uvs = Array.from(readAccessor(doc, bin, uv));
+
+  const indices = Array.from(readAccessor(doc, bin, primitive.indices));
+  for (let i = 0; i + 2 < indices.length; i += 3) {
+    const swap = indices[i + 1] as number;
+    indices[i + 1] = indices[i + 2] as number;
+    indices[i + 2] = swap;
+  }
+  vertexData.indices = indices;
+
+  return { vertexData, material };
+}
+
+/**
+ * Load a content pack.
+ *
+ * Returns what loaded rather than throwing: a pack with one bad model should
+ * put the rest on screen and leave that unit as a placeholder box, which is
+ * how you find out which one is broken.
+ */
+export async function loadContentPack(
+  scene: Scene,
+  pack: ContentPack,
+): Promise<Map<string, LoadedModel>> {
+  const models = new Map<string, LoadedModel>();
+  const materials = new Map<string, StandardMaterial>();
+
+  for (const entry of pack.entries) {
+    try {
+      let material = materials.get(entry.texture);
+      if (!material) {
+        material = new StandardMaterial(`pack_${entry.texture}`, scene);
+        const texture = new Texture(
+          `${pack.baseUrl}/${entry.texture}`,
+          scene,
+          true,
+          // Textures converted from the game are stored top-row-first, which is
+          // glTF's convention and the opposite of Babylon's default.
+          false,
+        );
+        material.diffuseTexture = texture;
+        material.specularColor = new Color3(0.08, 0.08, 0.09);
+
+        // Two-sided lighting, and no back-face culling with it.
+        //
+        // The source art does not have a consistent normal convention across
+        // the sub-meshes of one vehicle — it was authored for a fixed-function
+        // DirectX pipeline that did not care, and merging a dozen W3D
+        // sub-objects into a single mesh is what exposes it. Without this the
+        // vehicles are lit by the hemispheric light's *ground* colour, which
+        // is a dark blue, so they render almost black and look for all the
+        // world like the texture failed to load.
+        //
+        // Ruled out on the way here, all verified rather than assumed: the
+        // texture decodes correctly, the UVs are in range, the geometry and
+        // scale are right, mipmaps are not to blame, and the mirrored-part
+        // correction in the converter (which is right regardless) does not
+        // account for it either. This is a remedy for inconsistent source
+        // normals, not a root-cause fix; the root cause is in the art.
+        material.backFaceCulling = false;
+        material.twoSidedLighting = true;
+        // The models carry their own baked shading; a strong specular on top
+        // makes them read as plastic.
+        material.emissiveColor = new Color3(0.18, 0.18, 0.18);
+        materials.set(entry.texture, material);
+      }
+
+      const hull = await loadPart(pack.baseUrl, entry.hull, material);
+      const turret = entry.turret
+        ? await loadPart(pack.baseUrl, entry.turret, material)
+        : undefined;
+
+      models.set(entry.unitType, {
+        hull,
+        ...(turret ? { turret } : {}),
+        turretOffsetY: entry.turretOffsetY ?? 0,
+      });
+    } catch (error) {
+      console.warn(
+        `content pack: ${entry.unitType} left as a placeholder — ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  return models;
+}
+
+/** Build a mesh from a loaded part, ready for thin instancing. */
+export function buildPartMesh(scene: Scene, name: string, part: LoadedPart): Mesh {
+  const mesh = new Mesh(name, scene);
+  part.vertexData.applyToMesh(mesh, false);
+  mesh.material = part.material;
+  mesh.isPickable = false;
+  mesh.thinInstanceEnablePicking = false;
+  mesh.alwaysSelectAsActiveMesh = true;
+  mesh.setEnabled(false);
+  return mesh;
+}

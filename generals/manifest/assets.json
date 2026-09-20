@@ -1,13 +1,105 @@
 {
   "note": "Source file NAMES only, never content. A reference to a file on your disk, the way a .gitignore entry is. See ../PLAN.md ground rule 1.",
+  "factions": {
+    "nato": "NATO — Western equipment, drawn from the game's USA models.",
+    "ea": "Eastern Axis — Soviet-pattern armour and improvised technicals, drawn from the game's China and GLA models."
+  },
   "vehicles": [
-    { "id": "usa_crusader",  "faction": "usa", "model": "avcrusader.W3D" },
-    { "id": "usa_tomahawk",  "faction": "usa", "model": "avtomahawk.W3D" },
-    { "id": "usa_humvee",    "faction": "usa", "model": "CvHumVee.W3D" },
-    { "id": "gla_scorpion",  "faction": "gla", "model": "UVLiteTank.W3D" },
-    { "id": "gla_marauder",  "faction": "gla", "model": "UVMarauder.W3D" },
-    { "id": "gla_quadcannon","faction": "gla", "model": "UVQuadCann.W3D" },
-    { "id": "gla_rocketbuggy","faction": "gla","model": "UVRockBug.W3D" },
-    { "id": "gla_scud",      "faction": "gla", "model": "UVScudLchr.W3D" }
+    {
+      "id": "nato_abrams",
+      "name": "M1A2 Abrams",
+      "faction": "nato",
+      "role": "main battle tank",
+      "model": "avcrusader.W3D",
+      "unitType": "soldier"
+    },
+    {
+      "id": "nato_hmmwv",
+      "name": "HMMWV",
+      "faction": "nato",
+      "role": "scout",
+      "model": "CvHumVee.W3D",
+      "unitType": "raider"
+    },
+    {
+      "id": "nato_himars",
+      "name": "M142 HIMARS",
+      "faction": "nato",
+      "role": "rocket artillery",
+      "model": "avtomahawk.W3D",
+      "unitType": "siege"
+    },
+    {
+      "id": "nato_paladin",
+      "name": "M109 Paladin",
+      "faction": "nato",
+      "role": "self-propelled howitzer",
+      "model": "avPaladin.W3D"
+    },
+    {
+      "id": "nato_support",
+      "name": "M997 support vehicle",
+      "faction": "nato",
+      "role": "engineer",
+      "model": "AvAmbulance.W3D",
+      "unitType": "worker"
+    },
+
+    {
+      "id": "ea_t54",
+      "name": "T-54",
+      "faction": "ea",
+      "role": "main battle tank",
+      "model": "NVBtMstr.W3D"
+    },
+    {
+      "id": "ea_t62",
+      "name": "T-62",
+      "faction": "ea",
+      "role": "light tank",
+      "model": "UVLiteTank.W3D"
+    },
+    {
+      "id": "ea_t72",
+      "name": "T-72B",
+      "faction": "ea",
+      "role": "main battle tank",
+      "model": "UVMarauder.W3D"
+    },
+    {
+      "id": "ea_shilka",
+      "name": "ZSU-23-4 Shilka",
+      "faction": "ea",
+      "role": "anti-air",
+      "model": "NVGattTank.W3D"
+    },
+    {
+      "id": "ea_zu23",
+      "name": "ZU-23-2 technical",
+      "faction": "ea",
+      "role": "improvised anti-air",
+      "model": "UVQuadCann.W3D"
+    },
+    {
+      "id": "ea_grad",
+      "name": "BM-21 Grad",
+      "faction": "ea",
+      "role": "rocket artillery",
+      "model": "UVRockBug.W3D"
+    },
+    {
+      "id": "ea_scud",
+      "name": "9K72 Elbrus",
+      "faction": "ea",
+      "role": "ballistic missile",
+      "model": "UVScudLchr.W3D"
+    },
+    {
+      "id": "ea_vbied",
+      "name": "VBIED",
+      "faction": "ea",
+      "role": "improvised demolition",
+      "model": "UVBmbtruk.W3D"
+    }
   ]
 }

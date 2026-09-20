@@ -100,6 +100,29 @@ function transform(m: Mat4, v: Vec3): Vec3 {
   };
 }
 
+/**
+ * Determinant of a matrix's 3x3 part.
+ *
+ * Negative means the transform mirrors. Generals models use that freely — the
+ * left track is usually the right track with a negative scale on a bone — and
+ * a mirrored transform turns a mesh inside out: its winding reverses and its
+ * normals point into the hull. Merging such a part without correcting it
+ * leaves those faces lit from behind, which reads as a vehicle that is dark on
+ * top and lit underneath.
+ */
+function determinant3(m: Mat4): number {
+  const a = m[0] as number;
+  const b = m[4] as number;
+  const c = m[8] as number;
+  const d = m[1] as number;
+  const e = m[5] as number;
+  const f = m[9] as number;
+  const g = m[2] as number;
+  const h = m[6] as number;
+  const i = m[10] as number;
+  return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+}
+
 /** Rotation only, for normals. */
 function rotate(m: Mat4, v: Vec3): Vec3 {
   return {
@@ -167,6 +190,7 @@ function buildPart(
 
   for (const { mesh, matrix } of meshes) {
     const base = positions.length / 3;
+    const mirrored = determinant3(matrix) < 0;
     for (let i = 0; i < mesh.vertices.length; i++) {
       const world = transform(matrix, mesh.vertices[i] as Vec3);
       const local = { x: world.x - origin.x, y: world.y - origin.y, z: world.z - origin.z };
@@ -174,15 +198,22 @@ function buildPart(
       positions.push(p.x * MODEL_SCALE, p.y * MODEL_SCALE, p.z * MODEL_SCALE);
 
       const n = toGltfAxes(rotate(matrix, (mesh.normals[i] as Vec3) ?? { x: 0, y: 0, z: 1 }));
-      const length = Math.hypot(n.x, n.y, n.z) || 1;
+      const length = (Math.hypot(n.x, n.y, n.z) || 1) * (mirrored ? -1 : 1);
       normals.push(n.x / length, n.y / length, n.z / length);
 
       const uv = mesh.uvs[i] ?? { u: 0, v: 0 };
       const mapped = remapUv(mesh.textures[0] ?? '', uv.u, uv.v);
-      // W3D stores v with the origin at the bottom; glTF wants it at the top.
-      uvs.push(mapped.u, 1 - mapped.v);
+      uvs.push(mapped.u, mapped.v);
     }
-    for (const index of mesh.indices) indices.push(base + index);
+    // A mirrored part also has its winding reversed by the transform, so it
+    // is wound back here to keep the merged mesh consistently front-facing.
+    for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
+      const a = base + (mesh.indices[i] as number);
+      const b = base + (mesh.indices[i + 1] as number);
+      const c = base + (mesh.indices[i + 2] as number);
+      if (mirrored) indices.push(a, c, b);
+      else indices.push(a, b, c);
+    }
   }
 
   return { positions, normals, uvs, indices };
@@ -365,7 +396,10 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
   const boneOf = new Map<string, number>();
   for (const sub of subObjects) boneOf.set(sub.meshName.split('.').pop() ?? sub.meshName, sub.boneIndex);
 
-  const turretBone = pivots.findIndex((p) => /^TURRET$/i.test(p.name));
+  // `TURRET` on some models, `TURRET01` on others — the numbering is not
+  // consistent between factions, and matching only the bare name silently
+  // exported half the roster with its turret welded into the hull.
+  const turretBone = pivots.findIndex((p) => /^TURRET\d*$/i.test(p.name));
   const turretBones = turretBone >= 0 ? subtree(pivots, turretBone) : new Set<number>();
 
   const hull: { mesh: W3DMesh; matrix: Mat4 }[] = [];
@@ -433,7 +467,7 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
 }
 
 interface AssetManifest {
-  readonly vehicles: { id: string; model: string }[];
+  readonly vehicles: { id: string; model: string; unitType?: string }[];
 }
 
 async function main(): Promise<void> {
@@ -445,6 +479,8 @@ async function main(): Promise<void> {
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as AssetManifest;
 
   const converted: ConvertedModel[] = [];
+  const entries: Record<string, unknown>[] = [];
+
   for (const vehicle of manifest.vehicles) {
     const model = convertModel(index, vehicle.id, vehicle.model);
     if (!model) continue;
@@ -452,6 +488,18 @@ async function main(): Promise<void> {
     console.log(
       `  ${vehicle.id}: hull${model.turret ? ' + turret' : ''}, radius ${model.radius.toFixed(2)}`,
     );
+
+    // Only models bound to an engine unit type go in the pack; the rest are
+    // converted and sitting there for when the roster grows.
+    if (vehicle.unitType) {
+      entries.push({
+        unitType: vehicle.unitType,
+        hull: `models/${model.hull.gltf}`,
+        ...(model.turret ? { turret: `models/${model.turret.gltf}` } : {}),
+        texture: `models/${model.hull.texture}`,
+        ...(model.turret ? { turretOffsetY: model.turret.offsetY } : {}),
+      });
+    }
   }
 
   mkdirSync(ASSETS_DIR, { recursive: true });
@@ -459,7 +507,11 @@ async function main(): Promise<void> {
     join(ASSETS_DIR, 'models.json'),
     `${JSON.stringify({ models: converted }, null, 1)}\n`,
   );
-  console.log(`\nconverted ${converted.length} of ${manifest.vehicles.length} models`);
+  writeFileSync(join(ASSETS_DIR, 'pack.json'), `${JSON.stringify({ entries }, null, 1)}\n`);
+  console.log(
+    `\nconverted ${converted.length} of ${manifest.vehicles.length} models,` +
+      ` ${entries.length} bound to unit types`,
+  );
 }
 
 if (process.argv[1]?.endsWith('convert.ts')) void runTool(main);

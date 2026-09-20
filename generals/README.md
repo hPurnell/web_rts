@@ -3,6 +3,13 @@
 A small RTS built on this engine using art and audio from a local installation
 of *Command & Conquer: Generals* or *Zero Hour*.
 
+Two factions, **NATO** and the **Eastern Axis**, with everything named after the
+real vehicle it most resembles rather than its Generals original — an Abrams,
+an HMMWV, a T-54, a BM-21 Grad. The Eastern Axis mixes the game's China and GLA
+art on purpose, so Soviet-pattern armour fights alongside improvised
+technicals. See [PLAN.md](PLAN.md#the-two-factions) and
+`manifest/assets.json`.
+
 **This is for personal use and is never published.** Nothing derived from the
 game enters this repository: `assets/`, `.cache/` and `generals.local.json` are
 all gitignored, and the GitHub Pages deploy builds the base game only. A
@@ -48,11 +55,12 @@ a model registry, a content-pack loader — that know nothing about Generals, an
 everything game-specific lives here. The check is mechanical:
 
 ```
-grep -rn "generals/" src/      # must return nothing
+grep -rn "from '.*generals" src/    # must return nothing
 ```
 
-That greps for *imports*, not the word: `src/sim/building.ts` mentions Generals
-in a comment about footprint levelling, which is a design citation and fine.
+That greps for *imports*, not the word. Comments may mention Generals and two
+already do: `src/sim/building.ts` cites it as the precedent for footprint
+levelling, and `src/app.ts` cites this plan for the content pack fallback.
 
 The base game must also build and pass its whole suite with no installation
 present. The content pack is additive: absent it, the game runs on placeholder
