@@ -80,10 +80,12 @@ const CONFIG_KEY = 'web_rts.config';
 /**
  * Where an optional content pack is served from.
  *
- * Served by a dev-only Vite middleware (see vite.config.ts), so a production
- * build cannot include it however it is run. Absent, units stay boxes.
+ * Deliberately not named after any particular pack: `src/` is generic, and the
+ * only thing it knows is that models may be served here. Served by a dev-only
+ * Vite middleware (see vite.config.ts), so a production build cannot include
+ * one however it is run. Absent, units stay boxes.
  */
-const CONTENT_PACK_URL = '/generals-assets';
+const CONTENT_PACK_URL = '/content-pack';
 
 export interface App {
   /** The map currently loaded. Replaced when the editor opens a file. */
@@ -173,8 +175,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
    * immediately without it and swapped when it arrives. Building the boxes
    * first rather than awaiting means a missing or slow pack costs a few frames
    * of placeholder geometry instead of a blank screen, which is the behaviour
-   * `generals/PLAN.md` ground rule 3 asks for: absent the pack, the game runs
-   * exactly as it does today.
+   * a content pack must be additive: absent one, the game runs exactly as it
+   * does today.
    */
   let unitRenderer = createUnitRenderer(renderer.scene);
 
@@ -395,7 +397,15 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       playerCount,
       mapHash: before,
     });
-    const match = createMatchFromWorld({ world, seed, playerCount, costGrid });
+    // One of every unit type on the map from the first tick, so the whole
+    // roster is there to look at without building it.
+    const match = createMatchFromWorld({
+      world,
+      seed,
+      playerCount,
+      costGrid,
+      oneOfEachUnit: true,
+    });
     // Every player but the local one is a bot, so a test match is a game
     // rather than a diorama. The bot is part of the simulation, so replays
     // re-derive it rather than recording what it did.
@@ -522,11 +532,14 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
 
     const start = await connection.start;
     netPlayer = playerId;
+    // Same opening as a skirmish. Both clients run this, so they agree; a
+    // setting that differed between them would be a desync on tick zero.
     const match = createMatchFromWorld({
       world,
       seed: start.seed,
       playerCount: start.playerCount,
       costGrid,
+      oneOfEachUnit: true,
     });
     driver = createDriver(match, { world });
     lockstep = createLockstep({

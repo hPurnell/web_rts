@@ -12,7 +12,8 @@ import { createNodeState } from './economy.ts';
 import type { World } from './world.ts';
 import { cellFromWorld, worldFromCell } from './world.ts';
 import { NULL_HANDLE, OrderKind, resolve, setOrder, spawnUnit } from './units.ts';
-import { unitTypeById } from './unittypes.ts';
+import { UNIT_TYPES, unitTypeById } from './unittypes.ts';
+import type { UnitType } from './unittypes.ts';
 import type { Fixed } from './fixed.ts';
 import { add, fromInt, fromRatio, mul, sub } from './fixed.ts';
 import { sinCos } from './trig.ts';
@@ -29,6 +30,16 @@ export interface MatchSetup extends MatchInit {
   /** Drop-off structures each player begins with. Zero for a bare match. */
   readonly startingDepots?: number;
   readonly startingMinerals?: number;
+  /**
+   * Also give each player one of every unit type they can field.
+   *
+   * Off by default, and deliberately not the default: the determinism harness
+   * builds its match through this function, and changing what a match opens
+   * with would move the golden hash for a reason that has nothing to do with
+   * simulation behaviour. The app turns it on for skirmishes so every vehicle
+   * in the roster is on the map to look at from the first tick.
+   */
+  readonly oneOfEachUnit?: boolean;
 }
 
 /**
@@ -125,7 +136,45 @@ export function createMatchFromWorld(setup: MatchSetup): Match {
         });
       }
     }
+
+    if (setup.oneOfEachUnit) placeOneOfEach(match, world, player, centre);
   }
 
   return match;
+}
+
+/**
+ * One of every unit type the player can field, in a ring outside the workers.
+ *
+ * Structures are skipped: they have footprints and buildable-ground rules, and
+ * dropping one wherever the ring lands would put a barracks through a cliff.
+ * The ring radius is larger than the workers' so the opening does not begin
+ * with everything standing on top of everything else.
+ */
+function placeOneOfEach(
+  match: Match,
+  world: World,
+  player: number,
+  centre: { x: Fixed; z: Fixed },
+): void {
+  const types = UNIT_TYPES.filter((type) => !type.isStructure);
+  const radius = mul(fromInt(4), world.cellSize);
+
+  for (let i = 0; i < types.length; i++) {
+    const type = types[i] as UnitType;
+    const offset = ringOffset(i, types.length, radius);
+    const x = add(centre.x, offset.x);
+    const z = add(centre.z, offset.z);
+    // Fall back to the centre rather than off the map, the same way the
+    // worker ring does near an edge.
+    const cell = cellFromWorld(world, x, z);
+    const placed = cell >= 0 ? { x, z } : centre;
+    spawnUnit(match.units, {
+      type,
+      ownerId: player,
+      x: placed.x,
+      z: placed.z,
+      facing: mul(fromRatio(i, Math.max(1, types.length)), TAU),
+    });
+  }
 }

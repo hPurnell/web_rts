@@ -5,7 +5,11 @@ import type { Plugin } from 'vite';
 import { visualizer } from 'rollup-plugin-visualizer';
 
 /**
- * Serve the Generals content pack in development only.
+ * Serve a content pack in development only.
+ *
+ * Mounted at `/content-pack`, which is what `src/` knows about; the directory
+ * behind it is this project's Generals pack. Keeping the route generic is what
+ * lets `src/` stay free of any particular pack's name.
  *
  * `generals/assets/` holds art converted from a local game installation. It is
  * gitignored, and it must never reach a published build — see
@@ -30,7 +34,7 @@ function generalsAssets(): Plugin {
     name: 'generals-assets',
     apply: 'serve',
     configureServer(server) {
-      server.middlewares.use('/generals-assets', (req, res, next) => {
+      server.middlewares.use('/content-pack', (req, res, next) => {
         const rest = (req.url ?? '/').split('?')[0] ?? '/';
         // Normalise before joining: a request for ../../etc must not escape.
         const path = join(root, normalize(rest).replace(/^(\.\.(\/|\\|$))+/, ''));
