@@ -205,55 +205,166 @@ function buildPart(
       const mapped = remapUv(mesh.textures[0] ?? '', uv.u, uv.v);
       uvs.push(mapped.u, mapped.v);
     }
-    // A mirrored part also has its winding reversed by the transform, so it
-    // is wound back here to keep the merged mesh consistently front-facing.
+    // Wound for the renderer's front-face convention, which is the opposite
+    // of the source's.
+    //
+    // The axis map above has a determinant of +1, so it preserves handedness:
+    // the data stays left-handed, as a DirectX game's data is. Only the face
+    // winding has to flip. Leaving it alone renders every surface back-facing,
+    // and with culling on you look straight through a vehicle's roof into its
+    // unlit interior — which looks like a broken texture, not a winding bug,
+    // and cost a long detour through the texture decoder to find.
+    //
+    // A mirrored part has already had its winding flipped by its own
+    // transform, so it flips back rather than twice.
     for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
       const a = base + (mesh.indices[i] as number);
       const b = base + (mesh.indices[i + 1] as number);
       const c = base + (mesh.indices[i + 2] as number);
-      if (mirrored) indices.push(a, c, b);
-      else indices.push(a, b, c);
+      if (mirrored) indices.push(a, b, c);
+      else indices.push(a, c, b);
     }
   }
 
   return { positions, normals, uvs, indices };
 }
 
-/** Lay textures out side by side and hand back a UV remapper. */
-function atlas(textures: Map<string, Image>): {
+/** How many times a texture may be repeated into its atlas slot. */
+const MAX_TILES = 8;
+
+interface UvBounds {
+  uMin: number;
+  uMax: number;
+  vMin: number;
+  vMax: number;
+}
+
+/** The UV range each texture is actually used over, across every mesh. */
+function uvBoundsByTexture(
+  meshes: readonly { mesh: W3DMesh }[],
+): Map<string, UvBounds> {
+  const bounds = new Map<string, UvBounds>();
+  for (const { mesh } of meshes) {
+    const name = (mesh.textures[0] ?? '').toLowerCase();
+    if (name.length === 0) continue;
+    const box = bounds.get(name) ?? { uMin: Infinity, uMax: -Infinity, vMin: Infinity, vMax: -Infinity };
+    for (const uv of mesh.uvs) {
+      if (uv.u < box.uMin) box.uMin = uv.u;
+      if (uv.u > box.uMax) box.uMax = uv.u;
+      if (uv.v < box.vMin) box.vMin = uv.v;
+      if (uv.v > box.vMax) box.vMax = uv.v;
+    }
+    bounds.set(name, box);
+  }
+  return bounds;
+}
+
+interface Slot {
+  readonly x: number;
+  readonly y: number;
+  readonly tileWidth: number;
+  readonly tileHeight: number;
+  /** UV origin of the slot: the floor of the range this texture is used over. */
+  readonly uBase: number;
+  readonly vBase: number;
+  readonly tilesU: number;
+  readonly tilesV: number;
+}
+
+/**
+ * Pack the textures a model uses into one image, baking any tiling in.
+ *
+ * Three things this has to get right, each of which was wrong in the first
+ * version and each of which shows up as "the texture mapping looks off":
+ *
+ * - **v must be scaled by the tile's height, not left alone.** A 32x32 tread
+ *   texture in a 256-tall atlas has a v range eight times too large, so it
+ *   samples straight past its own slot into whatever is below.
+ * - **Tiling UVs cannot simply be remapped.** Treads run u from -10.8 to 9.2
+ *   and rely on REPEAT. Squeezed into an atlas slot they wrap across the
+ *   whole atlas and sample other vehicles' textures. The slot is made as many
+ *   tiles wide as the range needs and the texture is repeated into it.
+ * - **Different textures have different sizes.** Slots are sized per texture
+ *   rather than assuming a common tile.
+ */
+function atlas(
+  textures: Map<string, Image>,
+  bounds: Map<string, UvBounds>,
+): {
   image: Image;
   remap: (name: string, u: number, v: number) => { u: number; v: number };
 } {
   const names = [...textures.keys()];
-  const tiles = names.map((n) => textures.get(n) as Image);
-  const height = Math.max(...tiles.map((t) => t.height), 1);
-  const width = tiles.reduce((sum, t) => sum + t.width, 0) || 1;
+  const slots = new Map<string, Slot>();
 
-  const data = Buffer.alloc(width * height * 4, 0);
-  const placement = new Map<string, { x: number; width: number }>();
   let cursor = 0;
-  for (let i = 0; i < names.length; i++) {
-    const tile = tiles[i] as Image;
-    for (let y = 0; y < tile.height; y++) {
-      tile.data.copy(
-        data,
-        (y * width + cursor) * 4,
-        y * tile.width * 4,
-        (y + 1) * tile.width * 4,
-      );
+  let atlasHeight = 1;
+  for (const name of names) {
+    const tile = textures.get(name) as Image;
+    const box = bounds.get(name);
+    const uBase = box && Number.isFinite(box.uMin) ? Math.floor(box.uMin) : 0;
+    const vBase = box && Number.isFinite(box.vMin) ? Math.floor(box.vMin) : 0;
+    const tilesU = box && Number.isFinite(box.uMax)
+      ? Math.max(1, Math.min(MAX_TILES, Math.ceil(box.uMax) - uBase))
+      : 1;
+    const tilesV = box && Number.isFinite(box.vMax)
+      ? Math.max(1, Math.min(MAX_TILES, Math.ceil(box.vMax) - vBase))
+      : 1;
+
+    slots.set(name, {
+      x: cursor,
+      y: 0,
+      tileWidth: tile.width,
+      tileHeight: tile.height,
+      uBase,
+      vBase,
+      tilesU,
+      tilesV,
+    });
+    cursor += tile.width * tilesU;
+    atlasHeight = Math.max(atlasHeight, tile.height * tilesV);
+  }
+
+  const atlasWidth = Math.max(1, cursor);
+  const data = Buffer.alloc(atlasWidth * atlasHeight * 4, 0);
+
+  for (const name of names) {
+    const tile = textures.get(name) as Image;
+    const slot = slots.get(name) as Slot;
+    for (let ty = 0; ty < slot.tilesV; ty++) {
+      for (let tx = 0; tx < slot.tilesU; tx++) {
+        const originX = slot.x + tx * tile.width;
+        const originY = slot.y + ty * tile.height;
+        for (let y = 0; y < tile.height; y++) {
+          const destY = originY + y;
+          if (destY >= atlasHeight) break;
+          tile.data.copy(
+            data,
+            (destY * atlasWidth + originX) * 4,
+            y * tile.width * 4,
+            (y + 1) * tile.width * 4,
+          );
+        }
+      }
     }
-    placement.set(names[i] as string, { x: cursor, width: tile.width });
-    cursor += tile.width;
   }
 
   return {
-    image: { width, height, data },
+    image: { width: atlasWidth, height: atlasHeight, data },
     remap: (name, u, v) => {
-      const at = placement.get(name.toLowerCase());
-      if (!at) return { u, v };
-      return { u: (at.x + u * at.width) / width, v };
+      const slot = slots.get(name.toLowerCase());
+      if (!slot) return { u: 0, v: 0 };
+      // Clamped into the slot, so a coordinate beyond the tiles that were
+      // baked samples the slot's edge rather than the neighbouring texture.
+      const px = slot.x + clamp((u - slot.uBase) * slot.tileWidth, 0, slot.tileWidth * slot.tilesU);
+      const py = slot.y + clamp((v - slot.vBase) * slot.tileHeight, 0, slot.tileHeight * slot.tilesV);
+      return { u: px / atlasWidth, v: py / atlasHeight };
     },
   };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return value < min ? min : value > max ? max : value;
 }
 
 /** Find a texture in the archives, preferring the DDS the game actually ships. */
@@ -425,7 +536,7 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
     return null;
   }
 
-  const { image, remap } = atlas(wanted);
+  const { image, remap } = atlas(wanted, uvBoundsByTexture([...hull, ...turret]));
   const textureFile = `${id}.png`;
   mkdirSync(join(ASSETS_DIR, 'models'), { recursive: true });
   writeFileSync(join(ASSETS_DIR, 'models', textureFile), writePng(image));

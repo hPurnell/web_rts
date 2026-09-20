@@ -227,6 +227,20 @@ Build a **texture atlas per faction** while converting. The draw-call budget in
 the root plan is the binding constraint here: every distinct material is a draw
 call, and instancing only helps within one.
 
+Atlasing is harder than laying the textures side by side, and all three of
+these bite:
+
+- **Scale v by the tile's height, not just u by its width.** Textures in one
+  model are different sizes — a 32x32 tread strip next to a 256x256 hull — and
+  leaving v alone makes the small one sample eight times past its own slot.
+- **Tiling UVs cannot be remapped, only baked.** Treads run u from -10 to 9 and
+  rely on REPEAT. Squeezed into a slot they wrap across the whole atlas and
+  sample another vehicle. Size the slot to the range and repeat the texture
+  into it, then clamp the sampler.
+- **Sanity-bound the coordinates.** Unset UV slots in the shipped art carry a
+  near-FLT_MAX sentinel, which is a perfectly finite float and will stretch a
+  slot across the entire atlas.
+
 **Done when:** one Generals vehicle texture converts, loads in Babylon, and the
 converter reports source and output size for each.
 
@@ -243,11 +257,21 @@ Map the W3D hierarchy onto this engine's convention: the root mesh becomes the
 hull, the node named as the turret becomes the turret, and its transform
 becomes the attach point.
 
-**Watch for:** Generals' models are Z-up and in a different scale and winding
-from Babylon's left-handed Y-up convention. Get the handedness wrong and the
-models render inside-out — which, as the root plan's migration notes record,
-looks like nothing rendering at all rather than like an error. Write the axis
-conversion once, in one function, with a comment stating the convention.
+**Watch for:** Generals' models are Z-up and in a different scale from
+Babylon's Y-up convention, but — and this is the part that cost a long
+detour — they are **not** a different handedness. Generals is a DirectX game,
+so its data is already left-handed, and an axis map with a determinant of +1
+keeps it that way. Do not "convert right-handed glTF to left-handed Babylon"
+on the way in; there is nothing to convert.
+
+What does need flipping is the **face winding**, which is opposite to the
+renderer's front-face convention. Get that wrong and every surface is
+back-facing: with culling on you look straight through a vehicle's roof into
+its unlit interior. It does not look like a winding bug. It looks like the
+texture failed to load, and it will send you through the texture decoder, the
+UV remapper, the atlas and the mipmaps before you think to turn culling off.
+Turning back-face culling off for one screenshot is the two-minute test that
+settles it; do that first.
 
 **Done when:** one vehicle converts to glTF, loads, and renders on an instanced
 unit in place of its placeholder box, at the correct scale and facing.

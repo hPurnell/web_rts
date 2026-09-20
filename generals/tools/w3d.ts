@@ -185,12 +185,23 @@ export function readMeshes(chunks: readonly Chunk[]): W3DMesh[] {
     }
 
     // Texture coordinates live under the first material pass's texture stage.
+    //
+    // Only a stage with exactly one pair per vertex is taken. A mesh with more
+    // than one material pass has more than one of these chunks, and picking
+    // the first at any depth can land on one belonging to a different pass
+    // with a different vertex count — which yields coordinates read from the
+    // wrong offsets, and shows up as a stray -1.7e38 among otherwise sane UVs.
     const uvs: { u: number; v: number }[] = [];
-    const texcoords = findChunk(mesh.children, CHUNK.STAGE_TEXCOORDS);
-    if (texcoords) {
-      for (let i = 0; i + 8 <= texcoords.data.length; i += 8) {
-        uvs.push({ u: texcoords.data.readFloatLE(i), v: texcoords.data.readFloatLE(i + 4) });
+    for (const stage of findChunks(mesh.children, CHUNK.STAGE_TEXCOORDS)) {
+      if (stage.data.length !== vertices.length * 8) continue;
+      for (let i = 0; i + 8 <= stage.data.length; i += 8) {
+        // Values are sanity-bounded, not merely finite-checked. Unset slots
+        // in the shipped art carry a near-FLT_MAX sentinel, which is a
+        // perfectly finite float and would otherwise stretch an atlas slot
+        // across the entire texture.
+        uvs.push({ u: sane(stage.data.readFloatLE(i)), v: sane(stage.data.readFloatLE(i + 4)) });
       }
+      break;
     }
 
     const textures: string[] = [];
@@ -215,6 +226,11 @@ export function readMeshes(chunks: readonly Chunk[]): W3DMesh[] {
   }
 
   return meshes;
+}
+
+/** Texture coordinates tile, but never by a thousand. */
+function sane(value: number): number {
+  return Number.isFinite(value) && Math.abs(value) < 1000 ? value : 0;
 }
 
 function readVectors(data: Buffer): W3DVertex[] {

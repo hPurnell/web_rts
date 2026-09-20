@@ -120,36 +120,24 @@ async function loadPart(
 
   const vertexData = new VertexData();
 
-  // glTF is right-handed; Babylon's scene is left-handed. Babylon's own glTF
-  // importer converts on the way in, and this narrow reader has to do the same
-  // job by hand: negate z, and reverse triangle winding to undo the flip that
-  // negating one axis causes.
+  // A straight pass-through: no axis flip and no winding reversal.
   //
-  // Skipping it does not look like a handedness bug. Every face ends up
-  // back-facing, so back-face culling hides the outside of the model and
-  // leaves you looking at its unlit interior — which reads as "the texture did
-  // not load" and sends you off to check the atlas.
-  const positions = Array.from(readAccessor(doc, bin, primitive.attributes['POSITION'] as number));
-  for (let i = 2; i < positions.length; i += 3) positions[i] = -(positions[i] as number);
-  vertexData.positions = positions;
+  // The reflex is to convert here, because glTF is nominally right-handed and
+  // Babylon's scene is left-handed. That is wrong for this pipeline. The
+  // source is a DirectX game, so its data is already left-handed, and the
+  // converter emits it wound for Babylon's front-face convention. Converting
+  // again makes every face back-facing.
+  vertexData.positions = Array.from(
+    readAccessor(doc, bin, primitive.attributes['POSITION'] as number),
+  );
 
   const normal = primitive.attributes['NORMAL'];
-  if (normal !== undefined) {
-    const normals = Array.from(readAccessor(doc, bin, normal));
-    for (let i = 2; i < normals.length; i += 3) normals[i] = -(normals[i] as number);
-    vertexData.normals = normals;
-  }
+  if (normal !== undefined) vertexData.normals = Array.from(readAccessor(doc, bin, normal));
 
   const uv = primitive.attributes['TEXCOORD_0'];
   if (uv !== undefined) vertexData.uvs = Array.from(readAccessor(doc, bin, uv));
 
-  const indices = Array.from(readAccessor(doc, bin, primitive.indices));
-  for (let i = 0; i + 2 < indices.length; i += 3) {
-    const swap = indices[i + 1] as number;
-    indices[i + 1] = indices[i + 2] as number;
-    indices[i + 2] = swap;
-  }
-  vertexData.indices = indices;
+  vertexData.indices = Array.from(readAccessor(doc, bin, primitive.indices));
 
   return { vertexData, material };
 }
@@ -181,6 +169,11 @@ export async function loadContentPack(
           // glTF's convention and the opposite of Babylon's default.
           false,
         );
+        // Tiling is baked into the atlas slots by the pipeline, so the
+        // texture itself must clamp: wrapping would sample a neighbouring
+        // vehicle's slot at the edges.
+        texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+        texture.wrapV = Texture.CLAMP_ADDRESSMODE;
         material.diffuseTexture = texture;
         material.specularColor = new Color3(0.08, 0.08, 0.09);
 
@@ -200,8 +193,8 @@ export async function loadContentPack(
         // correction in the converter (which is right regardless) does not
         // account for it either. This is a remedy for inconsistent source
         // normals, not a root-cause fix; the root cause is in the art.
-        material.backFaceCulling = false;
-        material.twoSidedLighting = true;
+        material.backFaceCulling = true;
+        material.twoSidedLighting = false;
         // The models carry their own baked shading; a strong specular on top
         // makes them read as plastic.
         material.emissiveColor = new Color3(0.18, 0.18, 0.18);
