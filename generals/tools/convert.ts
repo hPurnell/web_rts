@@ -201,8 +201,11 @@ function buildPart(
       const length = (Math.hypot(n.x, n.y, n.z) || 1) * (mirrored ? -1 : 1);
       normals.push(n.x / length, n.y / length, n.z / length);
 
+      // W3D puts the v origin at the bottom of the texture; the renderer
+      // puts it at the top. Flipped before the atlas remap so the slot
+      // arithmetic still lines up with the range the texture is used over.
       const uv = mesh.uvs[i] ?? { u: 0, v: 0 };
-      const mapped = remapUv(mesh.textures[0] ?? '', uv.u, uv.v);
+      const mapped = remapUv(mesh.textures[0] ?? '', uv.u, 1 - uv.v);
       uvs.push(mapped.u, mapped.v);
     }
     // Wound for the renderer's front-face convention, which is the opposite

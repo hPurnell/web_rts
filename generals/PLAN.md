@@ -240,6 +240,16 @@ these bite:
 - **Sanity-bound the coordinates.** Unset UV slots in the shipped art carry a
   near-FLT_MAX sentinel, which is a perfectly finite float and will stretch a
   slot across the entire atlas.
+- **v runs bottom-up in W3D and top-down in the renderer**, so it has to be
+  flipped — before the atlas remap, or the slot arithmetic no longer lines up
+  with the range the texture is used over.
+
+A warning about how to test any of this: **fix one thing at a time and confirm
+it against the texture**, not against a general impression. I A/B'd the v flip
+early, while the winding and the atlas were both still wrong, so neither option
+looked right, the comparison was meaningless, and I picked the wrong one and
+moved on. Crop and magnify a single vehicle and hold it next to its atlas —
+`avambulance.tga` is desert tan with red crosses, and anything else is a bug.
 
 **Done when:** one Generals vehicle texture converts, loads in Babylon, and the
 converter reports source and output size for each.
