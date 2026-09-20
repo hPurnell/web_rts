@@ -133,14 +133,20 @@ function rotate(m: Mat4, v: Vec3): Vec3 {
 }
 
 /**
- * Generals is Z-up right-handed; glTF is Y-up right-handed.
+ * Generals is Z-up right-handed; the renderer is Y-up left-handed.
  *
- * `(x, y, z) -> (x, z, -y)`. Getting this wrong does not look like an error:
- * the model renders inside-out or lying on its face, which is why it lives in
- * one function with its convention written down.
+ * Generals has X east, Y north, Z up. The renderer has X right, Y up, Z away
+ * from the viewer. East maps to right, north to away, up to up, which is
+ * `(x, y, z) -> (x, z, y)`.
+ *
+ * That has a determinant of **-1**, and it is supposed to: the two conventions
+ * are of opposite handedness, so the conversion has to change handedness. A
+ * map with a determinant of +1 leaves the model mirrored, and a mirrored
+ * vehicle looks entirely convincing until you find one with writing on it —
+ * the Humvee's roof read "NU" for two rounds of this before anyone noticed.
  */
-function toGltfAxes(v: Vec3): Vec3 {
-  return { x: v.x, y: v.z, z: -v.y };
+function toRendererAxes(v: Vec3): Vec3 {
+  return { x: v.x, y: v.z, z: v.y };
 }
 
 /** Every pivot's transform in model space. */
@@ -190,15 +196,24 @@ function buildPart(
 
   for (const { mesh, matrix } of meshes) {
     const base = positions.length / 3;
+    // Only parts whose own bone transform mirrors need their winding flipped.
+    //
+    // Two flips are in play and they cancel for an ordinary part: the axis
+    // change reverses handedness, and the source's front-face convention is
+    // already the opposite of the renderer's. A part built as its own mirror —
+    // the left track is usually the right track with a negative scale — has a
+    // third, and is the only case that needs correcting.
     const mirrored = determinant3(matrix) < 0;
     for (let i = 0; i < mesh.vertices.length; i++) {
       const world = transform(matrix, mesh.vertices[i] as Vec3);
       const local = { x: world.x - origin.x, y: world.y - origin.y, z: world.z - origin.z };
-      const p = toGltfAxes(local);
+      const p = toRendererAxes(local);
       positions.push(p.x * MODEL_SCALE, p.y * MODEL_SCALE, p.z * MODEL_SCALE);
 
-      const n = toGltfAxes(rotate(matrix, (mesh.normals[i] as Vec3) ?? { x: 0, y: 0, z: 1 }));
-      const length = (Math.hypot(n.x, n.y, n.z) || 1) * (mirrored ? -1 : 1);
+      // A reflection is its own inverse transpose, so a normal transforms by
+      // the same matrix as a position and needs no separate sign correction.
+      const n = toRendererAxes(rotate(matrix, (mesh.normals[i] as Vec3) ?? { x: 0, y: 0, z: 1 }));
+      const length = Math.hypot(n.x, n.y, n.z) || 1;
       normals.push(n.x / length, n.y / length, n.z / length);
 
       // W3D puts the v origin at the bottom of the texture; the renderer
@@ -224,8 +239,8 @@ function buildPart(
       const a = base + (mesh.indices[i] as number);
       const b = base + (mesh.indices[i + 1] as number);
       const c = base + (mesh.indices[i + 2] as number);
-      if (mirrored) indices.push(a, b, c);
-      else indices.push(a, c, b);
+      if (mirrored) indices.push(a, c, b);
+      else indices.push(a, b, c);
     }
   }
 
@@ -560,7 +575,7 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
     turretOut = {
       gltf: `${id}_turret.gltf`,
       texture: textureFile,
-      offsetY: toGltfAxes(turretOrigin).y * MODEL_SCALE,
+      offsetY: toRendererAxes(turretOrigin).y * MODEL_SCALE,
     };
   }
 
