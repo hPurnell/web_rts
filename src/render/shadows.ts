@@ -27,7 +27,7 @@ import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import type { Camera } from '@babylonjs/core/Cameras/camera';
 import type { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { Constants } from '@babylonjs/core/Engines/constants';
-import { SHADOW_DARKNESS, setTerrainShadow } from './terrainMaterial.ts';
+import { SHADOW_DARKNESS, setShaderShadow } from './terrainMaterial.ts';
 
 /** Texels across the shadow map. */
 const MAP_SIZE = 2048;
@@ -44,6 +44,8 @@ const MARGIN = 6;
 
 const casters = new Set<AbstractMesh>();
 const receivers = new Set<AbstractMesh>();
+/** Hand-written shaders that sample the map themselves, via `SHADOW_GLSL`. */
+const shaderReceivers = new Set<ShaderMaterial>();
 let active: ShadowGenerator | null = null;
 
 /** Mark a mesh as casting (and receiving) sun shadows. */
@@ -64,6 +66,16 @@ export function receiveShadow(mesh: AbstractMesh): void {
   mesh.onDisposeObservable.addOnce(() => receivers.delete(mesh));
 }
 
+/**
+ * Let a hand-written shader receive shadows: one that includes `SHADOW_GLSL`
+ * and has `shadowMatrix`, `shadowInfo` and `shadowSampler` among its uniforms.
+ */
+export function receiveShadowShader(material: ShaderMaterial): void {
+  shaderReceivers.add(material);
+  setShaderShadow(material, null, Matrix.Identity(), 0);
+  material.onDisposeObservable.addOnce(() => shaderReceivers.delete(material));
+}
+
 export interface Shadows {
   setEnabled(enabled: boolean): void;
   enabled(): boolean;
@@ -75,6 +87,7 @@ export interface Shadows {
 }
 
 export function createShadows(sun: DirectionalLight, terrain: ShaderMaterial): Shadows {
+  receiveShadowShader(terrain);
   let mapWidth = 1;
   let mapHeight = 1;
 
@@ -121,7 +134,7 @@ export function createShadows(sun: DirectionalLight, terrain: ShaderMaterial): S
     active.dispose();
     active = null;
     sun.shadowEnabled = false;
-    setTerrainShadow(terrain, null, Matrix.Identity(), 0);
+    for (const material of shaderReceivers) setShaderShadow(material, null, Matrix.Identity(), 0);
   };
 
   return {
@@ -196,7 +209,8 @@ export function createShadows(sun: DirectionalLight, terrain: ShaderMaterial): S
 
       const shadowMap = active.getShadowMap();
       const packed = shadowMap?.textureType === Constants.TEXTURETYPE_UNSIGNED_BYTE;
-      setTerrainShadow(terrain, shadowMap, active.getTransformMatrix(), packed ? 2 : 1);
+      const matrix = active.getTransformMatrix();
+      for (const material of shaderReceivers) setShaderShadow(material, shadowMap, matrix, packed ? 2 : 1);
     },
 
     dispose() {

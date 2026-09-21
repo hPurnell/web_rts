@@ -40,6 +40,8 @@ import { createDoodads } from './render/doodads.ts';
 import type { AnimatedAsset, DoodadPlacement, DoodadRenderer } from './render/doodads.ts';
 import { createRoads } from './render/roads.ts';
 import { createShadows } from './render/shadows.ts';
+import { createWater } from './render/water.ts';
+import type { WaterRenderer, WaterStyle, WaterSurface } from './render/water.ts';
 import type { RoadPolyline, RoadRenderer, RoadType } from './render/roads.ts';
 import { createGhostRenderer } from './render/ghosts.ts';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
@@ -141,6 +143,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   /** A map's scenery, replaced wholesale when another map loads. */
   let doodads: DoodadRenderer | null = null;
   let roads: RoadRenderer | null = null;
+  let water: WaterRenderer | null = null;
   /**
    * Whether fog of war is drawn at all; see `r_fog`.
    *
@@ -773,6 +776,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     // Scenery moves on wall-clock time in every mode, the editor included:
     // a flag that only waved during a match would look broken in the editor.
     doodads?.update(frameStarted / 1000);
+    water?.update(frameStarted / 1000);
     const dt = renderer.frameDelta();
     // CSS pixels again: the camera compares these against `input.pointer`,
     // which is a CSS coordinate, and divides by them to turn a middle-drag in
@@ -1283,17 +1287,21 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     doodads = null;
     roads?.dispose();
     roads = null;
+    water?.dispose();
+    water = null;
     for (const texture of terrainTextures) texture.dispose();
     terrainTextures = [];
     setTerrainTextures(terrainMaterial, null);
     overlay.set('doodads', '');
     overlay.set('roads', '');
+    overlay.set('water', '');
 
     if (metaResponse.ok) {
       const meta = (await metaResponse.json()) as {
         name?: string;
         lighting?: Parameters<typeof applyMapLighting>[0];
         palette?: { ground: number[]; cliff: number[] };
+        water?: WaterStyle & { surfaces: WaterSurface[] };
         doodads?: DoodadPlacement[];
         roads?: RoadPolyline[];
         terrain?: {
@@ -1321,7 +1329,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       overlay.set('map', meta.name ?? slug);
       if (meta.doodads?.length) await loadDoodads(CONTENT_PACK_URL, meta.doodads);
       if (meta.roads?.length) await loadRoads(CONTENT_PACK_URL, meta.roads);
-    }
+      if (meta.water?.surfaces.length) loadWater(CONTENT_PACK_URL, meta.water, meta.water.surfaces);    }
 
     currentMap = slug;
     menu.refresh();
@@ -1448,6 +1456,24 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
    * polyline over different terrain is different geometry — the road has to
    * follow whatever the heightfield does.
    */
+  /**
+   * Put a map's lakes and rivers on screen.
+   *
+   * The water shader fades the shallows by looking the ground up itself, so it
+   * is handed the map's corner heights as they stand now.
+   */
+  function loadWater(baseUrl: string, style: WaterStyle, surfaces: WaterSurface[]): void {
+    const corners = new Float32Array(world.heights.length);
+    for (let i = 0; i < corners.length; i++) corners[i] = (world.heights[i] as number) / 65536;
+    water?.dispose();
+    water = createWater(renderer.scene, baseUrl, style, surfaces, {
+      width: world.width,
+      height: world.height,
+      corners,
+    });
+    overlay.set('water', `${water.count} surfaces`);
+  }
+
   async function loadRoads(baseUrl: string, polylines: RoadPolyline[]): Promise<void> {
     const response = await fetch(`${baseUrl}/roads.json`);
     if (!response.ok) return;

@@ -837,6 +837,54 @@ position. `gen:doodads` lists them separately so they do not look like
 failures. About a hundred placements across the imported maps. `Scorch`, a
 ground decal, is the only other thing a map places that has no model.
 
+### G23. Water, and bridges as far as the ground is concerned
+
+**Done.** 47 of the 62 imported maps have standing water and 12 have rivers.
+None of it was imported before: lakes were dry basins and tanks drove along
+riverbeds.
+
+Water is a `PolygonTrigger` flagged as a water area, with its surface height
+on its points; a river adds a flag and the point its flow starts from.
+`generals/tools/water.ts` follows `PolygonTrigger.cpp`, `TerrainLogic.cpp` and
+`W3DWater.cpp`:
+
+- **Which cells are water.** A cell is water when any of its four corners is
+  under the surface over it, the surface being the highest water polygon
+  containing the corner, taken from its first point — rivers included,
+  although they are drawn sloping. Water cells are neither walkable nor
+  buildable. Aircraft do not care.
+- **Standing water** is a fan from the polygon's first point, textured in
+  world space at 150 game units a repeat and wobbled over time. Its opacity is
+  `min(depth / (D * m), m)` from `TransparentWaterDepth` and
+  `TransparentWaterMinOpacity`: the game writes that into destination alpha
+  with a shoreline pass; `render/water.ts` looks the ground up in the shader
+  from the same corner heights and NW-SE split as the terrain mesh.
+- **A river** pairs the points either side of its start into a strip, u half
+  across the texture, v along it at one repeat per river width, scrolling at
+  the game's 0.002 a frame at 30fps. Its banks fade with `TWAlphaEdge`.
+- **Colour** is the terrain's lighting times `Water.ini`'s `DiffuseColor` for
+  the map's time of day, split into ambient and sun so shadows take only the
+  sun's part. Water sits under the fog like scenery.
+
+**Bridges had to come with it.** Three maps — Winding River, Flooded Plains,
+Heartland Shield — are crossed only by bridges, and water cut them in two.
+This engine has one ground height per corner and no pathfinding layers, so a
+bridge over water is imported as ground at deck height: the deck runs straight
+between the terrain heights at its two ends, as wide as its model's
+`BRIDGE_LEFT` mesh *after its pivot rotation* (several bridges model the deck
+on its side) times `BridgeScale`. Everything under the deck is raised, banks
+included — the ends sit back from the water and raising only the water left
+a cliff at each end. Bridges over no water are left alone. All 62 maps now
+validate with every start reachable.
+
+**Not done:**
+
+- The bridge models. The crossings read as causeways until they are drawn.
+- Sparkles, the sky reflection and caustics (`WaterSurfaceBubbles`,
+  `Noise0000`, the pixel shaders), and a map's own water overrides in its
+  `map.ini`.
+- Water on the minimap, which shows it as blocked ground.
+
 ### G18. Infantry (optional)
 
 Only if the vehicle game is working and you want more.

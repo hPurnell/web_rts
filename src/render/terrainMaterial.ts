@@ -21,6 +21,7 @@ import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { Effect } from '@babylonjs/core/Materials/effect';
 import type { Scene } from '@babylonjs/core/scene';
 import { setSceneryFog, setSceneryFogSoftness } from './sceneryfog.ts';
+import { SHADOW_GLSL } from './shadowglsl.ts';
 
 const VERTEX = `
 precision highp float;
@@ -59,12 +60,7 @@ varying vec2 vUv;
 varying vec2 vMapUv;
 varying vec4 vShadow;
 
-uniform sampler2D shadowSampler;
-/**
- * Shadow mode (0 off, 1 float depth, 2 depth packed into RGBA), texels
- * across the map, how much sun a shadow leaves, and the depth bias.
- */
-uniform vec4 shadowInfo;
+${SHADOW_GLSL}
 
 uniform vec3 lightDirection;
 uniform vec3 sunColor;
@@ -96,48 +92,6 @@ uniform vec2 mapCells;
 /** Atlas columns, rows, slot side in pixels, and the padding around a slot. */
 uniform vec4 atlasInfo;
 uniform float terrainTextured;
-
-/**
- * One depth from the shadow map. Babylon writes the caster's light-space
- * depth, (z + 1) / 2, either as a float or packed into four bytes when the
- * GPU cannot render to floats; both are read the same way.
- */
-float shadowDepth(vec2 uv) {
-  vec4 texel = texture2D(shadowSampler, uv);
-  if (shadowInfo.x > 1.5) {
-    return dot(texel, vec4(1.0 / (255.0 * 255.0 * 255.0), 1.0 / (255.0 * 255.0), 1.0 / 255.0, 1.0));
-  }
-  return texel.r;
-}
-
-/**
- * How much of the sun reaches this point: 1 in the open, 0 fully shadowed.
- *
- * The four nearest depth comparisons, blended by where the point sits among
- * them — what hardware PCF does with a depth texture, which the standard
- * materials' Poisson filter cannot read, so it is done by hand. The edge
- * fades over one texel. A 4x4 kernel softened it further and cost a third of
- * the frame in the software renderer the checks run on; at twenty-odd texels
- * a cell, one texel of fade is already soft.
- */
-float sunLit() {
-  if (shadowInfo.x < 0.5) return 1.0;
-  vec3 clip = vShadow.xyz / vShadow.w;
-  vec2 uv = clip.xy * 0.5 + 0.5;
-  if (uv.x <= 0.0 || uv.y <= 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return 1.0;
-  float depth = clamp(clip.z * 0.5 + 0.5, 0.0, 1.0) - shadowInfo.w;
-
-  float size = shadowInfo.y;
-  vec2 at = uv * size - 0.5;
-  vec2 f = fract(at);
-  vec2 base = (floor(at) + 0.5) / size;
-  vec2 step_ = vec2(1.0 / size, 0.0);
-  float s00 = step(depth, shadowDepth(base));
-  float s10 = step(depth, shadowDepth(base + step_.xy));
-  float s01 = step(depth, shadowDepth(base + step_.yx));
-  float s11 = step(depth, shadowDepth(base + step_.xx));
-  return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
-}
 
 /** Cheap value noise, enough to break up flat colour until real textures land. */
 float hash(vec2 p) {
@@ -525,10 +479,11 @@ export const SHADOW_DARKNESS = 0.35;
 const SHADOW_BIAS = 0.0006;
 
 /**
- * Point the terrain at the sun's shadow map, or pass null to stop sampling it.
- * `mode` is 1 for a float map and 2 for one packed into bytes.
+ * Point a shader that uses `SHADOW_GLSL` — the terrain, the water — at the
+ * sun's shadow map, or pass null to stop sampling it. `mode` is 1 for a float
+ * map and 2 for one packed into bytes.
  */
-export function setTerrainShadow(
+export function setShaderShadow(
   material: ShaderMaterial,
   texture: BaseTexture | null,
   matrix: Matrix,

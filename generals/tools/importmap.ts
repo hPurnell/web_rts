@@ -26,6 +26,19 @@ import { cornerStride } from '../../src/sim/terrain.ts';
 import { loadTexture } from './convert.ts';
 import { writePng } from './image.ts';
 import type { Image } from './image.ts';
+import {
+  readWaterIni,
+  readWaterPolygons,
+  toSurface,
+  underwaterCells,
+  waterLook,
+} from './water.ts';
+import type { WaterIni, WaterLook, WaterSurface } from './water.ts';
+import { layBridges, pairBridges, readBridgeWidths } from './bridges.ts';
+
+/** Where the water textures land in the pack, shared by every map. */
+const WATER_TEXTURE = 'water/surface.png';
+const WATER_EDGE_TEXTURE = 'water/edge.png';
 
 /**
  * Generals world units per cell, and height units per world unit.
@@ -101,6 +114,8 @@ export interface MapLighting {
   readonly terrain: readonly MapLight[];
   /** The three lights units and scenery are lit by, primary first. */
   readonly object: readonly MapLight[];
+  /** 1 morning, 2 afternoon, 3 evening, 4 night: which of four sets is in use. */
+  readonly timeOfDay?: number;
 }
 
 interface HeightMap {
@@ -403,6 +418,7 @@ function readLighting(data: Buffer): MapLighting {
     ambient: primary.ambient,
     terrain: distinct(terrain),
     object: distinct(object),
+    timeOfDay: index + 1,
   };
 }
 
@@ -1024,6 +1040,14 @@ export interface ImportResult {
   readonly palette: { ground: number[]; cliff: number[]; names: string[] };
   /** The ground atlas and index map, or null for a map with no blend data. */
   readonly terrain: TerrainTextures | null;
+  /** Lakes, seas and rivers, and how they are lit; null for a dry map. */
+  readonly water: {
+    surfaces: WaterSurface[];
+    look: WaterLook;
+    cells: number;
+    /** Water cells a bridge deck made passable again. */
+    bridged: number;
+  } | null;
 }
 
 export function importMap(buffer: Buffer, name: string, index: AssetIndex): ImportResult {
@@ -1156,7 +1180,90 @@ export function importMap(buffer: Buffer, name: string, index: AssetIndex): Impo
       )
     : null;
 
-  return { world, lighting, doodads, roads, skipped, palette, terrain };
+  // Water last, once the heights are final: a cell with a corner under the
+  // surface is water, which ground units cannot enter and nothing can be
+  // built on, as in the game's pathfinder.
+  const triggers = findMapChunk(map.chunks, 'PolygonTriggers');
+  const polygons = triggers ? readWaterPolygons(triggers) : [];
+  let water: ImportResult['water'] = null;
+  if (polygons.length > 0) {
+    const cells = underwaterCells(polygons, world.width, world.height, (cx, cz) =>
+      (world.heights[cz * stride + cx] ?? 0) / 65536,
+    );
+    const wet = new Set(cells);
+    for (const cell of cells) {
+      setFlags(world, cell, (world.flags[cell] as number) & ~(WALKABLE | BUILDABLE));
+    }
+    // Then the bridges over it, or a river with only bridges across it cuts
+    // the map in two.
+    const bridged = layBridges(
+      pairBridges(readObjectHeaders(objectChunks)),
+      bridgeWidths(index),
+      world.width,
+      world.height,
+      (cell) => wet.has(cell),
+      (cx, cz) => (world.heights[cz * stride + cx] ?? 0) / 65536,
+      (cx, cz, to) => {
+        world.heights[cz * stride + cx] = Math.round(to * 65536);
+      },
+      (cell) => setFlags(world, cell, (world.flags[cell] as number) | WALKABLE),
+    );
+    water = {
+      surfaces: polygons.map(toSurface),
+      look: waterLook(waterIni(index), lighting.timeOfDay ?? 1, lighting.ambient, lighting.terrain),
+      cells: cells.length - bridged.length,
+      bridged: bridged.length,
+    };
+  }
+
+  return { world, lighting, doodads, roads, skipped, palette, terrain, water };
+}
+
+/**
+ * Every object's position, flags and type, in file order, for the things that
+ * are marked by flags rather than by type: a bridge's two ends.
+ */
+function readObjectHeaders(
+  chunks: readonly { name: string; data: Buffer }[],
+): { type: string; x: number; z: number; flags: number }[] {
+  const out: { type: string; x: number; z: number; flags: number }[] = [];
+  for (const chunk of chunks) {
+    const r = new Reader(chunk.data);
+    try {
+      const x = r.float();
+      const y = r.float();
+      r.float();
+      r.float();
+      const flags = r.uint32();
+      const type = r.string();
+      out.push({ type, x: x / XY_PER_CELL, z: y / XY_PER_CELL, flags });
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+/** Deck widths from `Roads.ini` and the bridge models, read once per run. */
+let bridgeWidthCache: Map<string, number> | null = null;
+function bridgeWidths(index: AssetIndex): Map<string, number> {
+  bridgeWidthCache ??= readBridgeWidths(index);
+  return bridgeWidthCache;
+}
+
+/** `Water.ini`, read once per run. */
+let waterIniCache: WaterIni | null = null;
+function waterIni(index: AssetIndex): WaterIni {
+  if (!waterIniCache) {
+    let text: string | null = null;
+    try {
+      text = readIndexed(index, 'data/ini/water.ini').toString('latin1');
+    } catch {
+      text = null;
+    }
+    waterIniCache = readWaterIni(text);
+  }
+  return waterIniCache;
 }
 
 /**
@@ -1230,6 +1337,19 @@ async function main(): Promise<void> {
   mkdirSync(join(ASSETS_DIR, 'maps'), { recursive: true });
   const imported: { name: string; slug: string; width: number; height: number }[] = [];
 
+  // The water textures every map shares: the surface `Water.ini` names, and
+  // the alpha ramp a river's banks fade out with (`TWAlphaEdge`, hardwired in
+  // W3DWater.cpp).
+  mkdirSync(join(ASSETS_DIR, 'water'), { recursive: true });
+  for (const [file, texture] of [
+    [WATER_TEXTURE, waterIni(index).texture],
+    [WATER_EDGE_TEXTURE, 'TWAlphaEdge.tga'],
+  ] as const) {
+    const image = loadTexture(index, texture);
+    if (image) writeFileSync(join(ASSETS_DIR, file), writePng(image));
+    else console.error(`  water texture not found: ${texture}`);
+  }
+
   for (const name of wanted) {
     const found = findByBasename(index, `${name}.map`);
     if (found.length === 0) {
@@ -1269,6 +1389,16 @@ async function main(): Promise<void> {
           palette: result.palette,
           doodads: result.doodads,
           roads: result.roads,
+          ...(result.water
+            ? {
+                water: {
+                  texture: WATER_TEXTURE,
+                  edge: WATER_EDGE_TEXTURE,
+                  ...result.water.look,
+                  surfaces: result.water.surfaces,
+                },
+              }
+            : {}),
           ...(result.terrain
             ? {
                 terrain: {
@@ -1299,6 +1429,10 @@ async function main(): Promise<void> {
         ` ${result.doodads.length} doodads,` +
         ` ${result.roads.length} roads` +
         (result.skipped > 0 ? `, ${result.skipped} outside the playable area` : '') +
+        (result.water
+          ? `, ${result.water.surfaces.length} water surfaces covering ${result.water.cells} cells` +
+            (result.water.bridged > 0 ? ` (${result.water.bridged} bridged)` : '')
+          : '') +
         `, ${result.palette.names.length} terrain textures`,
     );
   }

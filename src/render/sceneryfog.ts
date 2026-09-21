@@ -23,6 +23,8 @@ import { MaterialPluginBase } from '@babylonjs/core/Materials/materialPluginBase
 import type { Material } from '@babylonjs/core/Materials/material';
 import type { BaseTexture } from '@babylonjs/core/Materials/Textures/baseTexture';
 import type { UniformBuffer } from '@babylonjs/core/Materials/uniformBuffer';
+import type { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
+import { Vector4 } from '@babylonjs/core/Maths/math.vector';
 
 /** What every fogged material reads when it is drawn. */
 interface FogState {
@@ -36,6 +38,52 @@ interface FogState {
 const state: FogState = { texture: null, width: 1, height: 1, exploredDim: 1, softness: 0.9 };
 const plugins = new Set<SceneryFogPlugin>();
 const fogged = new WeakSet<Material>();
+/** Hand-written shaders that include `SCENERY_FOG_GLSL`. */
+const shaders = new Set<ShaderMaterial>();
+
+/**
+ * The same lookup for a hand-written shader: the water. Its fragment shader
+ * includes this and calls `sceneryFog(worldXZ)`, and the material has
+ * `sceneryFogMap`, `sceneryFogTaps` and `sceneryFogSampler` among its
+ * uniforms. `sceneryFogMap.w` is 1 while fog is on.
+ */
+export const SCENERY_FOG_GLSL = `
+uniform sampler2D sceneryFogSampler;
+uniform vec4 sceneryFogMap;
+uniform vec4 sceneryFogTaps;
+
+float sceneryFog(vec2 worldXZ) {
+  if (sceneryFogMap.w < 0.5) return 1.0;
+  vec2 uv = worldXZ * sceneryFogMap.xy;
+  vec2 tap = sceneryFogTaps.xy;
+  vec2 fog = texture2D(sceneryFogSampler, uv).rg * 2.0;
+  fog += texture2D(sceneryFogSampler, uv + tap).rg;
+  fog += texture2D(sceneryFogSampler, uv - tap).rg;
+  fog += texture2D(sceneryFogSampler, uv + vec2(tap.x, -tap.y)).rg;
+  fog += texture2D(sceneryFogSampler, uv + vec2(-tap.x, tap.y)).rg;
+  fog /= 6.0;
+  return max(fog.r, fog.g * sceneryFogMap.z);
+}
+`;
+
+function bindShader(material: ShaderMaterial): void {
+  material.setVector4(
+    'sceneryFogMap',
+    new Vector4(1 / state.width, 1 / state.height, state.exploredDim, state.texture ? 1 : 0),
+  );
+  material.setVector4(
+    'sceneryFogTaps',
+    new Vector4(state.softness / state.width, state.softness / state.height, 0, 0),
+  );
+  if (state.texture) material.setTexture('sceneryFogSampler', state.texture);
+}
+
+/** Put a hand-written shader under the fog; see `SCENERY_FOG_GLSL`. */
+export function fogShader(material: ShaderMaterial): void {
+  shaders.add(material);
+  bindShader(material);
+  material.onDisposeObservable.addOnce(() => shaders.delete(material));
+}
 
 class SceneryFogPlugin extends MaterialPluginBase {
   private enabled = false;
@@ -174,9 +222,11 @@ export function setSceneryFog(
   state.height = Math.max(1, height);
   state.exploredDim = exploredDim;
   for (const plugin of plugins) plugin.setEnabled(texture !== null);
+  for (const material of shaders) bindShader(material);
 }
 
 /** The fog edge's blur radius, in texels; kept equal to the terrain's. */
 export function setSceneryFogSoftness(texels: number): void {
   state.softness = texels;
+  for (const material of shaders) bindShader(material);
 }
