@@ -97,7 +97,10 @@ export function registerGameCommands(console: GameConsole, game: ConsoleGame): v
     help:
       'Draw fog of war. 0 reveals the whole map and every unit on it, for this' +
       ' client only — the simulation still fogs, so vision still gates combat.',
-    value: true,
+    // Off by default while the game is being built; a networked match turns
+    // it back on, because a client that cannot see fog sees what others hide.
+    value: false,
+    fair: true,
     cheat: true,
     onChange: (value) => game.setFogEnabled(value === true),
   });

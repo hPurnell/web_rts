@@ -142,6 +142,11 @@ gated behind `sv_cheats`, which `joinMatch` locks off: the gate is not about
 fairness, it is that one client inventing units the other never hears about is
 a desync.
 
+A local game starts with `sv_cheats 1` and `r_fog 0`, for development. Locking
+cheats also puts every cheat cvar with a `fair` value back to it, which is what
+turns fog on for a networked match; before that the lock left a cheat set
+beforehand in force.
+
 ## The Generals source is checked out, and settles these questions
 
 `CnC_Generals_Zero_Hour/` is the game's own source, gitignored. Reach for it

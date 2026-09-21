@@ -153,7 +153,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
    * enemy unit invisible over fully lit ground, which is not what "disable fog
    * of war" means to anyone.
    */
-  let fogEnabled = true;
+  let fogEnabled = false;
   /**
    * Who the view is drawn for, or -1 to see everything.
    *
@@ -566,7 +566,15 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     refreshTerrainSurface();
     unitRenderer.captureTick(driver.match);
     unitRenderer.update(driver.match, world, driver.match.terrain, 1, viewer(LOCAL_PLAYER));
-    setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
+    // Only if r_fog is on: starting a match used to turn the ground's fog on
+    // regardless, leaving it dark while every unit on it stayed visible.
+    setTerrainFog(
+      terrainMaterial,
+      fogEnabled ? fogTexture.texture : null,
+      world.width,
+      world.height,
+      EXPLORED_DIM,
+    );
 
     // Open on the local player's base, the way an RTS does.
     const start = world.startLocations[0];
@@ -594,7 +602,15 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     }
     unitRenderer.captureTick(playback.match);
     unitRenderer.update(playback.match, world, playback.match.terrain, 1, viewer(LOCAL_PLAYER));
-    setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
+    // Only if r_fog is on: starting a match used to turn the ground's fog on
+    // regardless, leaving it dark while every unit on it stayed visible.
+    setTerrainFog(
+      terrainMaterial,
+      fogEnabled ? fogTexture.texture : null,
+      world.width,
+      world.height,
+      EXPLORED_DIM,
+    );
     overlay.set('match', 'replay');
     overlay.set('replay', describeReplay(replay));
   }
@@ -705,7 +721,15 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
 
     unitRenderer.captureTick(match);
     unitRenderer.update(match, world, match.terrain, 1, viewer(netPlayer));
-    setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
+    // Only if r_fog is on: starting a match used to turn the ground's fog on
+    // regardless, leaving it dark while every unit on it stayed visible.
+    setTerrainFog(
+      terrainMaterial,
+      fogEnabled ? fogTexture.texture : null,
+      world.width,
+      world.height,
+      EXPLORED_DIM,
+    );
     const home = world.startLocations[playerId] ?? world.startLocations[0];
     if (home) {
       const centre = worldFromCell(world, home.cell);

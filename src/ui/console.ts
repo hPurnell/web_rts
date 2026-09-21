@@ -36,6 +36,13 @@ export interface CvarDef {
   readonly value: CvarValue;
   /** Requires `sv_cheats 1`. Refused rather than silently ignored. */
   readonly cheat?: boolean;
+  /**
+   * For a cheat: the value a match with cheats locked off forces it back to.
+   * Locking only turned `sv_cheats` off, so a cheat set beforehand — fog off,
+   * say — carried straight into a networked match. A cheat whose default is
+   * already the fair value needs none.
+   */
+  readonly fair?: CvarValue;
   /** Persisted to localStorage and restored next session. */
   readonly archive?: boolean;
   /** Reported by `cvarlist` but cannot be set from the console. */
@@ -403,6 +410,11 @@ export function createConsole(host: ConsoleHost = {}): GameConsole {
           cheats.value = false;
           cheats.onChange?.(false);
         }
+        for (const cvar of cvars.values()) {
+          if (!cvar.cheat || cvar.fair === undefined || cvar.value === cvar.fair) continue;
+          cvar.value = cvar.fair;
+          cvar.onChange?.(cvar.fair);
+        }
       }
       changed();
     },
@@ -564,7 +576,9 @@ export function createConsole(host: ConsoleHost = {}): GameConsole {
   self.cvar({
     name: 'sv_cheats',
     help: 'Allow commands that change match state from the console.',
-    value: false,
+    // On for a local game, which is what this is for while it is being built.
+    // A networked match locks it off, and puts every cheat back to fair.
+    value: true,
   });
 
   self.register({

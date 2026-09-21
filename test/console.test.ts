@@ -132,6 +132,8 @@ describe('cheat gating', () => {
       run: ({ console: c }) => c.queue({ kind: 0 } as SimCommand),
     });
 
+    // Cheats are on by default for a local game; this is about turning them off.
+    console.execute('sv_cheats 0');
     console.execute('give_test');
     expect(queued).toHaveLength(0);
     expect(output(console)).toContain('sv_cheats 1');
@@ -144,6 +146,7 @@ describe('cheat gating', () => {
   it('refuses a cheat cvar the same way', () => {
     const { console } = setup();
     console.cvar({ name: 'r_seeall', help: '', value: false, cheat: true });
+    console.execute('sv_cheats 0');
     console.execute('r_seeall 1');
     expect(console.bool('r_seeall')).toBe(false);
 

@@ -159,6 +159,7 @@ describe('cheats reach the simulation only through the command queue', () => {
 
   it('refuses every cheat with cheats off', () => {
     const { console, queued } = setup();
+    console.execute('sv_cheats 0');
     for (const line of ['give 500', 'spawn soldier', 'kill', 'stress 10']) {
       console.execute(line);
     }
@@ -178,12 +179,13 @@ describe('cheats reach the simulation only through the command queue', () => {
 describe('cvars drive the renderer', () => {
   it('turns fog off and on, as a cheat', () => {
     const { console, calls } = setup();
-    console.execute('r_fog 0');
+    console.execute('sv_cheats 0');
+    console.execute('r_fog 1');
     expect(calls['setFogEnabled']).toBeUndefined(); // refused: it is a cheat
 
     console.execute('sv_cheats 1');
-    console.execute('r_fog 0');
-    expect(calls['setFogEnabled']).toEqual([[false]]);
+    console.execute('r_fog 1');
+    expect(calls['setFogEnabled']).toEqual([[true]]);
   });
 
   it('selects an overlay layer by name, and off means null', () => {
@@ -293,15 +295,34 @@ describe('r_fog', () => {
     const { console, calls } = setup();
 
     // A reveal is a cheat: one client seeing through the fog in a networked
-    // match is exactly what `sv_cheats` is locked off for.
-    console.execute('r_fog 0');
+    // match is exactly what `sv_cheats` is locked off for. Fog starts off, so
+    // with cheats off it can be neither turned on nor back off by hand.
+    console.execute('sv_cheats 0');
+    console.execute('r_fog 1');
     expect(calls['setFogEnabled']).toBeUndefined();
 
     console.execute('sv_cheats 1');
-    console.execute('r_fog 0');
-    expect(calls['setFogEnabled']).toEqual([[false]]);
-
     console.execute('r_fog 1');
-    expect(calls['setFogEnabled']).toEqual([[false], [true]]);
+    expect(calls['setFogEnabled']).toEqual([[true]]);
+
+    console.execute('r_fog 0');
+    expect(calls['setFogEnabled']).toEqual([[true], [false]]);
+  });
+
+  it('starts with cheats on and fog off, for a local game', () => {
+    const { console } = setup();
+    expect(console.bool('sv_cheats')).toBe(true);
+    expect(console.bool('r_fog')).toBe(false);
+  });
+
+  it('puts fog back on when a networked match locks cheats off', () => {
+    // Locking used to turn off sv_cheats and nothing else, so a reveal set
+    // beforehand — and now the default — carried into the match.
+    const { console, calls } = setup();
+    console.setCheatsLocked(true);
+    expect(console.bool('r_fog')).toBe(true);
+    expect(calls['setFogEnabled']).toEqual([[true]]);
+    console.execute('r_fog 0');
+    expect(console.bool('r_fog')).toBe(true);
   });
 });
