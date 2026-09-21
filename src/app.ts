@@ -76,6 +76,7 @@ import type { ConsoleGame, PackMap } from './game/consolecommands.ts';
 import { createHud } from './ui/hud.ts';
 import type { CommandAction } from './ui/hud.ts';
 import { createMinimap } from './ui/minimap.ts';
+import type { MinimapPalette } from './ui/minimap.ts';
 import { PLAYER_COLORS } from './render/units.ts';
 import { OrderKind, NULL_HANDLE } from './sim/units.ts';
 import { unitType } from './sim/unittypes.ts';
@@ -347,6 +348,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   const minimap = createMinimap();
   hud.minimapSlot.appendChild(minimap.element);
   minimap.rebuildTerrain(world);
+  /** The loaded map's own colours, which the minimap is drawn in when known. */
+  let minimapPalette: MinimapPalette | null = null;
 
   // Clicking or dragging on the minimap moves the camera there.
   let minimapDragging = false;
@@ -490,6 +493,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       true,
     );
     shadows.setMapSize(world.width * cell, world.height * cell);
+    // The minimap caches its terrain at one pixel per cell. Left alone it goes
+    // on drawing the previous map stretched to this one's size, with its fog
+    // layer still sized for the old map too.
+    minimapPalette = null;
+    minimap.rebuildTerrain(world);
     overlay.set('map', `${world.width}x${world.height}`);
   }
 
@@ -957,6 +965,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
           if (cy > y1) y1 = cy;
         }
         terrain.rebuildChunks(terrain.chunksForRect(x0, y0, x1, y1));
+        minimap.rebuildTerrain(world, minimapPalette);
         flagOverlay.rebuild(heightOverrides());
         gizmos.rebuild(heightOverrides());
         // Only the edited region is recomputed; the worker gets the result.
@@ -1303,7 +1312,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       // The palette still matters with the atlas loaded: it is what the
       // minimap draws with, and what the shader falls back to if the images
       // do not arrive.
-      if (meta.palette) setTerrainPalette(terrainMaterial, meta.palette.ground, meta.palette.cliff);
+      if (meta.palette) {
+        setTerrainPalette(terrainMaterial, meta.palette.ground, meta.palette.cliff);
+        minimapPalette = meta.palette;
+        minimap.rebuildTerrain(world, minimapPalette);
+      }
       if (meta.terrain) loadTerrainTextures(meta.terrain);
       overlay.set('map', meta.name ?? slug);
       if (meta.doodads?.length) await loadDoodads(CONTENT_PACK_URL, meta.doodads);

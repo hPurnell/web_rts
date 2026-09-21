@@ -36,10 +36,20 @@ export interface MinimapView {
   readonly halfDepth: number;
 }
 
+/** A map's own ground and cliff colours, 0..1, as the content pack gives them. */
+export interface MinimapPalette {
+  readonly ground: readonly number[];
+  readonly cliff: readonly number[];
+}
+
 export interface Minimap {
   readonly element: HTMLCanvasElement;
-  /** Re-render the terrain layer. Call when the map changes. */
-  rebuildTerrain(world: World): void;
+  /**
+   * Re-render the terrain layer. Call whenever the map changes — a new map
+   * loading, or the editor reshaping this one. The layer is a cache, and
+   * nothing else refreshes it.
+   */
+  rebuildTerrain(world: World, palette?: MinimapPalette | null): void;
   /** Draw one frame. */
   draw(
     world: World,
@@ -74,7 +84,7 @@ export function createMinimap(size = 200): Minimap {
   let fogImage: ImageData | null = null;
   let drawMs = 0;
 
-  const rebuildTerrain = (world: World): void => {
+  const rebuildTerrain = (world: World, palette: MinimapPalette | null = null): void => {
     terrainCanvas.width = world.width;
     terrainCanvas.height = world.height;
     terrainContext = terrainCanvas.getContext('2d');
@@ -103,9 +113,21 @@ export function createMinimap(size = 200): Minimap {
       const relief = Math.min(1, slope / (MAX_BUILD_SLOPE * 4));
       const shade = 46 + height * 150 - relief * 34;
 
-      data[offset] = clamp8(shade - 8);
-      data[offset + 1] = clamp8(shade + 22 - relief * 14);
-      data[offset + 2] = clamp8(shade - 4);
+      if (palette) {
+        // The map's own colours, so a desert reads as sand rather than as
+        // the green the fixture map is drawn in. Height and slope still set
+        // the brightness, and a slope leans toward the cliff colour.
+        const light = shade / 128;
+        for (let c = 0; c < 3; c++) {
+          const ground = palette.ground[c] ?? 0.5;
+          const cliff = palette.cliff[c] ?? ground;
+          data[offset + c] = clamp8((ground + (cliff - ground) * relief) * 255 * light);
+        }
+      } else {
+        data[offset] = clamp8(shade - 8);
+        data[offset + 1] = clamp8(shade + 22 - relief * 14);
+        data[offset + 2] = clamp8(shade - 4);
+      }
       data[offset + 3] = 255;
     }
     terrainContext.putImageData(image, 0, 0);

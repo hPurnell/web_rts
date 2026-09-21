@@ -226,4 +226,49 @@ describe('the minimap', () => {
     ).not.toThrow();
     minimap.dispose();
   });
+
+  /** jsdom has no 2D canvas; this one records the images the minimap writes. */
+  function recordingCanvas() {
+    const images: ImageData[] = [];
+    const spy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+      () =>
+        ({
+          createImageData: (width: number, height: number) =>
+            ({ width, height, data: new Uint8ClampedArray(width * height * 4) }) as ImageData,
+          putImageData: (image: ImageData) => images.push(image),
+        }) as unknown as CanvasRenderingContext2D,
+    );
+    return { images, restore: () => spy.mockRestore() };
+  }
+
+  it('re-renders its terrain at a new map\'s size', () => {
+    // It was drawn once at startup and never again, so every map after the
+    // first showed the first one stretched to fit.
+    const canvas = recordingCanvas();
+    const minimap = createMinimap(100);
+    minimap.rebuildTerrain(w.createWorld({ width: 32, height: 32 }));
+    minimap.rebuildTerrain(w.createWorld({ width: 64, height: 48 }));
+    const last = canvas.images[canvas.images.length - 1]!;
+    expect([last.width, last.height]).toEqual([64, 48]);
+    minimap.dispose();
+    canvas.restore();
+  });
+
+  it("draws a map in its own palette's colours", () => {
+    const canvas = recordingCanvas();
+    const minimap = createMinimap(100);
+    const world = w.createWorld({ width: 8, height: 8 });
+    minimap.rebuildTerrain(world, { ground: [0.82, 0.65, 0.36], cliff: [0.58, 0.56, 0.49] });
+    const sand = canvas.images[canvas.images.length - 1]!.data;
+    // Sand: more red than green, more green than blue. The default relief
+    // colour is green-dominant, which is what a desert used to be drawn in.
+    expect(sand[0]!).toBeGreaterThan(sand[1]!);
+    expect(sand[1]!).toBeGreaterThan(sand[2]!);
+
+    minimap.rebuildTerrain(world);
+    const plain = canvas.images[canvas.images.length - 1]!.data;
+    expect(plain[1]!).toBeGreaterThan(plain[0]!);
+    minimap.dispose();
+    canvas.restore();
+  });
 });
