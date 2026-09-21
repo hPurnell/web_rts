@@ -590,8 +590,15 @@ export interface TerrainTextures {
   readonly names: readonly string[];
 }
 
-/** Side of one atlas slot. Terrain art is 256 or smaller; this halves it. */
-const TERRAIN_SLOT = 128;
+/**
+ * Side of one atlas slot.
+ *
+ * A cell samples a 32x32 pixel quarter-tile of the source, so a class of
+ * `side` tiles needs `side * 64` pixels to be pixel-exact — 640 for the widest
+ * cliff sets. 256 is the compromise: about 21 pixels a cell on a six-tile
+ * texture, which is close to how big a cell is on screen at normal zoom.
+ */
+const TERRAIN_SLOT = 256;
 /**
  * Padding around each slot, filled by continuing the texture's own tiling.
  *
@@ -622,16 +629,43 @@ function readTerrainTextures(
   if (!blend) return null;
   const types = terrainTypes(index);
 
+  /**
+   * The texture class a cell is painted with, and where in it to look.
+   *
+   * The low two bits of a tile index are a **quadrant**, not part of the
+   * index: `WorldHeightMap::getUVForNdx` takes `tileNdx >> 2` as the 64x64
+   * source tile and uses bit 0 to pick the left or right half and bit 1 the
+   * top or bottom, because a tile covers two cells each way. Matching the raw
+   * index against the class ranges puts three quarters of the map on the
+   * wrong texture and leaves the rest unmatched; matching the shifted one
+   * places all 91,800 cells of Tournament Desert.
+   *
+   * Their tile rows run bottom-up — the loader walks the TGA in file order and
+   * a TGA starts at the bottom — so the row is flipped into the top-down space
+   * the decoder hands us.
+   */
+  const lookup = (tile: number): { record: number; subX: number; subY: number; span: number } | null => {
+    const base = tile >> 2;
+    const record = blend.records.findIndex(
+      (candidate) => base >= candidate.first && base < candidate.first + candidate.count,
+    );
+    if (record < 0) return null;
+    const entry = blend.records[record] as (typeof blend.records)[number];
+    const side = Math.max(1, entry.side);
+    const local = base - entry.first;
+    const quadrant = tile & 3;
+    const subX = (local % side) * 2 + (quadrant & 1);
+    const theirRow = Math.floor(local / side) * 2 + ((quadrant >> 1) & 1);
+    return { record, subX, subY: side * 2 - 1 - theirRow, span: side * 2 };
+  };
+
   // Only the textures this map actually paints with, commonest first, so a
   // map using more than the atlas holds loses the ones nobody will notice.
   const usage = new Map<number, number>();
   for (let cz = 0; cz < height; cz++) {
     for (let cx = 0; cx < width; cx++) {
-      const tile = blend.tiles[(cz + border) * blend.stride + (cx + border)] as number;
-      const record = blend.records.findIndex(
-        (candidate) => tile >= candidate.first && tile < candidate.first + candidate.count,
-      );
-      if (record >= 0) usage.set(record, (usage.get(record) ?? 0) + 1);
+      const found = lookup(blend.tiles[(cz + border) * blend.stride + (cx + border)] as number);
+      if (found) usage.set(found.record, (usage.get(found.record) ?? 0) + 1);
     }
   }
 
@@ -682,21 +716,20 @@ function readTerrainTextures(
     }
   }
 
-  // One texel per cell: the slot in red, and in green how many cells the
-  // texture covers before it repeats, which is the side of its tile grid.
+  // One texel per cell: which atlas slot, which cell-sized square of it, and
+  // how many of those squares the texture is divided into. Integers rather
+  // than pre-divided fractions, because eight bits of a fraction is half a
+  // pixel of misalignment at the widest textures and that shows as a seam.
   const indexMap: Image = { width, height, data: Buffer.alloc(width * height * 4) };
   for (let cz = 0; cz < height; cz++) {
     for (let cx = 0; cx < width; cx++) {
-      const tile = blend.tiles[(cz + border) * blend.stride + (cx + border)] as number;
-      const record = blend.records.findIndex(
-        (candidate) => tile >= candidate.first && tile < candidate.first + candidate.count,
-      );
-      const slot = slotOf.get(record) ?? 0;
-      const side = (chosen[slot]?.side ?? 4) as number;
+      const found = lookup(blend.tiles[(cz + border) * blend.stride + (cx + border)] as number);
+      const slot = found ? slotOf.get(found.record) : undefined;
       const at = (cz * width + cx) * 4;
-      indexMap.data[at] = slot;
-      indexMap.data[at + 1] = side;
-      indexMap.data[at + 3] = 255;
+      indexMap.data[at] = slot ?? 0;
+      indexMap.data[at + 1] = found && slot !== undefined ? found.subX : 0;
+      indexMap.data[at + 2] = found && slot !== undefined ? found.subY : 0;
+      indexMap.data[at + 3] = found && slot !== undefined ? found.span : 1;
     }
   }
 

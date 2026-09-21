@@ -121,6 +121,43 @@ gated behind `sv_cheats`, which `joinMatch` locks off: the gate is not about
 fairness, it is that one client inventing units the other never hears about is
 a desync.
 
+## The Generals source is checked out, and settles these questions
+
+`CnC_Generals_Zero_Hour/` is the game's own source, gitignored. Reach for it
+before reverse-engineering a format or matching a look by eye — it has already
+settled two things that days of measurement could not.
+
+`GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/` is the part
+that matters: `WorldHeightMap.cpp` for the map format and terrain UVs,
+`BaseHeightMap.cpp` and `HeightMap.cpp` for how the ground is lit and drawn.
+
+## A terrain tile index is a tile *and* a quarter
+
+The low two bits of a `BlendTileData` index are a quadrant, not part of the
+index: `WorldHeightMap::getUVForNdx` takes `tileNdx >> 2` as the 64x64 source
+tile, bit 0 picks the left or right half and bit 1 the top or bottom, because
+one tile covers two cells each way.
+
+Matching the raw index against a texture class's `[firstTile, +numTiles)`
+range therefore puts most of the map on the wrong texture: on Tournament
+Desert it matched 69,000 of 91,800 cells and every one of them wrongly. With
+the shift, all 91,800 match.
+
+Their tile rows run bottom-up — the loader walks the TGA in file order and a
+TGA starts at the bottom — so the row is flipped into the top-down space our
+decoder produces.
+
+## Terrain lighting is literal, and is not doubled
+
+`BaseHeightMapRenderObjClass::doTheLight` sums `ambient + N.L * diffuse` over
+the three global lights, clamps to 1, and the terrain shader modulates the
+texture by it with `GRADIENT_MODULATE` — a plain modulate, not the 2x this era
+often used. Only the *first* light contributes ambient. A warm morning desert
+really is drawn at about three quarters of its texture's own brightness, so do
+not "fix" that by brightening. `r_lightscale` exists for taste, and because
+the game applies two passes this does not: a cloud layer and a macro
+noise/lightmap.
+
 ## A W3D mesh's first texture is usually not the one it draws with
 
 A mesh can have several material passes. When it has more than one, the first

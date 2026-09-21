@@ -95,22 +95,26 @@ float noise(vec2 p) {
 }
 
 /**
- * The ground texture one cell is painted with, sampled at a continuous point.
+ * The ground texture one cell is painted with.
  *
- * The first argument says *which* texture: it is the cell being asked about.
- * The second is where in the world the sample falls, so neighbouring cells of
- * the same texture line up seamlessly instead of each restarting it.
+ * Each cell shows one cell-sized square of its texture, chosen by the map
+ * rather than derived: the index map carries which atlas slot, which square,
+ * and how many squares the texture divides into. That is the source game's own
+ * scheme — a tile covers two cells each way and the low two bits of its index
+ * pick the quarter — and neighbouring cells of one texture hold adjacent
+ * squares, so the image runs on across them without a seam.
  *
- * Green in the index map is how many cells the texture spans before it
- * repeats, which is the side of the tile grid the artist cut it into. Laying
- * every texture down at the same rate makes coarse ground look fine and fine
- * ground look coarse.
+ * Tiling it continuously instead, which is the obvious thing to do with an
+ * atlas, puts a different part of the texture under every cell than the artist
+ * placed there.
  */
-vec3 groundAt(vec2 icell, vec2 at) {
-  vec2 clamped = clamp(icell, vec2(0.0), mapCells - 1.0);
-  vec4 entry = texture2D(terrainIndex, (clamped + 0.5) / mapCells);
+vec3 groundAt(vec2 cell) {
+  vec2 icell = clamp(floor(cell), vec2(0.0), mapCells - 1.0);
+  vec4 entry = texture2D(terrainIndex, (icell + 0.5) / mapCells);
+
   float slot = floor(entry.r * 255.0 + 0.5);
-  float side = max(1.0, floor(entry.g * 255.0 + 0.5));
+  vec2 square = floor(entry.gb * 255.0 + 0.5);
+  float squares = max(1.0, floor(entry.a * 255.0 + 0.5));
 
   float columns = atlasInfo.x;
   float pad = atlasInfo.w;
@@ -118,10 +122,11 @@ vec3 groundAt(vec2 icell, vec2 at) {
   vec2 atlasSize = vec2(columns * span, atlasInfo.y * span);
   vec2 slotXY = vec2(floor(mod(slot, columns)), floor(slot / columns));
 
-  // Into the slot's usable area, never its padding: the padding exists so a
-  // bilinear tap at the edge finds more of the same texture instead of the
-  // neighbouring one.
-  vec2 inside = fract(at / side) * atlasInfo.z + pad;
+  // Where in the texture, then where in the slot. The padding around a slot
+  // continues the texture, so a bilinear tap at the edge of an edge square
+  // finds more of the same rather than the neighbouring slot.
+  vec2 inTexture = (square + fract(cell)) / squares;
+  vec2 inside = inTexture * atlasInfo.z + pad;
   return texture2D(terrainAtlas, (slotXY * span + inside) / atlasSize).rgb;
 }
 
@@ -149,17 +154,14 @@ void main(void) {
   base *= 0.92 + grain;
 
   if (terrainTextured > 0.5) {
-    // Bilinear over the four cells around this fragment. Weighted from the
-    // offset within the cell, so the blend is symmetric and a run of identical
-    // cells comes out exactly as that texture.
-    vec2 cell = vMapUv * mapCells;
-    vec2 corner = floor(cell - 0.5);
-    vec2 f = cell - 0.5 - corner;
-    vec3 g = groundAt(corner, cell) * (1.0 - f.x) * (1.0 - f.y);
-    g += groundAt(corner + vec2(1.0, 0.0), cell) * f.x * (1.0 - f.y);
-    g += groundAt(corner + vec2(0.0, 1.0), cell) * (1.0 - f.x) * f.y;
-    g += groundAt(corner + vec2(1.0, 1.0), cell) * f.x * f.y;
-    base = g;
+    // One sample, not four. The earlier version cross-faded the neighbouring
+    // cells to hide a lattice, which was a symptom of tiling the texture
+    // continuously; with each cell pointed at the square the map actually
+    // names, cells of one texture already join up and a blend would only
+    // smear them. Transitions *between* textures are hard edges here — the
+    // source game softens those with a separate blend layer this does not
+    // read yet. See generals/PLAN.md.
+    base = groundAt(vMapUv * mapCells);
   }
 
   // The map's own sun and ambient, not a fixed pair. A Generals map carries
@@ -252,7 +254,7 @@ export const DEFAULT_FOG_SOFTNESS = 0.9;
  * reads as a warm desert; 1.6 and above turns the same sand neon orange,
  * because a warm light multiplying a warm texture compounds the cast.
  */
-export const DEFAULT_LIGHT_SCALE = 1.15;
+export const DEFAULT_LIGHT_SCALE = 1.0;
 
 /** How brightly the map's lighting is applied. */
 export function setTerrainLightScale(material: ShaderMaterial, scale: number): void {

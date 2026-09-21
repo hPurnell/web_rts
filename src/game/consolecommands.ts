@@ -92,7 +92,9 @@ export function registerGameCommands(console: GameConsole, game: ConsoleGame): v
 
   console.cvar({
     name: 'r_fog',
-    help: 'Draw fog of war. Turning it off reveals the map for the local view only.',
+    help:
+      'Draw fog of war. 0 reveals the whole map and every unit on it, for this' +
+      ' client only — the simulation still fogs, so vision still gates combat.',
     value: true,
     cheat: true,
     onChange: (value) => game.setFogEnabled(value === true),

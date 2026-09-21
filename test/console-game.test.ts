@@ -286,3 +286,21 @@ describe('plain commands', () => {
     expect(output(console)).toContain('[structure]');
   });
 });
+
+describe('r_fog', () => {
+  it('is refused without cheats, and reveals the map with them', () => {
+    const { console, calls } = setup();
+
+    // A reveal is a cheat: one client seeing through the fog in a networked
+    // match is exactly what `sv_cheats` is locked off for.
+    console.execute('r_fog 0');
+    expect(calls['setFogEnabled']).toBeUndefined();
+
+    console.execute('sv_cheats 1');
+    console.execute('r_fog 0');
+    expect(calls['setFogEnabled']).toEqual([[false]]);
+
+    console.execute('r_fog 1');
+    expect(calls['setFogEnabled']).toEqual([[false], [true]]);
+  });
+});

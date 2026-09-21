@@ -137,6 +137,25 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   /** A map's scenery, replaced wholesale when another map loads. */
   let doodads: DoodadRenderer | null = null;
   let roads: RoadRenderer | null = null;
+  /**
+   * Whether fog of war is drawn at all; see `r_fog`.
+   *
+   * It gates two separate things, which is why it is a flag rather than just
+   * a call into the terrain material: the ground's darkening, and whether the
+   * renderers are told who is looking. Turning off only the first leaves every
+   * enemy unit invisible over fully lit ground, which is not what "disable fog
+   * of war" means to anyone.
+   */
+  let fogEnabled = true;
+  /**
+   * Who the view is drawn for, or -1 to see everything.
+   *
+   * Only ever affects what is *drawn*. The simulation's own fog is untouched,
+   * so vision still gates targeting and the state hash is unchanged — this
+   * cannot desync a match, and cheats are locked off in one anyway.
+   */
+  const viewer = (player: number): number => (fogEnabled ? player : -1);
+
   /** How brightly a map's own lighting is applied; see r_lightscale. */
   let lightScale = DEFAULT_LIGHT_SCALE;
   /** The ground textures the loaded map brought, disposed when it changes. */
@@ -526,7 +545,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     driver = createDriver(match, { world });
     refreshTerrainSurface();
     unitRenderer.captureTick(driver.match);
-    unitRenderer.update(driver.match, world, driver.match.terrain, 1, LOCAL_PLAYER);
+    unitRenderer.update(driver.match, world, driver.match.terrain, 1, viewer(LOCAL_PLAYER));
     setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
 
     // Open on the local player's base, the way an RTS does.
@@ -554,7 +573,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       return;
     }
     unitRenderer.captureTick(playback.match);
-    unitRenderer.update(playback.match, world, playback.match.terrain, 1, LOCAL_PLAYER);
+    unitRenderer.update(playback.match, world, playback.match.terrain, 1, viewer(LOCAL_PLAYER));
     setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
     overlay.set('match', 'replay');
     overlay.set('replay', describeReplay(replay));
@@ -665,7 +684,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     });
 
     unitRenderer.captureTick(match);
-    unitRenderer.update(match, world, match.terrain, 1, netPlayer);
+    unitRenderer.update(match, world, match.terrain, 1, viewer(netPlayer));
     setTerrainFog(terrainMaterial, fogTexture.texture, world.width, world.height, EXPLORED_DIM);
     const home = world.startLocations[playerId] ?? world.startLocations[0];
     if (home) {
@@ -744,7 +763,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     if (playback) {
       const showing = playback;
       showing.advance(dt, () => unitRenderer.captureTick(showing.match));
-      unitRenderer.update(showing.match, world, showing.match.terrain, showing.driver.alpha(), LOCAL_PLAYER);
+      unitRenderer.update(showing.match, world, showing.match.terrain, showing.driver.alpha(), viewer(LOCAL_PLAYER));
       if (showing.match.tick !== lastFogTick) {
         lastFogTick = showing.match.tick;
         ghostRenderer.update(showing.match, world, showing.match.terrain, LOCAL_PLAYER);
@@ -759,7 +778,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
           world,
           showing.match.fog,
           showing.match.units,
-          LOCAL_PLAYER,
+          viewer(LOCAL_PLAYER),
           {
             focusX: camera.focusX,
             focusZ: camera.focusZ,
@@ -810,7 +829,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
           () => recording?.checkpoint(running.match),
         );
       }
-      unitRenderer.update(running.match, world, running.match.terrain, running.alpha(), LOCAL_PLAYER);
+      unitRenderer.update(running.match, world, running.match.terrain, running.alpha(), viewer(LOCAL_PLAYER));
 
       // Fog is recomputed every few ticks and remembered structures change
       // rarely, so neither needs touching on a frame where nothing moved.
@@ -847,7 +866,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
           world,
           running.match.fog,
           running.match.units,
-          LOCAL_PLAYER,
+          viewer(LOCAL_PLAYER),
           {
             focusX: camera.focusX,
             focusZ: camera.focusZ,
@@ -1082,6 +1101,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     stressSpawn,
 
     setFogEnabled: (enabled) => {
+      fogEnabled = enabled;
       setTerrainFog(
         terrainMaterial,
         enabled ? fogTexture.texture : null,

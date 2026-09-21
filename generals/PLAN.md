@@ -599,6 +599,11 @@ extra line of sight. Nothing is wrong, it is simply not modelled.
 
 **Done.** Four things, in order of how much they changed the picture.
 
+**The game's own source settles this, and should be reached for first.**
+`CnC_Generals_Zero_Hour/` is checked out and gitignored. Two of the fixes below
+were guessed at by measurement for far too long before it arrived; both fell
+out of the source in minutes.
+
 **The ground was two colours.** The shader mixed a height ramp with a cliff
 tint and never sampled anything — M29's real texturing had not landed, so an
 imported map arrived wearing the average of its own terrain textures. Each map
@@ -609,8 +614,18 @@ spans before it repeats, which is the side of the tile grid it was cut into.
 The four cells around a fragment are cross-faded, because the source is one
 texture per cell and nothing finer, so a hard lookup draws a square lattice.
 
-Two things this cost, both worth knowing:
+Three things this cost, all worth knowing:
 
+- **A tile index is a tile and a quarter.** The low two bits are a quadrant:
+  `WorldHeightMap::getUVForNdx` takes `tileNdx >> 2` as the 64x64 source tile,
+  bit 0 picking the left or right half and bit 1 the top or bottom, because a
+  tile covers two cells each way. Matching the raw index against a texture
+  class's tile range puts most of the map on the wrong texture — on Tournament
+  Desert it matched 69,000 of 91,800 cells and every one wrongly — and tiling
+  each texture continuously instead of sampling the square the map names puts
+  a different part of it under every cell. With the shift all 91,800 match.
+  Their tile rows run bottom-up, so the row is flipped into the top-down space
+  the decoder produces.
 - `BlendTileData` does not carry its own width. The grid is the heightfield's,
   and assuming it square is right for a square map and shears every other one
   — which reads as regular stripes across the ground rather than as an
@@ -640,13 +655,19 @@ colours. Three separate faults:
   the same light, so applying both doubles a fill meant to be cast once. On
   Alpine Assault, whose fill is magenta, that turned the entire town pink.
 
-What the data does *not* settle is exposure. The colours are 0-255 with no
-multiplier recorded beside them, and taken literally they land flat morning
-ground at about 60% of its texture's own brightness. The map previews the game
-ships are close to the raw texture, so 60% is measurably dark; the era's
-fixed-function terrain stage doubled, and doubling here blows the red channel
-out and turns desert sand neon. So it is a knob — `r_lightscale`, default 1.15
-— documented as measured rather than derived.
+Exposure is **literal**, which the source settles and measurement could not.
+`BaseHeightMapRenderObjClass::doTheLight` sums `ambient + N.L * diffuse` over
+the three global lights, clamps to 1, and the terrain shader modulates the
+texture by it with `GRADIENT_MODULATE` — a plain modulate, not the 2x this era
+often used, and only the first light contributes ambient. A warm morning
+desert really is drawn at about three quarters of its texture's own
+brightness. `r_lightscale` remains, defaulting to 1, both for taste and
+because the game applies two passes this does not: a cloud shadow layer and a
+macro noise/lightmap.
+
+**Not done:** the blend layer. `BlendTileData` carries a second texture and an
+alpha edge per cell, which is how the game softens the join between two ground
+types. Without it a transition is a hard edge.
 
 **Scenery was missing because of one keyword.** Object definitions come in
 three forms and the scanner knew two. `ObjectReskin` is the third, 235 blocks
