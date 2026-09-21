@@ -65,11 +65,26 @@ export interface ImportedObject {
   readonly waypointName: string;
 }
 
+/** One point on a road: where it is, and how the road turns there. */
+export interface RoadPoint {
+  readonly x: number;
+  readonly z: number;
+  /** The author asked for a sharp corner here rather than a curve. */
+  readonly angled?: boolean;
+  /** The author asked for a tight curve: a third of the usual radius. */
+  readonly tight?: boolean;
+}
+
 /** A road, rail line or pavement, as a chain of points in cells. */
 export interface RoadPolyline {
   readonly type: string;
-  readonly points: readonly { x: number; z: number }[];
+  readonly points: readonly RoadPoint[];
 }
+
+/** `FLAG_ROAD_CORNER_ANGLED` in `MapObject.h`: a corner, not a curve. */
+const ROAD_CORNER_ANGLED = 0x08;
+/** `FLAG_ROAD_CORNER_TIGHT`: a curve of half a road width, not one and a half. */
+const ROAD_CORNER_TIGHT = 0x40;
 
 /** One directional light: where it points, and what colour it casts. */
 export interface MapLight {
@@ -172,6 +187,12 @@ function readRoads(chunks: readonly { name: string; data: Buffer }[]): RoadPolyl
 
   for (const type of new Set(segments.map((segment) => segment.type))) {
     const mine = segments.filter((segment) => segment.type === type);
+    const cornerFlags = new Map<string, number>();
+    for (const segment of mine) {
+      for (const end of [segment.a, segment.b]) {
+        cornerFlags.set(key(end), (cornerFlags.get(key(end)) ?? 0) | end.flags);
+      }
+    }
     const used = new Set<number>();
     const at = new Map<string, number[]>();
     for (let i = 0; i < mine.length; i++) {
@@ -209,7 +230,21 @@ function readRoads(chunks: readonly { name: string; data: Buffer }[]): RoadPolyl
         }
       }
 
-      polylines.push({ type, points: chain.map((p) => ({ x: p.x, z: p.z })) });
+      polylines.push({
+        type,
+        points: chain.map((p) => {
+          // A corner is stored twice, once as the end of one segment and once
+          // as the start of the next, each copy with its own flags. Either
+          // copy asking for a sharp or a tight corner is taken at its word.
+          const flags = cornerFlags.get(key(p)) ?? 0;
+          return {
+            x: p.x,
+            z: p.z,
+            ...((flags & ROAD_CORNER_ANGLED) !== 0 ? { angled: true } : {}),
+            ...((flags & ROAD_CORNER_TIGHT) !== 0 ? { tight: true } : {}),
+          };
+        }),
+      });
     }
   }
 

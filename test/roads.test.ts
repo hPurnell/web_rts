@@ -8,22 +8,23 @@
 import { describe, expect, it } from 'vitest';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
 import { Scene } from '@babylonjs/core/scene';
-import { createRoads } from '../src/render/roads.ts';
-import type { RoadType } from '../src/render/roads.ts';
+import { createRoads, smoothCorners } from '../src/render/roads.ts';
+import type { RoadPoint, RoadType } from '../src/render/roads.ts';
 
 const TWO_LANE: RoadType = {
   id: 'TwoLane',
   texture: 'roads/twolane.png',
   width: 4,
+  scale: 4,
   repeat: 16,
-  v0: 0.05,
-  v1: 0.3,
+  v0: 0.3,
+  v1: 0.05,
 };
 
 const types = new Map([['TwoLane', TWO_LANE]]);
 
 function build(
-  points: { x: number; z: number }[],
+  points: RoadPoint[],
   groundY: (x: number, z: number) => number = () => 0,
 ): { positions: Float32Array; indices: number[] } {
   const scene = new Scene(new NullEngine());
@@ -77,12 +78,12 @@ describe('the road ribbon', () => {
     expect(last).toBeCloseTo(10, 1);
   });
 
-  it('mitres a corner rather than notching it', () => {
+  it('mitres a corner the author flagged as angled, rather than notching it', () => {
     // A right angle. The bisector is at 45 degrees, so the offset has to
     // stretch by sqrt(2) for the outer edge to stay parallel to both legs.
     const { positions } = build([
       { x: 0, z: 0 },
-      { x: 20, z: 0 },
+      { x: 20, z: 0, angled: true },
       { x: 20, z: 20 },
     ]);
     const widths: number[] = [];
@@ -153,5 +154,97 @@ describe('the road ribbon', () => {
     );
     expect(renderer.count).toBe(0);
     expect(scene.meshes.filter((m) => m.name.startsWith('road_'))).toHaveLength(0);
+  });
+});
+
+describe('road corners', () => {
+  const radiusOf = (points: RoadPoint[], cx: number, cz: number): number[] =>
+    points.map((p) => Math.hypot(p.x - cx, p.z - cz));
+
+  it('curves a right angle into an arc a road and a half wide', () => {
+    // CORNER_RADIUS in the source is 1.5 road widths. A right-angle fillet of
+    // radius r meets each leg r back from the corner, with its centre at
+    // (20 - r, r) for a turn from +x to +z at (20, 0).
+    const out = smoothCorners(
+      [
+        { x: 0, z: 0 },
+        { x: 20, z: 0 },
+        { x: 20, z: 20 },
+      ],
+      4,
+    );
+    const r = 1.5 * 4;
+    const arc = out.slice(1, -1);
+    expect(arc.length).toBeGreaterThan(4);
+    for (const d of radiusOf(arc, 20 - r, r)) expect(d).toBeCloseTo(r, 6);
+    // And it meets the legs where a tangent arc must.
+    expect(arc[0]!.x).toBeCloseTo(20 - r, 6);
+    expect(arc[0]!.z).toBeCloseTo(0, 6);
+    expect(arc[arc.length - 1]!.x).toBeCloseTo(20, 6);
+    expect(arc[arc.length - 1]!.z).toBeCloseTo(r, 6);
+  });
+
+  it('curves the other way on a turn the other way', () => {
+    const out = smoothCorners(
+      [
+        { x: 0, z: 0 },
+        { x: 20, z: 0 },
+        { x: 20, z: -20 },
+      ],
+      4,
+    );
+    const r = 1.5 * 4;
+    for (const d of radiusOf(out.slice(1, -1), 20 - r, -r)) expect(d).toBeCloseTo(r, 6);
+  });
+
+  it('makes a tight corner a third the radius', () => {
+    const out = smoothCorners(
+      [
+        { x: 0, z: 0 },
+        { x: 20, z: 0, tight: true },
+        { x: 20, z: 20 },
+      ],
+      4,
+    );
+    const r = 0.5 * 4;
+    for (const d of radiusOf(out.slice(1, -1), 20 - r, r)) expect(d).toBeCloseTo(r, 6);
+  });
+
+  it('leaves an angled corner sharp', () => {
+    const points: RoadPoint[] = [
+      { x: 0, z: 0 },
+      { x: 20, z: 0, angled: true },
+      { x: 20, z: 20 },
+    ];
+    expect(smoothCorners(points, 4)).toEqual(points);
+  });
+
+  it('leaves a gentle bend sharp, as the source does under 27 degrees', () => {
+    const points: RoadPoint[] = [
+      { x: 0, z: 0 },
+      { x: 20, z: 0 },
+      { x: 40, z: 5 }, // about 14 degrees
+    ];
+    expect(smoothCorners(points, 4)).toHaveLength(3);
+  });
+
+  it('shrinks the radius rather than overlapping a short leg', () => {
+    // Legs of 4 leave room for a reach of 2 each way; a full 1.5-width radius
+    // would reach 6 and run past both ends.
+    const out = smoothCorners(
+      [
+        { x: 0, z: 0 },
+        { x: 4, z: 0 },
+        { x: 4, z: 4 },
+      ],
+      4,
+    );
+    for (const p of out) {
+      expect(p.x).toBeGreaterThanOrEqual(-1e-9);
+      expect(p.x).toBeLessThanOrEqual(4 + 1e-9);
+      expect(p.z).toBeGreaterThanOrEqual(-1e-9);
+      expect(p.z).toBeLessThanOrEqual(4 + 1e-9);
+    }
+    expect(out[1]!.x).toBeCloseTo(2, 6); // the arc starts halfway along
   });
 });

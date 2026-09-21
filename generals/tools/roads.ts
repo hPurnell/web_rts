@@ -5,18 +5,24 @@
  * draws a textured ribbon along them, draped over the terrain, so what this
  * has to export is a texture and the numbers needed to lay one out.
  *
- * **The straight-road tile.** A road texture is an atlas: a full-width strip
+ * **The straight-road strip.** A road texture is an atlas: a full-width strip
  * of straight road across the top, and below it the corner, T-junction,
- * crossroads and end-cap pieces. Only the straight strip is used here — joins
- * are mitred geometrically instead, which is a fair trade for an RTS camera
- * and avoids having to classify every junction in the map.
+ * crossroads and end-cap pieces. Only the straight strip is used here; curves
+ * bend it along an arc instead of using the corner pieces, which keeps lane
+ * markings continuous through a turn.
  *
- * The strip sits at a fixed place in every road texture: **centred at v = 1/6,
- * one quarter of the texture tall**, with `RoadWidthInTexture` of that being
- * road and the rest shoulder that fades into the terrain. That is not from
- * documentation — it is what predicts the measured extent of the opaque band
- * in `TRTwoLane.tga` (0.0542..0.2792 against 0.0547..0.2773 measured) and in
- * `TRSidewalk.tga`, which is half the size.
+ * All three numbers come from `W3DRoadBuffer::preloadRoadSegment` and
+ * `loadFloat4PtSection` in the game's source, and replace ones that were
+ * inferred from the texture and got two of three wrong:
+ *
+ * - the ribbon is `RoadWidth x RoadWidthInTexture` across — the fraction
+ *   *narrows* the road, it does not widen the tile around it;
+ * - one repeat of the texture runs `4 x RoadWidth` along it;
+ * - across it, `v = 85/512 - offset / (4 x RoadWidth)`, which puts the strip
+ *   centred at 1/6 and `RoadWidthInTexture / 4` of the texture tall.
+ *
+ * Dividing by the fraction instead of multiplying made every road between 11%
+ * and 23% too wide and stretched its texture to match.
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -29,18 +35,26 @@ import { writePng } from './image.ts';
 /** Generals world units per engine cell, as the map importer uses. */
 const XY_PER_CELL = 10;
 
-/** Where the straight-road strip sits in every road texture. */
-const TILE_CENTRE_V = 1 / 6;
-const TILE_HEIGHT_V = 0.25;
+/** Where the straight-road strip is centred: `85 / 512` in the source. */
+const STRIP_CENTRE_V = 85 / 512;
+/** World units per texture unit, along and across: `U / (uScale * 4)`. */
+const WIDTHS_PER_REPEAT = 4;
 
 export interface RoadType {
   readonly id: string;
   readonly texture: string;
-  /** Tile width across the road, in cells, shoulder included. */
+  /** Width of the ribbon across the road, in cells. */
   readonly width: number;
+  /**
+   * The road's nominal width in cells — `RoadWidth` before the in-texture
+   * fraction narrows it. Curves are sized from this, not from `width`.
+   */
+  readonly scale: number;
   /** How far along the road one repeat of the texture covers, in cells. */
   readonly repeat: number;
+  /** Texture v at the road's right-hand edge, looking along it. */
   readonly v0: number;
+  /** Texture v at its left-hand edge. */
   readonly v1: number;
 }
 
@@ -110,22 +124,26 @@ async function main(): Promise<void> {
     const file = `${type.toLowerCase()}.png`;
     writeFileSync(join(ASSETS_DIR, 'roads', file), writePng(image));
 
-    // The tile is as wide as the texture and a quarter of it tall, so one
-    // repeat along the road is that aspect ratio times the tile's width.
-    const width = definition.width / definition.widthInTexture / XY_PER_CELL;
-    const repeat = (image.width / (image.height * TILE_HEIGHT_V)) * width;
+    const scale = definition.width / XY_PER_CELL;
+    const width = scale * definition.widthInTexture;
+    // Half the road across is widthInTexture / 2 road widths, which the source
+    // divides by four road widths per texture unit.
+    const halfV = definition.widthInTexture / (2 * WIDTHS_PER_REPEAT);
 
     out.push({
       id: type,
       texture: `roads/${file}`,
       width,
-      repeat,
-      v0: TILE_CENTRE_V - TILE_HEIGHT_V / 2,
-      v1: TILE_CENTRE_V + TILE_HEIGHT_V / 2,
+      scale,
+      repeat: scale * WIDTHS_PER_REPEAT,
+      // `v = centre - offset`, and the offset is positive on the left: the
+      // right-hand edge takes the larger v.
+      v0: STRIP_CENTRE_V + halfV,
+      v1: STRIP_CENTRE_V - halfV,
     });
     console.log(
-      `  ${type} -> ${definition.texture}, ${width.toFixed(1)} cells wide,` +
-        ` repeating every ${repeat.toFixed(1)}`,
+      `  ${type} -> ${definition.texture}, ${width.toFixed(2)} cells wide,` +
+        ` repeating every ${(scale * WIDTHS_PER_REPEAT).toFixed(1)}`,
     );
   }
 

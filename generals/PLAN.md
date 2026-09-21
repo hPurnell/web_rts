@@ -542,6 +542,25 @@ polyline over different terrain is different geometry. `src/render/roads.ts`
 mitres the corners and subdivides along the length so the ribbon follows the
 ground.
 
+**Roads, corrected against the source.** Three numbers in the first version
+were inferred from the texture, and the source (`W3DRoadBuffer.cpp`) showed two
+of them wrong. The ribbon is `RoadWidth x RoadWidthInTexture` across — the
+fraction narrows the road rather than widening a tile around it — so dividing
+by it made every road 11% to 23% too wide and stretched its texture to match.
+One repeat runs `4 x RoadWidth` along it, and across it `v = 85/512 - offset /
+(4 x RoadWidth)`, which also mirrors which edge takes which side of the strip.
+
+Corners are curves unless the author said otherwise. Every corner is a circular
+arc of `1.5 x RoadWidth` radius tangent to both legs, or `0.5 x` with
+`FLAG_ROAD_CORNER_TIGHT`, and only `FLAG_ROAD_CORNER_ANGLED` or a turn under
+about 27 degrees stays sharp. The arc is cut into the centreline before the
+ribbon is built, so lane markings follow the curve. Where two corners are too
+close for both arcs, the radius shrinks to fit; the source mitres instead.
+
+**Not done:** junctions. The source builds tees, Y-junctions, crossroads and
+alpha joins from their own regions of the road texture. Here crossing roads
+simply overlap.
+
 ### G20. A helicopter
 
 **Done.** An aircraft is not a ground unit with the collision turned off, so

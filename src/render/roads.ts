@@ -46,18 +46,128 @@ const MAX_MITRE = 4;
 export interface RoadType {
   readonly id: string;
   readonly texture: string;
-  /** Width across the road, in world units, shoulder included. */
+  /** Width of the ribbon across the road, in world units. */
   readonly width: number;
+  /**
+   * The road's nominal width, which corners are sized from. Wider than
+   * `width`: the texture's shoulder is part of the nominal road but not of
+   * the ribbon.
+   */
+  readonly scale: number;
   /** Distance along the road that one repeat of the texture covers. */
   readonly repeat: number;
+  /** Texture v at the right-hand edge, looking along the road. */
   readonly v0: number;
+  /** Texture v at the left-hand edge. */
   readonly v1: number;
+}
+
+/** A point on a road, and how the author asked it to turn there. */
+export interface RoadPoint {
+  readonly x: number;
+  readonly z: number;
+  /** A sharp corner, not a curve. */
+  readonly angled?: boolean;
+  /** A tight curve: half a road width of radius rather than one and a half. */
+  readonly tight?: boolean;
 }
 
 /** One run of road, as the map stores it. */
 export interface RoadPolyline {
   readonly type: string;
-  readonly points: readonly { x: number; z: number }[];
+  readonly points: readonly RoadPoint[];
+}
+
+/**
+ * Curve radius as a multiple of the road's nominal width.
+ *
+ * `CORNER_RADIUS` and `TIGHT_CORNER_RADIUS` in `W3DRoadBuffer.cpp`. Every
+ * corner in a Generals map is one of these arcs unless the author flagged it
+ * angled; mitring every corner is what made the roads turn in hard points.
+ */
+const CORNER_RADIUS = 1.5;
+const TIGHT_CORNER_RADIUS = 0.5;
+
+/**
+ * Turns gentler than this stay sharp, as they do in the source game: it
+ * counts a turn in thirty-degree steps and mitres anything under 0.9 of one.
+ */
+const MIN_CURVE_ANGLE = (0.9 * Math.PI) / 6;
+
+/** How finely an arc is cut. The source uses thirty degrees; this is smoother. */
+const ARC_STEP = Math.PI / 18;
+
+/**
+ * Replace each corner the author wanted curved with a circular arc tangent to
+ * both legs.
+ *
+ * The arc's radius comes from the road's nominal width, so a wide road sweeps
+ * round a wide bend. Where a leg is too short to fit the whole fillet — two
+ * corners close together — the radius shrinks to what fits instead of the
+ * arcs overlapping; the source falls back to a mitre there, which looks worse
+ * and is not something a player would recognise as intended.
+ *
+ * This only moves the centreline. The ribbon is built along the result
+ * afterwards, so the texture's lane markings follow the curve rather than
+ * being cut from the separate corner pieces in the atlas.
+ */
+export function smoothCorners(points: readonly RoadPoint[], scale: number): RoadPoint[] {
+  if (points.length < 3) return [...points];
+  const out: RoadPoint[] = [points[0] as RoadPoint];
+
+  for (let i = 1; i + 1 < points.length; i++) {
+    const before = points[i - 1] as RoadPoint;
+    const corner = points[i] as RoadPoint;
+    const after = points[i + 1] as RoadPoint;
+
+    const legA = Math.hypot(corner.x - before.x, corner.z - before.z);
+    const legB = Math.hypot(after.x - corner.x, after.z - corner.z);
+    if (legA < 1e-6 || legB < 1e-6) {
+      out.push(corner);
+      continue;
+    }
+    const ax = (corner.x - before.x) / legA;
+    const az = (corner.z - before.z) / legA;
+    const bx = (after.x - corner.x) / legB;
+    const bz = (after.z - corner.z) / legB;
+
+    const turn = Math.acos(Math.max(-1, Math.min(1, ax * bx + az * bz)));
+    if (corner.angled || turn < MIN_CURVE_ANGLE || turn > Math.PI - 1e-3) {
+      out.push(corner);
+      continue;
+    }
+
+    // How far back along each leg the arc meets it. Half a leg at most, so a
+    // fillet at the other end of the same leg always has room too.
+    let radius = (corner.tight ? TIGHT_CORNER_RADIUS : CORNER_RADIUS) * scale;
+    const half = Math.tan(turn / 2);
+    let reach = radius * half;
+    const room = Math.min(legA, legB) / 2;
+    if (reach > room) {
+      reach = room;
+      radius = reach / half;
+    }
+
+    const startX = corner.x - ax * reach;
+    const startZ = corner.z - az * reach;
+    // The centre is on the inside of the turn, a radius off the first leg.
+    const left = ax * bz - az * bx > 0 ? 1 : -1;
+    const centreX = startX - az * radius * left;
+    const centreZ = startZ + ax * radius * left;
+
+    const from = Math.atan2(startZ - centreZ, startX - centreX);
+    const steps = Math.max(1, Math.ceil(turn / ARC_STEP));
+    for (let step = 0; step <= steps; step++) {
+      const angle = from + (left * turn * step) / steps;
+      out.push({
+        x: centreX + Math.cos(angle) * radius,
+        z: centreZ + Math.sin(angle) * radius,
+      });
+    }
+  }
+
+  out.push(points[points.length - 1] as RoadPoint);
+  return out;
 }
 
 export interface RoadRenderer {
@@ -171,6 +281,8 @@ function addRibbon(
         const pz = z + oz * side;
         buffers.positions.push(px, groundY(px, pz) + LIFT, pz);
         buffers.normals.push(0, 1, 0);
+        // `side` -1 is the right-hand edge, looking along the road: the offset
+        // is its left normal, subtracted. The source puts the larger v there.
         buffers.uvs.push(u, side < 0 ? type.v0 : type.v1);
       }
 
@@ -219,7 +331,9 @@ export function createRoads(
   for (const [id, list] of byType) {
     const type = types.get(id) as RoadType;
     const buffers: Buffers = { positions: [], normals: [], uvs: [], indices: [] };
-    for (const road of list) addRibbon(buffers, road, type, groundY);
+    for (const road of list) {
+      addRibbon(buffers, { type: road.type, points: smoothCorners(road.points, type.scale) }, type, groundY);
+    }
     if (buffers.indices.length === 0) continue;
 
     const material = new StandardMaterial(`road_${id}`, scene);
