@@ -42,6 +42,7 @@ import { createRoads } from './render/roads.ts';
 import type { RoadPolyline, RoadRenderer, RoadType } from './render/roads.ts';
 import { createGhostRenderer } from './render/ghosts.ts';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
+import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture';
 import { EXPLORED_DIM, createFogTexture } from './render/fogtexture.ts';
 import {
   setTerrainFog,
@@ -159,7 +160,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   /** How brightly a map's own lighting is applied; see r_lightscale. */
   let lightScale = DEFAULT_LIGHT_SCALE;
   /** The ground textures the loaded map brought, disposed when it changes. */
-  let terrainTextures: { atlas: Texture; index: Texture } | null = null;
+  let terrainTextures: Texture[] = [];
   /** What the content pack offers, empty when there is no pack. */
   let packMaps: PackMap[] = [];
   let currentMap = '';
@@ -1257,9 +1258,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     doodads = null;
     roads?.dispose();
     roads = null;
-    terrainTextures?.atlas.dispose();
-    terrainTextures?.index.dispose();
-    terrainTextures = null;
+    for (const texture of terrainTextures) texture.dispose();
+    terrainTextures = [];
     setTerrainTextures(terrainMaterial, null);
     overlay.set('doodads', '');
     overlay.set('roads', '');
@@ -1274,6 +1274,8 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
         terrain?: {
           atlas: string;
           index: string;
+          blend?: string;
+          extraBlend?: string;
           columns: number;
           rows: number;
           slot: number;
@@ -1306,44 +1308,79 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   function loadTerrainTextures(meta: {
     atlas: string;
     index: string;
+    blend?: string;
+    extraBlend?: string;
     columns: number;
     rows: number;
     slot: number;
     pad: number;
   }): void {
-    terrainTextures?.atlas.dispose();
-    terrainTextures?.index.dispose();
+    for (const texture of terrainTextures) texture.dispose();
 
-    // No mipmaps on the atlas, deliberately. The shader tiles each slot with
-    // fract(), and the derivative the GPU uses to pick a mip level spikes
-    // wherever that wraps — which draws a crisp grid over the whole map, one
-    // line every few cells. Losing mip filtering costs some sharpening at
-    // full zoom-out; the grid was visible at every zoom. The proper fix is a
-    // texture array or explicit gradients, both of which need a WebGL2-only
-    // shader; see generals/PLAN.md.
+    // No mipmaps on the atlas, deliberately. The shader picks a cell-sized
+    // square with fract(), and the derivative the GPU uses to pick a mip level
+    // spikes wherever that wraps — which draws a crisp grid over the whole
+    // map, one line per cell. The proper fix is a texture array or explicit
+    // gradients, both of which need a WebGL2-only shader; see
+    // generals/PLAN.md.
     const atlas = new Texture(`${CONTENT_PACK_URL}/${meta.atlas}`, renderer.scene, true, false);
-    const index = new Texture(
-      `${CONTENT_PACK_URL}/${meta.index}`,
-      renderer.scene,
-      true,
-      false,
-      Texture.NEAREST_SAMPLINGMODE,
-    );
     atlas.wrapU = Texture.CLAMP_ADDRESSMODE;
     atlas.wrapV = Texture.CLAMP_ADDRESSMODE;
-    index.wrapU = Texture.CLAMP_ADDRESSMODE;
-    index.wrapV = Texture.CLAMP_ADDRESSMODE;
 
-    terrainTextures = { atlas, index };
+    /**
+     * A lookup table, not a picture. Nearest filtering always: interpolating
+     * between two slot numbers gives a third slot that has nothing to do with
+     * either, and between two corner masks a mask nobody drew.
+     */
+    const table = (path: string): Texture => {
+      const texture = new Texture(
+        `${CONTENT_PACK_URL}/${path}`,
+        renderer.scene,
+        true,
+        false,
+        Texture.NEAREST_SAMPLINGMODE,
+      );
+      texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+      texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+      return texture;
+    };
+    const index = table(meta.index);
+    // A map imported before the blend layers existed has none. An index map
+    // doubles as an empty blend: its red channel is a real slot, but the
+    // shader reads the layer's own slot, and a missing one is skipped.
+    const blend = meta.blend ? table(meta.blend) : null;
+    const extraBlend = meta.extraBlend ? table(meta.extraBlend) : null;
+
+    terrainTextures = [atlas, index, ...(blend ? [blend] : []), ...(extraBlend ? [extraBlend] : [])];
     setTerrainTextures(terrainMaterial, {
       atlas,
       index,
+      blend: blend ?? noBlend(),
+      extraBlend: extraBlend ?? noBlend(),
       columns: meta.columns,
       rows: meta.rows,
       slot: meta.slot,
       pad: meta.pad,
       cells: { width: world.width, height: world.height },
     });
+  }
+
+  /**
+   * A one-texel blend layer that blends nothing, for maps imported before the
+   * layers existed. Red 255 is "no blend" to the shader.
+   */
+  let emptyBlend: RawTexture | null = null;
+  function noBlend(): RawTexture {
+    emptyBlend ??= RawTexture.CreateRGBATexture(
+      new Uint8Array([255, 0, 0, 0]),
+      1,
+      1,
+      renderer.scene,
+      false,
+      false,
+      Texture.NEAREST_SAMPLINGMODE,
+    );
+    return emptyBlend;
   }
 
   /**

@@ -73,6 +73,8 @@ uniform float fogSoftness;
 
 uniform sampler2D terrainAtlas;
 uniform sampler2D terrainIndex;
+uniform sampler2D terrainBlend;
+uniform sampler2D terrainExtraBlend;
 /** Cells across the map, so a map UV becomes a cell coordinate. */
 uniform vec2 mapCells;
 /** Atlas columns, rows, slot side in pixels, and the padding around a slot. */
@@ -108,14 +110,8 @@ float noise(vec2 p) {
  * atlas, puts a different part of the texture under every cell than the artist
  * placed there.
  */
-vec3 groundAt(vec2 cell) {
-  vec2 icell = clamp(floor(cell), vec2(0.0), mapCells - 1.0);
-  vec4 entry = texture2D(terrainIndex, (icell + 0.5) / mapCells);
-
-  float slot = floor(entry.r * 255.0 + 0.5);
-  vec2 square = floor(entry.gb * 255.0 + 0.5);
-  float squares = max(1.0, floor(entry.a * 255.0 + 0.5));
-
+/** One cell-sized square of an atlas slot, at a position within the cell. */
+vec3 squareAt(float slot, vec2 square, float squares, vec2 inCell) {
   float columns = atlasInfo.x;
   float pad = atlasInfo.w;
   float span = atlasInfo.z + pad * 2.0;
@@ -125,9 +121,52 @@ vec3 groundAt(vec2 cell) {
   // Where in the texture, then where in the slot. The padding around a slot
   // continues the texture, so a bilinear tap at the edge of an edge square
   // finds more of the same rather than the neighbouring slot.
-  vec2 inTexture = (square + fract(cell)) / squares;
+  vec2 inTexture = (square + inCell) / squares;
   vec2 inside = inTexture * atlasInfo.z + pad;
   return texture2D(terrainAtlas, (slotXY * span + inside) / atlasSize).rgb;
+}
+
+vec3 groundAt(vec2 cell) {
+  vec2 icell = clamp(floor(cell), vec2(0.0), mapCells - 1.0);
+  vec4 entry = texture2D(terrainIndex, (icell + 0.5) / mapCells);
+  return squareAt(
+    floor(entry.r * 255.0 + 0.5),
+    floor(entry.gb * 255.0 + 0.5),
+    max(1.0, floor(entry.a * 255.0 + 0.5)),
+    fract(cell));
+}
+
+/**
+ * A blend layer at this point: the colour to lay over, and how much of it.
+ *
+ * This is the source game's terrain blending, which is not an alpha mask but a
+ * vertex fade. Each cell's four corners are opaque or clear — two on one side
+ * for a straight edge, one for a short diagonal, three for a long one — and
+ * the fade between them is what softens the join between two ground types.
+ * The corners are interpolated bilinearly here; the game splits the cell into
+ * two triangles, which gives diagonals a slightly straighter edge.
+ *
+ * Alpha packs the texture's side in its high four bits and the corner mask in
+ * its low four, corners running (x, z), (x+1, z), (x+1, z+1), (x, z+1).
+ */
+vec4 blendAt(sampler2D layer, vec2 cell) {
+  vec2 icell = clamp(floor(cell), vec2(0.0), mapCells - 1.0);
+  vec4 entry = texture2D(layer, (icell + 0.5) / mapCells);
+  float slot = floor(entry.r * 255.0 + 0.5);
+  if (slot > 254.5) return vec4(0.0);
+
+  float packed = floor(entry.a * 255.0 + 0.5);
+  float side = floor(packed / 16.0);
+  float mask = packed - side * 16.0;
+  float c0 = mod(mask, 2.0);
+  float c1 = mod(floor(mask / 2.0), 2.0);
+  float c2 = mod(floor(mask / 4.0), 2.0);
+  float c3 = mod(floor(mask / 8.0), 2.0);
+
+  vec2 f = fract(cell);
+  float alpha = mix(mix(c0, c1, f.x), mix(c3, c2, f.x), f.y);
+  vec3 colour = squareAt(slot, floor(entry.gb * 255.0 + 0.5), max(1.0, side * 2.0), f);
+  return vec4(colour, alpha);
 }
 
 void main(void) {
@@ -154,14 +193,19 @@ void main(void) {
   base *= 0.92 + grain;
 
   if (terrainTextured > 0.5) {
-    // One sample, not four. The earlier version cross-faded the neighbouring
-    // cells to hide a lattice, which was a symptom of tiling the texture
-    // continuously; with each cell pointed at the square the map actually
-    // names, cells of one texture already join up and a blend would only
-    // smear them. Transitions *between* textures are hard edges here — the
-    // source game softens those with a separate blend layer this does not
-    // read yet. See generals/PLAN.md.
-    base = groundAt(vMapUv * mapCells);
+    // One sample of the base, not a cross-fade of four. With each cell
+    // pointed at the square the map actually names, cells of one texture
+    // already join up; the joins *between* textures are softened by the
+    // map's own blend layers below, exactly where the artist put them.
+    vec2 cell = vMapUv * mapCells;
+    base = groundAt(cell);
+    // Then the blends over it, in the order the game draws them: the edge
+    // between two ground types, and where a third meets them, a second edge
+    // over that.
+    vec4 over = blendAt(terrainBlend, cell);
+    base = mix(base, over.rgb, over.a);
+    over = blendAt(terrainExtraBlend, cell);
+    base = mix(base, over.rgb, over.a);
   }
 
   // The map's own sun and ambient, not a fixed pair. A Generals map carries
@@ -288,6 +332,8 @@ export function setTerrainPalette(
 export interface TerrainTextureSet {
   readonly atlas: BaseTexture;
   readonly index: BaseTexture;
+  readonly blend: BaseTexture;
+  readonly extraBlend: BaseTexture;
   readonly columns: number;
   readonly rows: number;
   readonly slot: number;
@@ -307,6 +353,8 @@ export function setTerrainTextures(
   if (!set) return;
   material.setTexture('terrainAtlas', set.atlas);
   material.setTexture('terrainIndex', set.index);
+  material.setTexture('terrainBlend', set.blend);
+  material.setTexture('terrainExtraBlend', set.extraBlend);
   material.setVector2('mapCells', new Vector2(set.cells.width, set.cells.height));
   material.setVector4('atlasInfo', new Vector4(set.columns, set.rows, set.slot, set.pad));
 }
@@ -397,7 +445,7 @@ export function createTerrainMaterial(
       'atlasInfo',
       'terrainTextured',
     ],
-    samplers: ['fogSampler', 'terrainAtlas', 'terrainIndex'],
+    samplers: ['fogSampler', 'terrainAtlas', 'terrainIndex', 'terrainBlend', 'terrainExtraBlend'],
   });
 
   const light = options.lightDirection;

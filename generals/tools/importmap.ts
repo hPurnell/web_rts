@@ -404,90 +404,145 @@ function terrainTypes(index: AssetIndex): Map<string, string> {
   return types;
 }
 
-/**
- * The textures a map paints its ground with, and how much of it each covers.
- *
- * `BlendTileData` is a per-cell tile index array followed by a table of
- * texture records. Each record is `firstTile`, `tileCount`, the square root of
- * that count, a zero, and a length-prefixed name; `firstTile` accumulates
- * across the table, which both identifies where the table starts and proves it
- * was read correctly.
- *
- * The array is what makes the palette worth anything. Averaging the *list*
- * weights a texture used on four cells the same as one used on a third of the
- * map, and on a map with eleven incidental grass variants and one dominant
- * cliff it produces a colour that appears nowhere on it.
- */
+/** One entry of the map's blend table: a texture tile laid over the base, and its shape. */
+export interface BlendTile {
+  /** A tile index like a base cell's: a source tile shifted left two, plus a quadrant. */
+  readonly tile: number;
+  readonly horizontal: boolean;
+  readonly vertical: boolean;
+  readonly rightDiagonal: boolean;
+  readonly leftDiagonal: boolean;
+  readonly inverted: boolean;
+  readonly longDiagonal: boolean;
+  /** An edge texture class supplying the alpha, or -1 for the vertex fade. */
+  readonly customEdge: number;
+}
+
 export interface BlendTiles {
   /** Cells across one row of the *uncropped* grid. */
   readonly stride: number;
   /** One tile index per cell, row-major over the uncropped grid. */
   readonly tiles: Uint16Array;
-  /** The texture table: each owns tile indices [first, first + count). */
+  /** Per cell, an index into `blends`, or 0 for none. */
+  readonly blend: Uint16Array;
+  /** Per cell, a second blend over the first: the source game's 3-way blend. */
+  readonly extraBlend: Uint16Array;
+  /** The texture table: each owns *source tiles* [first, first + count). */
   readonly records: readonly { name: string; first: number; count: number; side: number }[];
+  /** The blend table. Entry 0 is "no blend" and is never read from the file. */
+  readonly blends: readonly (BlendTile | null)[];
 }
 
+/** Written after every blend table entry, and checked, by the source game. */
+const BLEND_SENTINEL = 0x7ada0000;
+
 /**
- * Decode `BlendTileData`: which texture every cell of the map is painted with.
+ * Decode `BlendTileData`, following `WorldHeightMap::ParseBlendTileData`.
  *
- * The chunk is a per-cell tile index array followed by a table of texture
- * records. Each record is `firstTile`, `tileCount`, the square root of that
- * count, a zero, and a length-prefixed name; `firstTile` accumulates across
- * the table, which both identifies where the table starts and proves it was
- * read correctly.
+ * This used to find the texture table by scanning for something that looked
+ * like one. It no longer needs to: the game's own parser gives the exact
+ * layout, which depends on the chunk version —
  *
- * A texture is subdivided into `side x side` tiles and one tile covers one
- * cell, so `side` is also how many cells the texture spans before it repeats —
- * which is what the renderer needs to lay it down at the scale the artist drew
- * it at.
+ * ```
+ * int32  cell count
+ * int16  tile index per cell
+ * int16  blend index per cell
+ * int16  extra blend index per cell      version 6+
+ * int16  cliff info index per cell       version 5+
+ * bytes  cliff flags, a bit per cell     version 7+
+ * int32  bitmap tiles, blended tiles, cliff infos (5+), texture classes
+ *        per class: first, count, width, a legacy int, a string
+ * int32  edge tiles, edge classes        version 4+
+ *        per class: first, count, width, a string
+ *        per blended tile after the first: tile, five flag bytes,
+ *        long diagonal (3+), custom edge class (4+), and 0x7ADA0000
+ * ```
+ *
+ * The sentinel after each blend entry is the check that the whole walk is
+ * aligned, and it is asserted rather than trusted.
+ *
+ * The grid is the heightfield's and does not carry its own width, so callers
+ * pass it. Assuming a square grid is right for a square map and shears every
+ * other one.
  */
-export function readBlendTiles(data: Buffer, rowStride?: number): BlendTiles | null {
-  const cells = data.readUInt32LE(0);
-  // The chunk does not carry its own width: the grid is the heightfield's, so
-  // callers that care about layout pass it. Assuming a square grid is only
-  // right for a square map, and gets every other map subtly wrong — the tile
-  // rows shear, which reads as regular stripes across the ground rather than
-  // as an indexing bug.
-  const stride = rowStride && rowStride > 0 ? rowStride : Math.round(Math.sqrt(cells));
-  // Four uint16 arrays per cell — tile, blend, extra blend and cliff indices —
-  // so the table cannot start before them.
-  const afterArrays = 4 + cells * 2 * 4;
+export function readBlendTiles(data: Buffer, rowStride: number, version = 8): BlendTiles | null {
+  const r = new Reader(data);
+  try {
+    const cells = r.int32();
+    const stride = rowStride > 0 ? rowStride : Math.round(Math.sqrt(cells));
+    const rows = Math.floor(cells / stride);
+    const shorts = (): Uint16Array => {
+      const out = new Uint16Array(cells);
+      for (let i = 0; i < cells; i++) out[i] = r.uint16();
+      return out;
+    };
 
-  let start = -1;
-  for (let at = afterArrays; at + 22 < data.length; at++) {
-    if (data.readUInt32LE(at) !== 0) continue; // the first record's firstTile
-    const count = data.readUInt32LE(at + 4);
-    const side = data.readUInt32LE(at + 8);
-    const length = data.readUInt16LE(at + 16);
-    if (count !== side * side || data.readUInt32LE(at + 12) !== 0) continue;
-    if (length < 3 || length > 32) continue;
-    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(data.toString('latin1', at + 18, at + 18 + length))) continue;
-    start = at;
-    break;
+    const tiles = shorts();
+    const blend = shorts();
+    const extraBlend = version >= 6 ? shorts() : new Uint16Array(cells);
+    if (version >= 5) r.at += cells * 2; // cliff info indices
+    if (version >= 7) {
+      // Version 7 was written with a byte width one short; the parser keeps
+      // reading it the way it was written.
+      const byteWidth = version === 7 ? (stride + 1) >> 3 : (stride + 7) >> 3;
+      r.at += rows * byteWidth;
+    }
+
+    r.int32(); // bitmap tiles
+    const blendedTiles = r.int32();
+    if (version >= 5) r.int32(); // cliff infos
+    const classCount = r.int32();
+    const records: BlendTiles['records'][number][] = [];
+    for (let i = 0; i < classCount; i++) {
+      const first = r.int32();
+      const count = r.int32();
+      const side = r.int32();
+      r.int32(); // legacy
+      records.push({ first, count, side, name: r.string() });
+    }
+
+    if (version >= 4) {
+      r.int32(); // edge tiles
+      const edgeClasses = r.int32();
+      for (let i = 0; i < edgeClasses; i++) {
+        r.int32();
+        r.int32();
+        r.int32();
+        r.string();
+      }
+    }
+
+    const blends: (BlendTile | null)[] = [null];
+    for (let i = 1; i < blendedTiles; i++) {
+      const tile = r.int32();
+      const horizontal = r.uint8() !== 0;
+      const vertical = r.uint8() !== 0;
+      const rightDiagonal = r.uint8() !== 0;
+      const leftDiagonal = r.uint8() !== 0;
+      const inverted = r.uint8();
+      const longDiagonal = version >= 3 ? r.uint8() !== 0 : false;
+      const customEdge = version >= 4 ? r.int32() : -1;
+      if (r.uint32() !== BLEND_SENTINEL) return null;
+      blends.push({
+        tile,
+        horizontal,
+        vertical,
+        rightDiagonal,
+        leftDiagonal,
+        // Bit 0 is the inversion. Bit 1 forces a triangle flip for 3-way
+        // blends, which only matters to a renderer that splits cells into
+        // triangles the way the source game does; this one interpolates the
+        // four corners bilinearly.
+        inverted: (inverted & 1) !== 0,
+        longDiagonal,
+        customEdge,
+      });
+    }
+
+    return { stride, tiles, blend, extraBlend, records, blends };
+  } catch {
+    return null;
   }
-  if (start < 0) return null;
-
-  const records: { name: string; first: number; count: number; side: number }[] = [];
-  let at = start;
-  let expected = 0;
-  while (at + 18 < data.length) {
-    const first = data.readUInt32LE(at);
-    const count = data.readUInt32LE(at + 4);
-    const side = data.readUInt32LE(at + 8);
-    const length = data.readUInt16LE(at + 16);
-    // The chain is the check: a record that does not continue where the last
-    // one ended means the table is over, or was never really there.
-    if (first !== expected || count !== side * side || length < 3 || length > 32) break;
-    records.push({ name: data.toString('latin1', at + 18, at + 18 + length), first, count, side });
-    expected = first + count;
-    at += 18 + length;
-  }
-  if (records.length === 0) return null;
-
-  const tiles = new Uint16Array(cells);
-  for (let i = 0; i < cells; i++) tiles[i] = data.readUInt16LE(4 + i * 2);
-
-  return { stride, tiles, records };
 }
 
 /**
@@ -498,8 +553,12 @@ export function readBlendTiles(data: Buffer, rowStride?: number): BlendTiles | n
  * map, and on a map with eleven incidental grass variants and one dominant
  * cliff it produces a colour that appears nowhere on it.
  */
-export function readTerrainCoverage(data: Buffer): { name: string; share: number }[] {
-  const blend = readBlendTiles(data);
+export function readTerrainCoverage(
+  data: Buffer,
+  rowStride: number,
+  version = 8,
+): { name: string; share: number }[] {
+  const blend = readBlendTiles(data, rowStride, version);
   if (!blend) return [];
 
   const used = new Map<number, number>();
@@ -508,7 +567,8 @@ export function readTerrainCoverage(data: Buffer): { name: string; share: number
   return blend.records.map((record) => {
     let count = 0;
     for (const [tile, n] of used) {
-      if (tile >= record.first && tile < record.first + record.count) count += n;
+      const base = tile >> 2;
+      if (base >= record.first && base < record.first + record.count) count += n;
     }
     return { name: record.name, share: count / blend.tiles.length };
   });
@@ -517,9 +577,11 @@ export function readTerrainCoverage(data: Buffer): { name: string; share: number
 function readTerrainPalette(
   data: Buffer,
   index: AssetIndex,
+  rowStride: number,
+  version: number,
 ): { ground: number[]; cliff: number[]; names: string[] } {
   const types = terrainTypes(index);
-  const coverage = readTerrainCoverage(data).sort((a, b) => b.share - a.share);
+  const coverage = readTerrainCoverage(data, rowStride, version).sort((a, b) => b.share - a.share);
   const groundPixels: number[] = [0, 0, 0];
   const cliffPixels: number[] = [0, 0, 0];
   let groundWeight = 0;
@@ -581,6 +643,10 @@ function readTerrainPalette(
 export interface TerrainTextures {
   readonly atlas: Image;
   readonly index: Image;
+  /** The blend laid over the base, per cell; see `encodeBlends`. */
+  readonly blend: Image;
+  /** A second blend over the first, where three ground types meet. */
+  readonly extraBlend: Image;
   readonly columns: number;
   readonly rows: number;
   /** Side of one atlas slot's usable area, in pixels. */
@@ -624,8 +690,9 @@ function readTerrainTextures(
   width: number,
   height: number,
   rowStride: number,
+  version: number,
 ): TerrainTextures | null {
-  const blend = readBlendTiles(data, rowStride);
+  const blend = readBlendTiles(data, rowStride, version);
   if (!blend) return null;
   const types = terrainTypes(index);
 
@@ -664,8 +731,16 @@ function readTerrainTextures(
   const usage = new Map<number, number>();
   for (let cz = 0; cz < height; cz++) {
     for (let cx = 0; cx < width; cx++) {
-      const found = lookup(blend.tiles[(cz + border) * blend.stride + (cx + border)] as number);
+      const cell = (cz + border) * blend.stride + (cx + border);
+      const found = lookup(blend.tiles[cell] as number);
       if (found) usage.set(found.record, (usage.get(found.record) ?? 0) + 1);
+      // A texture that only ever appears blended over another still has to be
+      // in the atlas, or the blend has nothing to draw.
+      for (const layer of [blend.blend, blend.extraBlend]) {
+        const entry = blend.blends[layer[cell] as number];
+        const over = entry ? lookup(entry.tile) : null;
+        if (over) usage.set(over.record, (usage.get(over.record) ?? 0) + 1);
+      }
     }
   }
 
@@ -733,9 +808,80 @@ function readTerrainTextures(
     }
   }
 
+  /**
+   * One blend layer as an image: which texture square to lay over the base,
+   * and which of the cell's four corners it is opaque at.
+   *
+   * That is the whole of the source game's terrain blending. It is not an
+   * alpha mask but a vertex fade — `WorldHeightMap::getAlphaUVData` sets each
+   * of a cell's four corners to 0 or 255 from the blend's shape flags, and the
+   * card interpolates between them. A horizontal edge is two opaque corners on
+   * one side, a short diagonal one corner, a long diagonal three. None of the
+   * 1.09 million blend entries across the shipped maps uses the custom edge
+   * textures, so this is the whole job.
+   *
+   * Red is the slot, 255 for none; green and blue the square, as the base map
+   * has them; alpha packs the texture's side in its high four bits and the
+   * corner mask in its low four. Corners run 0 (x, z), 1 (x+1, z),
+   * 2 (x+1, z+1), 3 (x, z+1), the vertex order `HeightMap.cpp` builds cells in.
+   */
+  const encodeBlends = (layer: Uint16Array): Image => {
+    const image: Image = { width, height, data: Buffer.alloc(width * height * 4) };
+    for (let cz = 0; cz < height; cz++) {
+      for (let cx = 0; cx < width; cx++) {
+        const at = (cz * width + cx) * 4;
+        image.data[at] = 255;
+        const entry = blend.blends[layer[(cz + border) * blend.stride + (cx + border)] as number];
+        if (!entry || entry.customEdge >= 0) continue;
+        const found = lookup(entry.tile);
+        const slot = found ? slotOf.get(found.record) : undefined;
+        if (!found || slot === undefined) continue;
+
+        let corners = 0;
+        const set = (...indices: number[]): void => {
+          for (const i of indices) corners |= 1 << i;
+        };
+        if (entry.horizontal) {
+          if (entry.inverted) set(0, 3);
+          else set(1, 2);
+        }
+        if (entry.vertical) {
+          if (entry.inverted) set(0, 1);
+          else set(2, 3);
+        }
+        if (entry.rightDiagonal) {
+          if (entry.inverted) {
+            set(1);
+            if (entry.longDiagonal) set(0, 2);
+          } else {
+            set(2);
+            if (entry.longDiagonal) set(1, 3);
+          }
+        }
+        if (entry.leftDiagonal) {
+          if (entry.inverted) {
+            set(0);
+            if (entry.longDiagonal) set(1, 3);
+          } else {
+            set(3);
+            if (entry.longDiagonal) set(0, 2);
+          }
+        }
+
+        image.data[at] = slot;
+        image.data[at + 1] = found.subX;
+        image.data[at + 2] = found.subY;
+        image.data[at + 3] = ((found.span >> 1) << 4) | corners;
+      }
+    }
+    return image;
+  };
+
   return {
     atlas,
     index: indexMap,
+    blend: encodeBlends(blend.blend),
+    extraBlend: encodeBlends(blend.extraBlend),
     columns,
     rows,
     slot: TERRAIN_SLOT,
@@ -862,13 +1008,21 @@ export function importMap(buffer: Buffer, name: string, index: AssetIndex): Impo
 
   const blend = findMapChunk(map.chunks, 'BlendTileData');
   const palette = blend
-    ? readTerrainPalette(blend.data, index)
+    ? readTerrainPalette(blend.data, index, heights.width, blend.version)
     : { ground: [0.21, 0.29, 0.2], cliff: [0.3, 0.27, 0.24], names: [] };
   // The palette stays even with the atlas in hand: it is what the fixture map
   // and anything without blend data falls back to, and it is what the minimap
   // draws with.
   const terrain = blend
-    ? readTerrainTextures(blend.data, index, border, world.width, world.height, heights.width)
+    ? readTerrainTextures(
+        blend.data,
+        index,
+        border,
+        world.width,
+        world.height,
+        heights.width,
+        blend.version,
+      )
     : null;
 
   return { world, lighting, doodads, roads, skipped, palette, terrain };
@@ -971,6 +1125,8 @@ async function main(): Promise<void> {
     if (result.terrain) {
       writeFileSync(join(ASSETS_DIR, 'maps', `${slug}.terrain.png`), writePng(result.terrain.atlas));
       writeFileSync(join(ASSETS_DIR, 'maps', `${slug}.tiles.png`), writePng(result.terrain.index));
+      writeFileSync(join(ASSETS_DIR, 'maps', `${slug}.blend.png`), writePng(result.terrain.blend));
+      writeFileSync(join(ASSETS_DIR, 'maps', `${slug}.blend2.png`), writePng(result.terrain.extraBlend));
     }
     writeFileSync(
       join(ASSETS_DIR, 'maps', `${slug}.json`),
@@ -986,6 +1142,8 @@ async function main(): Promise<void> {
                 terrain: {
                   atlas: `maps/${slug}.terrain.png`,
                   index: `maps/${slug}.tiles.png`,
+                  blend: `maps/${slug}.blend.png`,
+                  extraBlend: `maps/${slug}.blend2.png`,
                   columns: result.terrain.columns,
                   rows: result.terrain.rows,
                   slot: result.terrain.slot,

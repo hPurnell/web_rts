@@ -665,9 +665,24 @@ brightness. `r_lightscale` remains, defaulting to 1, both for taste and
 because the game applies two passes this does not: a cloud shadow layer and a
 macro noise/lightmap.
 
-**Not done:** the blend layer. `BlendTileData` carries a second texture and an
-alpha edge per cell, which is how the game softens the join between two ground
-types. Without it a transition is a hard edge.
+**The blend layers.** The join between two ground types is not an alpha mask
+but a *vertex fade*: `WorldHeightMap::getAlphaUVData` gives each cell a second
+texture tile and sets its four corners opaque or clear from the blend's shape
+— two corners on one side for a straight edge, one for a short diagonal, three
+for a long one — and the card interpolates between them. Zero Hour adds a
+second layer over the first where three types meet (`Use3WayTerrainBlends`
+defaults on). Both are exported per cell and drawn over the base.
+
+The chunk parser now follows `WorldHeightMap::ParseBlendTileData` exactly
+instead of scanning for something that looks like the texture table. The
+layout depends on the chunk version, and the game writes `0x7ADA0000` after
+every blend entry, so the walk is self-checking: all 149 maps with the chunk
+parse with no failures across versions 6, 7 and 8. Of their 1.09 million blend
+entries none uses the custom edge textures, so the vertex fade is the whole
+job; 11.9% of cells carry a blend and 0.2% a second one.
+
+The corners are interpolated bilinearly. The game splits each cell into two
+triangles, which gives a diagonal blend a slightly straighter edge.
 
 **Scenery was missing because of one keyword.** Object definitions come in
 three forms and the scanner knew two. `ObjectReskin` is the third, 235 blocks
