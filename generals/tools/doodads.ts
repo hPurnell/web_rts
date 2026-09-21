@@ -21,8 +21,8 @@ import { join } from 'node:path';
 import { ASSETS_DIR, findInstall, runTool } from './config.ts';
 import { findByBasename, indexArchives } from './big.ts';
 import { readObjectModels, resolveModel } from './objectini.ts';
-import { convertModel } from './convert.ts';
-import type { ConvertedModel } from './convert.ts';
+import { convertAnimated, convertModel } from './convert.ts';
+import type { ConvertedAnimation, ConvertedModel } from './convert.ts';
 
 /**
  * Objects a map places that are not scenery and never will be.
@@ -72,7 +72,7 @@ function placedTypes(): { type: string; count: number }[] {
 
 async function main(): Promise<void> {
   const index = indexArchives(findInstall().archives);
-  const { models } = readObjectModels(index);
+  const { models, extras, animatedMain } = readObjectModels(index);
   const exists = (file: string): boolean => findByBasename(index, file).length > 0;
 
   const types = placedTypes();
@@ -80,6 +80,12 @@ async function main(): Promise<void> {
 
   /** Model file to what it converted to, so a shared model converts once. */
   const built = new Map<string, ConvertedModel | null>();
+  /**
+   * Moving parts — a derrick's flag, a hospital's lights — keyed by model and
+   * animation, so the dozen tech buildings that share one flag bake it once.
+   */
+  const animations: Record<string, ConvertedAnimation> = {};
+  let animatedParts = 0;
   const entries: Record<string, unknown>[] = [];
   const unresolved: string[] = [];
   const bridges: string[] = [];
@@ -103,11 +109,39 @@ async function main(): Promise<void> {
     const converted = built.get(key);
     if (!converted) continue;
 
+    // Every draw module after the first: the pieces that move on it. And the
+    // first too when it moves at rest, in which case its animated version
+    // replaces the still hull instead of being drawn over it.
+    const extraKeys: string[] = [];
+    const main = animatedMain.get(type.toLowerCase());
+    let hullAnimated = false;
+    for (const part of [...(main ? [main] : []), ...(extras.get(type.toLowerCase()) ?? [])]) {
+      if (!exists(`${part.model}.w3d`)) continue;
+      const key = `${part.model}|${part.animation ?? ''}`.toLowerCase();
+      if (!(key in animations)) {
+        const baked = convertAnimated(index, `anim_${part.model.toLowerCase()}`, part.model, part.animation);
+        if (!baked) continue;
+        animations[key] = {
+          ...baked,
+          parts: baked.parts.map((p) => ({
+            ...p,
+            gltf: `models/${p.gltf}`,
+            texture: `models/${p.texture}`,
+          })),
+        };
+        animatedParts += baked.parts.length;
+      }
+      extraKeys.push(key);
+      if (part === main) hullAnimated = true;
+    }
+
     entries.push({
       id: type,
       ...(converted.cutout ? { alphaTest: true } : {}),
       hull: `models/${converted.hull.gltf}`,
       texture: `models/${converted.hull.texture}`,
+      ...(extraKeys.length > 0 ? { extras: extraKeys } : {}),
+      ...(hullAnimated ? { hullAnimated: true } : {}),
     });
   }
 
@@ -119,7 +153,12 @@ async function main(): Promise<void> {
   }
 
   mkdirSync(ASSETS_DIR, { recursive: true });
-  writeFileSync(join(ASSETS_DIR, 'doodads.json'), `${JSON.stringify({ entries }, null, 1)}\n`);
+  // Compact, not indented: the baked matrices are most of the file, and one
+  // number a line makes it five times the size for nobody's benefit.
+  writeFileSync(join(ASSETS_DIR, 'doodads.json'), `${JSON.stringify({ entries, animations })}\n`);
+  console.log(
+    `${Object.keys(animations).length} moving pieces baked, ${animatedParts} parts between them`,
+  );
   console.log(
     `\n${entries.length} of ${types.length} scenery types converted,` +
       ` from ${[...built.values()].filter(Boolean).length} models`,

@@ -19,7 +19,7 @@
 // nothing throws and nothing appears.
 import '@babylonjs/core/Meshes/thinInstanceMesh';
 import { buildPartMesh } from './models.ts';
-import type { LoadedModel } from './models.ts';
+import type { LoadedModel, LoadedPart } from './models.ts';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Scene } from '@babylonjs/core/scene';
 
@@ -34,12 +34,49 @@ export interface DoodadPlacement {
   readonly angle: number;
 }
 
+/**
+ * A moving piece of scenery, baked: a matrix per frame for each part, and
+ * which frames each is shown on. See `convertAnimated` in the pipeline.
+ */
+export interface AnimatedAsset {
+  readonly frames: number;
+  readonly frameRate: number;
+  readonly parts: readonly {
+    readonly part: LoadedPart;
+    /** Sixteen floats per frame, or just sixteen for a part that never moves. */
+    readonly matrices: Float32Array;
+    /** 1 or 0 per frame; absent when it is always shown. */
+    readonly visible?: Uint8Array;
+  }[];
+}
+
 export interface DoodadRenderer {
   /** How many pieces of scenery were placed. */
   readonly count: number;
   /** How many draw calls they cost, i.e. how many distinct types appeared. */
   readonly types: number;
+  /** How many of the draw calls are moving parts. */
+  readonly animatedParts: number;
+  /**
+   * Advance the moving parts to a moment, in seconds.
+   *
+   * Wall-clock time, not ticks: a waving flag is scenery and reaches nothing
+   * the simulation reads, so there is nothing to keep deterministic, and it
+   * should look the same at any frame rate.
+   */
+  update(seconds: number): void;
   dispose(): void;
+}
+
+/** Babylon-layout 4x4 product: `a` applied first, then `b`. */
+function multiplyInto(out: Float32Array, at: number, a: Float32Array, aAt: number, b: Float32Array, bAt: number): void {
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 4; c++) {
+      let sum = 0;
+      for (let k = 0; k < 4; k++) sum += (a[aAt + r * 4 + k] as number) * (b[bAt + k * 4 + c] as number);
+      out[at + r * 4 + c] = sum;
+    }
+  }
 }
 
 /**
@@ -54,6 +91,9 @@ export function createDoodads(
   models: ReadonlyMap<string, LoadedModel>,
   placements: readonly DoodadPlacement[],
   groundY: (x: number, z: number) => number,
+  animated: ReadonlyMap<string, readonly AnimatedAsset[]> = new Map(),
+  /** Types whose still hull is replaced by an animated one, and not drawn. */
+  hullAnimated: ReadonlySet<string> = new Set(),
 ): DoodadRenderer {
   const byType = new Map<string, DoodadPlacement[]>();
   for (const placement of placements) {
@@ -65,6 +105,17 @@ export function createDoodads(
 
   const meshes: Mesh[] = [];
   let count = 0;
+
+  /** Moving parts, rewritten every frame. */
+  const moving: {
+    mesh: Mesh;
+    asset: AnimatedAsset;
+    matrices: Float32Array;
+    visible?: Uint8Array;
+    placements: Float32Array;
+    phases: Float32Array;
+    data: Float32Array;
+  }[] = [];
 
   for (const [type, list] of byType) {
     const model = models.get(type);
@@ -99,16 +150,75 @@ export function createDoodads(
       data[offset + 15] = 1;
     }
 
-    mesh.thinInstanceSetBuffer('matrix', data, FLOATS_PER_MATRIX, true);
-    mesh.thinInstanceCount = list.length;
-    mesh.setEnabled(true);
-    meshes.push(mesh);
     count += list.length;
+    if (hullAnimated.has(type)) {
+      // The placements are still needed — the moving parts ride on them — but
+      // the still hull is not: its animated version stands in its place.
+      mesh.dispose();
+    } else {
+      mesh.thinInstanceSetBuffer('matrix', data, FLOATS_PER_MATRIX, true);
+      mesh.thinInstanceCount = list.length;
+      mesh.setEnabled(true);
+      meshes.push(mesh);
+    }
+
+    // The moving pieces riding on this type share its placements. Each
+    // instance starts at its own point in the loop, so forty derricks' flags
+    // do not wave in step like one machine.
+    const phases = new Float32Array(list.length);
+    for (let i = 0; i < list.length; i++) phases[i] = (i * 0.6180339887) % 1;
+    for (const asset of animated.get(type) ?? []) {
+      for (let p = 0; p < asset.parts.length; p++) {
+        const part = asset.parts[p] as AnimatedAsset['parts'][number];
+        const partMesh = buildPartMesh(scene, `doodad_${type}_moving${p}`, part.part);
+        const partData = new Float32Array(list.length * FLOATS_PER_MATRIX);
+        // A dynamic buffer: rewritten every frame, so tell the engine so.
+        partMesh.thinInstanceSetBuffer('matrix', partData, FLOATS_PER_MATRIX, false);
+        partMesh.thinInstanceCount = list.length;
+        partMesh.setEnabled(true);
+        meshes.push(partMesh);
+        moving.push({
+          mesh: partMesh,
+          asset,
+          matrices: part.matrices,
+          ...(part.visible ? { visible: part.visible } : {}),
+          placements: data,
+          phases,
+          data: partData,
+        });
+      }
+    }
   }
+
+  const update = (seconds: number): void => {
+    for (const piece of moving) {
+      const { asset, matrices, visible, placements: placed, phases, data } = piece;
+      const loop = asset.frames / asset.frameRate;
+      const instances = placed.length / FLOATS_PER_MATRIX;
+      const still = matrices.length === FLOATS_PER_MATRIX;
+      for (let i = 0; i < instances; i++) {
+        const at = i * FLOATS_PER_MATRIX;
+        // Stepped, not interpolated, which is how the source plays them:
+        // HTreeClass has a raw-animation path "for use by Generals" that
+        // skips the blend between frames.
+        const t = seconds + (phases[i] as number) * loop;
+        const frame = Math.floor(t * asset.frameRate) % asset.frames;
+        if (visible && visible[frame] === 0) {
+          data.fill(0, at, at + FLOATS_PER_MATRIX); // a zero matrix draws nothing
+          continue;
+        }
+        multiplyInto(data, at, matrices, still ? 0 : frame * FLOATS_PER_MATRIX, placed, at);
+      }
+      piece.mesh.thinInstanceBufferUpdated('matrix');
+    }
+  };
+  update(0);
 
   return {
     count,
-    types: meshes.length,
+    types: meshes.length - moving.length,
+    animatedParts: moving.length,
+    update,
     dispose() {
       for (const mesh of meshes) mesh.dispose();
       meshes.length = 0;

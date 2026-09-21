@@ -54,6 +54,11 @@ export const CHUNK = {
   HLOD_LOD_ARRAY: 0x00000702,
   HLOD_SUB_OBJECT_ARRAY_HEADER: 0x00000703,
   HLOD_SUB_OBJECT: 0x00000704,
+  ANIMATION: 0x00000200,
+  ANIMATION_HEADER: 0x00000201,
+  ANIMATION_CHANNEL: 0x00000202,
+  BIT_CHANNEL: 0x00000203,
+  COMPRESSED_ANIMATION: 0x00000280,
 } as const;
 
 export interface Chunk {
@@ -145,7 +150,19 @@ export interface W3DMesh {
   readonly textures: readonly string[];
   /** True when the mesh carries vertex influences, i.e. it is skinned. */
   readonly skinned: boolean;
+  /**
+   * True when the chosen pass blends additively — destination `ONE` in its
+   * W3D shader. Lights and glows are drawn this way, and drawn opaque they
+   * are dull coloured cards instead of lights.
+   */
+  readonly additive: boolean;
 }
+
+/** `DSTBLEND_ONE` in `shader.h`: the destination kept and the fragment added. */
+const DSTBLEND_ONE = 1;
+/** Bytes per `W3dShaderStruct`; `DestBlend` is its fourth. */
+const SHADER_SIZE = 16;
+const SHADER_DEST_BLEND = 3;
 
 /**
  * Decode the meshes in a model.
@@ -210,6 +227,8 @@ export function readMeshes(chunks: readonly Chunk[]): W3DMesh[] {
     // finite-checked.
     const uvs: { u: number; v: number }[] = [];
     const textures: string[] = [];
+    let additive = false;
+    const shaders = findChunk(mesh.children, CHUNK.SHADERS);
     const passes = findChunks(mesh.children, CHUNK.MATERIAL_PASS);
     for (let p = passes.length - 1; p >= 0 && uvs.length === 0; p--) {
       const stage = findChunks((passes[p] as Chunk).children, CHUNK.TEXTURE_STAGE)[0];
@@ -225,6 +244,12 @@ export function readMeshes(chunks: readonly Chunk[]): W3DMesh[] {
       for (let i = 0; i + 8 <= coords.data.length; i += 8) {
         uvs.push({ u: sane(coords.data.readFloatLE(i)), v: sane(coords.data.readFloatLE(i + 4)) });
       }
+
+      // The shader this pass draws with, which says how it blends.
+      const shaderIds = findChunk((passes[p] as Chunk).children, CHUNK.SHADER_IDS);
+      const shaderId = shaderIds && shaderIds.data.length >= 4 ? shaderIds.data.readUInt32LE(0) : 0;
+      const at = shaderId * SHADER_SIZE + SHADER_DEST_BLEND;
+      additive = !!shaders && at < shaders.data.length && shaders.data[at] === DSTBLEND_ONE;
     }
 
     // A mesh with no usable pass still declares its textures, and the effect
@@ -243,6 +268,7 @@ export function readMeshes(chunks: readonly Chunk[]): W3DMesh[] {
       // being present is the more reliable tell, so both are consulted.
       skinned:
         findChunk(mesh.children, CHUNK.VERTEX_INFLUENCES) !== null || (attributes & 0x00000002) !== 0,
+      additive,
     });
   }
 
@@ -319,4 +345,130 @@ export function readSubObjects(chunks: readonly Chunk[]): W3DSubObject[] {
     });
   }
   return out;
+}
+
+/** `ANIM_CHANNEL_*` in `w3d_file.h`: which component a channel drives. */
+const CHANNEL = { X: 0, Y: 1, Z: 2, Q: 6 } as const;
+
+/** One pivot's motion: per-axis translation, a rotation, and visibility. */
+export interface PivotMotion {
+  readonly x?: { first: number; values: Float32Array };
+  readonly y?: { first: number; values: Float32Array };
+  readonly z?: { first: number; values: Float32Array };
+  /** Quaternions, four floats a frame: x y z w. */
+  readonly rotation?: { first: number; values: Float32Array };
+  readonly visibility?: { first: number; last: number; fallback: boolean; bits: Uint8Array };
+}
+
+export interface W3DAnimation {
+  readonly name: string;
+  readonly hierarchy: string;
+  readonly frames: number;
+  readonly frameRate: number;
+  /** Indexed by pivot. A pivot with no entry is not animated. */
+  readonly motion: ReadonlyMap<number, PivotMotion>;
+}
+
+/**
+ * Read an uncompressed animation, following `HRawAnimClass` in the source.
+ *
+ * A channel is keyed over `[first, last]` and holds nothing outside it:
+ * translation and rotation fall back to none there, and visibility to the
+ * channel's default. Visibility bits are least-significant first, as
+ * `BitChannelClass::Get_Bit` reads them.
+ *
+ * Compressed animations are a different chunk and are not read; the caller
+ * gets null and the part stays still.
+ */
+export function readAnimation(chunks: readonly Chunk[]): W3DAnimation | null {
+  const anim = findChunk(chunks, CHUNK.ANIMATION);
+  if (!anim) return null;
+  const header = findChunk(anim.children, CHUNK.ANIMATION_HEADER);
+  if (!header || header.data.length < 44) return null;
+
+  const motion = new Map<number, {
+    x?: { first: number; values: Float32Array };
+    y?: { first: number; values: Float32Array };
+    z?: { first: number; values: Float32Array };
+    rotation?: { first: number; values: Float32Array };
+    visibility?: { first: number; last: number; fallback: boolean; bits: Uint8Array };
+  }>();
+  const of = (pivot: number) => {
+    let entry = motion.get(pivot);
+    if (!entry) {
+      entry = {};
+      motion.set(pivot, entry);
+    }
+    return entry;
+  };
+
+  for (const channel of findChunks(anim.children, CHUNK.ANIMATION_CHANNEL)) {
+    const d = channel.data;
+    if (d.length < 12) continue;
+    const first = d.readUInt16LE(0);
+    const last = d.readUInt16LE(2);
+    const width = d.readUInt16LE(4);
+    const kind = d.readUInt16LE(6);
+    const pivot = d.readUInt16LE(8);
+    const count = (last - first + 1) * width;
+    if (count <= 0 || 12 + count * 4 > d.length) continue;
+    const values = new Float32Array(count);
+    for (let i = 0; i < count; i++) values[i] = d.readFloatLE(12 + i * 4);
+
+    const entry = of(pivot);
+    if (kind === CHANNEL.X && width === 1) entry.x = { first, values };
+    else if (kind === CHANNEL.Y && width === 1) entry.y = { first, values };
+    else if (kind === CHANNEL.Z && width === 1) entry.z = { first, values };
+    else if (kind === CHANNEL.Q && width === 4) entry.rotation = { first, values };
+  }
+
+  for (const channel of findChunks(anim.children, CHUNK.BIT_CHANNEL)) {
+    const d = channel.data;
+    if (d.length < 9) continue;
+    const first = d.readUInt16LE(0);
+    const last = d.readUInt16LE(2);
+    const kind = d.readUInt16LE(4);
+    const pivot = d.readUInt16LE(6);
+    if (kind !== 0) continue; // BIT_CHANNEL_VIS; the time-coded form is not used here
+    of(pivot).visibility = { first, last, fallback: d[8] !== 0, bits: d.subarray(9) };
+  }
+
+  return {
+    name: readName(header.data, 4, 16),
+    hierarchy: readName(header.data, 20, 16),
+    frames: header.data.readUInt32LE(36),
+    frameRate: header.data.readUInt32LE(40),
+    motion,
+  };
+}
+
+/** A pivot's translation at a frame: nothing outside its keyed range. */
+export function translationAt(motion: PivotMotion | undefined, frame: number): W3DVertex {
+  const at = (c?: { first: number; values: Float32Array }): number => {
+    if (!c) return 0;
+    const i = frame - c.first;
+    return i >= 0 && i < c.values.length ? (c.values[i] as number) : 0;
+  };
+  return { x: at(motion?.x), y: at(motion?.y), z: at(motion?.z) };
+}
+
+/** A pivot's rotation at a frame, x y z w: identity outside its keyed range. */
+export function rotationAt(
+  motion: PivotMotion | undefined,
+  frame: number,
+): readonly [number, number, number, number] {
+  const c = motion?.rotation;
+  if (!c) return [0, 0, 0, 1];
+  const i = (frame - c.first) * 4;
+  if (i < 0 || i + 4 > c.values.length) return [0, 0, 0, 1];
+  return [c.values[i] as number, c.values[i + 1] as number, c.values[i + 2] as number, c.values[i + 3] as number];
+}
+
+/** Whether a pivot is shown at a frame; shown if it has no channel at all. */
+export function visibleAt(motion: PivotMotion | undefined, frame: number): boolean {
+  const c = motion?.visibility;
+  if (!c) return true;
+  if (frame < c.first || frame > c.last) return c.fallback;
+  const bit = frame - c.first;
+  return ((c.bits[bit >> 3] ?? 0) & (1 << (bit & 7))) !== 0;
 }

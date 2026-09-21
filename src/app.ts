@@ -34,14 +34,15 @@ import { describeFlags, pickCell, screenRay } from './render/pick.ts';
 import { FLAG_LAYERS, createFlagOverlay } from './render/flagoverlay.ts';
 import { createGizmos } from './render/gizmos.ts';
 import { createUnitRenderer, groundHeightAt } from './render/units.ts';
-import { loadContentPack } from './render/models.ts';
+import { loadContentPack, loadLoosePart } from './render/models.ts';
 import type { ContentPackEntry } from './render/models.ts';
 import { createDoodads } from './render/doodads.ts';
-import type { DoodadPlacement, DoodadRenderer } from './render/doodads.ts';
+import type { AnimatedAsset, DoodadPlacement, DoodadRenderer } from './render/doodads.ts';
 import { createRoads } from './render/roads.ts';
 import type { RoadPolyline, RoadRenderer, RoadType } from './render/roads.ts';
 import { createGhostRenderer } from './render/ghosts.ts';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
+import type { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture';
 import { EXPLORED_DIM, createFogTexture } from './render/fogtexture.ts';
 import {
@@ -754,6 +755,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   let lastFogTick = -1;
   renderer.engine.runRenderLoop(() => {
     const frameStarted = performance.now();
+    // Scenery moves on wall-clock time in every mode, the editor included:
+    // a flag that only waved during a match would look broken in the editor.
+    doodads?.update(frameStarted / 1000);
     const dt = renderer.frameDelta();
     // CSS pixels again: the camera compares these against `input.pointer`,
     // which is a CSS coordinate, and divides by them to turn a middle-drag in
@@ -1415,20 +1419,81 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   async function loadDoodads(baseUrl: string, placements: DoodadPlacement[]): Promise<void> {
     const response = await fetch(`${baseUrl}/doodads.json`);
     if (!response.ok) return;
-    const all = ((await response.json()) as { entries: ContentPackEntry[] }).entries;
+    const pack = (await response.json()) as {
+      entries: (ContentPackEntry & { extras?: string[]; hullAnimated?: boolean })[];
+      animations?: Record<
+        string,
+        {
+          frames: number;
+          frameRate: number;
+          parts: {
+            gltf: string;
+            texture: string;
+            additive: boolean;
+            cutout: boolean;
+            matrices: number[];
+            visible?: number[];
+          }[];
+        }
+      >;
+    };
 
     const placed = new Set(placements.map((placement) => placement.type));
-    const entries = all.filter((entry) => placed.has(entry.id));
+    const entries = pack.entries.filter((entry) => placed.has(entry.id));
     if (entries.length === 0) return;
 
     const models = await loadContentPack(renderer.scene, { baseUrl, entries });
     if (models.size === 0) return;
 
+    // The moving pieces on this map's scenery: flags, warning lights. Loaded
+    // once per piece, however many object types share it.
+    const materials = new Map<string, StandardMaterial>();
+    const loaded = new Map<string, AnimatedAsset | null>();
+    const animated = new Map<string, AnimatedAsset[]>();
+    for (const entry of entries) {
+      for (const key of entry.extras ?? []) {
+        if (!loaded.has(key)) {
+          const source = pack.animations?.[key];
+          let asset: AnimatedAsset | null = null;
+          if (source) {
+            try {
+              const parts = [];
+              for (const part of source.parts) {
+                parts.push({
+                  part: await loadLoosePart(renderer.scene, baseUrl, part.gltf, part.texture, part, materials),
+                  matrices: new Float32Array(part.matrices),
+                  ...(part.visible ? { visible: new Uint8Array(part.visible) } : {}),
+                });
+              }
+              asset = { frames: source.frames, frameRate: source.frameRate, parts };
+            } catch (error) {
+              console.warn(`doodads: ${key} left still — ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          loaded.set(key, asset);
+        }
+        const asset = loaded.get(key);
+        if (!asset) continue;
+        const list = animated.get(entry.id) ?? [];
+        list.push(asset);
+        animated.set(entry.id, list);
+      }
+    }
+
     doodads?.dispose();
-    doodads = createDoodads(renderer.scene, models, placements, (x, z) =>
-      groundHeightAt(world, heightOverrides(), x, z),
+    doodads = createDoodads(
+      renderer.scene,
+      models,
+      placements,
+      (x, z) => groundHeightAt(world, heightOverrides(), x, z),
+      animated,
+      new Set(entries.filter((entry) => entry.hullAnimated).map((entry) => entry.id)),
     );
-    overlay.set('doodads', `${doodads.count} in ${doodads.types} types`);
+    overlay.set(
+      'doodads',
+      `${doodads.count} in ${doodads.types} types` +
+        (doodads.animatedParts > 0 ? `, ${doodads.animatedParts} moving parts` : ''),
+    );
   }
 
   const params = new URLSearchParams(window.location.search);

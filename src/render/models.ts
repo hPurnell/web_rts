@@ -16,6 +16,7 @@
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import { Material } from '@babylonjs/core/Materials/material';
+import { Constants } from '@babylonjs/core/Engines/constants';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
@@ -312,4 +313,66 @@ export function buildPartMesh(scene: Scene, name: string, part: LoadedPart): Mes
   mesh.alwaysSelectAsActiveMesh = true;
   mesh.setEnabled(false);
   return mesh;
+}
+
+/** How a moving part is drawn, from its W3D shader. */
+export interface PartLook {
+  /** Added to what is behind it: a light or a glow, not a surface. */
+  readonly additive: boolean;
+  /** Its texture's alpha is a cut-out. */
+  readonly cutout: boolean;
+}
+
+/**
+ * Load one moving part — a flag panel, a warning light — with a material to
+ * match how the source game draws it.
+ *
+ * An additive part is unlit and emissive, and adds to the colour behind it
+ * without writing depth: that is `SRCBLEND_ONE, DSTBLEND_ONE` in the part's
+ * W3D shader, and it is what makes a red warning light glow instead of
+ * sitting there as a dull red card. Materials are shared by texture and look,
+ * so forty derricks' lights are one material.
+ */
+export async function loadLoosePart(
+  scene: Scene,
+  baseUrl: string,
+  gltf: string,
+  texturePath: string,
+  look: PartLook,
+  materials: Map<string, StandardMaterial>,
+): Promise<LoadedPart> {
+  const key = `${texturePath}#${look.additive ? 'add' : look.cutout ? 'cut' : 'solid'}`;
+  let material = materials.get(key);
+  if (!material) {
+    material = new StandardMaterial(`part_${key}`, scene);
+    const texture = new Texture(`${baseUrl}/${texturePath}`, scene, true, false);
+    texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+    texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+    if (look.additive) {
+      material.emissiveTexture = texture;
+      material.disableLighting = true;
+      material.alphaMode = Constants.ALPHA_ADD;
+      material.alpha = 0.999; // anything under 1 puts it in the blended pass
+      material.disableDepthWrite = true;
+      material.backFaceCulling = false;
+    } else {
+      material.diffuseTexture = texture;
+      material.specularColor = new Color3(0.08, 0.08, 0.09);
+      material.emissiveColor = new Color3(0.18, 0.18, 0.18);
+      if (look.cutout) {
+        texture.hasAlpha = true;
+        material.useAlphaFromDiffuseTexture = true;
+        material.transparencyMode = Material.MATERIAL_ALPHATEST;
+        material.alphaCutOff = 0.2;
+        // A flag is a single sheet; seen from behind it has to be there too.
+        material.backFaceCulling = false;
+        material.twoSidedLighting = true;
+      } else {
+        material.backFaceCulling = false;
+        material.twoSidedLighting = true;
+      }
+    }
+    materials.set(key, material);
+  }
+  return loadPart(baseUrl, gltf, material);
 }

@@ -561,6 +561,42 @@ close for both arcs, the radius shrinks to fit; the source mitres instead.
 alpha joins from their own regions of the road texture. Here crossing roads
 simply overlap.
 
+### G22. Moving scenery
+
+**Done.** An object in Generals is several models, not one, and reading only
+the first imported the oil derrick's tower and nothing on it. Its flag is a
+second `W3DModelDraw`, its warning lights a third, each with its own looping
+animation. The object scanner now reads every draw module in its *resting*
+state — `DefaultConditionState`, or `ConditionState = NONE` — which is also
+what decides whether it moves: the derrick's pump only runs once captured, so
+it rests still, while its flag and lights loop from the start. Thirteen more
+object types animate their *main* model at rest (windmills, the refinery,
+washing lines, construction barricades) and are drawn animated in place of the
+still hull.
+
+The animation is read as `HRawAnimClass` reads it and composed as
+`HTreeClass::Anim_Update` composes it: a bone is its parent, then its rest
+pose, then the animation's translation in its own space, then its rotation — a
+delta on the rest pose, not a replacement. Visibility bits run least-
+significant first and hold the channel's default outside its keyed range.
+Frames step rather than blend, because the source has a raw-animation path
+"for use by Generals" that skips interpolation.
+
+It is **baked, not evaluated**. Each moving bone becomes a part with a matrix
+per frame, converted to renderer axes with the same swap the rest pose uses,
+so the runtime only picks a frame and multiplies by where the object stands.
+Bones that never move are merged; bones that only blink are grouped by their
+pattern, so the derrick's four lights are one draw call.
+
+Lights glow because the data says so: their W3D shader blends
+`SRCBLEND_ONE, DSTBLEND_ONE`, and additive parts are drawn unlit and additive.
+Each copy of an object starts at its own point in the loop.
+
+**Not done:** capture. The derrick's pump and its captured appearance are
+condition states the simulation would have to drive; this is scenery only.
+Compressed animations (a different chunk) are not read, and a part whose
+animation is compressed stays still.
+
 ### G20. A helicopter
 
 **Done.** An aircraft is not a ground unit with the collision turned off, so

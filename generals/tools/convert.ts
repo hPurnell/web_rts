@@ -18,8 +18,17 @@ import { dirname, join } from 'node:path';
 import { ASSETS_DIR, MANIFEST_DIR, findInstall, runTool } from './config.ts';
 import { findByBasename, indexArchives, readEntry } from './big.ts';
 import type { AssetIndex } from './big.ts';
-import { readMeshes, readPivots, readSubObjects, parseChunks } from './w3d.ts';
-import type { W3DMesh, W3DPivot } from './w3d.ts';
+import {
+  parseChunks,
+  readAnimation,
+  readMeshes,
+  readPivots,
+  readSubObjects,
+  rotationAt,
+  translationAt,
+  visibleAt,
+} from './w3d.ts';
+import type { W3DAnimation, W3DMesh, W3DPivot } from './w3d.ts';
 import { decodeImage, writePng } from './image.ts';
 import type { Image } from './image.ts';
 
@@ -688,6 +697,239 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
     rotors: rotorOut,
     radius,
   };
+}
+
+/** One piece of an animated model: a mesh riding on one bone. */
+export interface AnimatedPart {
+  readonly gltf: string;
+  readonly texture: string;
+  /** Drawn with additive blending: a light, not a surface. */
+  readonly additive: boolean;
+  readonly cutout: boolean;
+  /**
+   * The bone's transform at every frame, sixteen floats each, in the layout a
+   * thin instance buffer takes. Already in renderer axes and model scale, so
+   * the runtime only multiplies it by where the object stands.
+   */
+  readonly matrices: number[];
+  /** Shown or hidden at each frame, 1 or 0. Absent when it is always shown. */
+  readonly visible?: number[];
+}
+
+export interface ConvertedAnimation {
+  readonly frames: number;
+  readonly frameRate: number;
+  readonly parts: readonly AnimatedPart[];
+}
+
+/**
+ * A pivot transform in renderer axes: `S W S`, with the translation scaled.
+ *
+ * Part vertices are stored in their bone's own space, already swapped into
+ * renderer axes and scaled, so the bone matrix has to be conjugated by the
+ * same swap for the two to meet. It is the rest-pose conversion applied to a
+ * whole matrix rather than to each vertex, which is what guarantees an
+ * animated part and a still one end up in exactly the same place.
+ */
+function toRendererMatrix(w: Mat4): number[] {
+  const swap = [0, 2, 1, 3];
+  const out = new Array<number>(16);
+  for (let c = 0; c < 4; c++) {
+    for (let r = 0; r < 4; r++) out[c * 4 + r] = w[(swap[c] as number) * 4 + (swap[r] as number)] as number;
+  }
+  out[12] = (out[12] as number) * MODEL_SCALE;
+  out[13] = (out[13] as number) * MODEL_SCALE;
+  out[14] = (out[14] as number) * MODEL_SCALE;
+  return out;
+}
+
+/**
+ * Every pivot's transform at one frame, composed the way the source does.
+ *
+ * `HTreeClass::Anim_Update`: a pivot is its parent, then its rest pose, then
+ * the animation's translation in its own space, then its rotation. The
+ * animation is a *delta* on the rest pose rather than a replacement for it.
+ */
+function posedBones(pivots: readonly W3DPivot[], animation: W3DAnimation, frame: number): Mat4[] {
+  const out: Mat4[] = [];
+  for (let i = 0; i < pivots.length; i++) {
+    const pivot = pivots[i] as W3DPivot;
+    const parent = pivot.parent >= 0 && pivot.parent < out.length ? (out[pivot.parent] as Mat4) : identity();
+    let m = multiply(parent, pivotMatrix(pivot));
+    const motion = animation.motion.get(i);
+    if (motion) {
+      const t = translationAt(motion, frame);
+      const move = identity();
+      move[12] = t.x;
+      move[13] = t.y;
+      move[14] = t.z;
+      m = multiply(m, move);
+      const spin = pivotMatrix({
+        name: '',
+        parent: -1,
+        translation: { x: 0, y: 0, z: 0 },
+        rotation: rotationAt(motion, frame),
+      });
+      m = multiply(m, spin);
+    }
+    out.push(m);
+  }
+  return out;
+}
+
+/**
+ * Convert a model that moves: a flag, a set of blinking lights, a pump.
+ *
+ * Each bone that carries a mesh and actually moves becomes its own part, with
+ * its transform baked to a matrix per frame — so the runtime does no
+ * animation maths at all, only picks a frame and multiplies. Bones that never
+ * move are merged into one still part, which saves a draw call per bone on
+ * models like the hospital whose animation drives only a few of them.
+ *
+ * `animation` is the INI's `Hierarchy.Animation`: the animation lives in the
+ * file named by its first half. Without one the model converts as a single
+ * still frame, which is how a second draw module with no animation is drawn.
+ */
+export function convertAnimated(
+  index: AssetIndex,
+  id: string,
+  model: string,
+  animation?: string,
+): ConvertedAnimation | null {
+  const load = (file: string) => {
+    const found = findByBasename(index, file);
+    const entry = found[0];
+    if (!entry) return null;
+    return parseChunks(readEntry(index.archivePaths.get(entry.archive) as string, entry));
+  };
+
+  const chunks = load(`${model}.w3d`);
+  if (!chunks) return null;
+  const meshes = readMeshes(chunks).filter(
+    (mesh) =>
+      !mesh.skinned && !EFFECT_MESH.test(mesh.name) && !EFFECT_TEXTURE.test(mesh.textures[0] ?? ''),
+  );
+  if (meshes.length === 0) return null;
+
+  const [animationFile] = (animation ?? '').split('.');
+  const motionChunks = animationFile ? load(`${animationFile}.w3d`) : null;
+  const anim = motionChunks ? readAnimation(motionChunks) : null;
+
+  let pivots = readPivots(chunks);
+  if (pivots.length === 0 && anim) pivots = readPivots(load(`${anim.hierarchy}.w3d`) ?? []);
+  const boneOf = new Map<string, number>();
+  for (const sub of readSubObjects(chunks)) {
+    boneOf.set(sub.meshName.split('.').pop() ?? sub.meshName, sub.boneIndex);
+  }
+
+  const frames = anim ? Math.max(1, anim.frames) : 1;
+  const frameRate = anim ? Math.max(1, anim.frameRate) : 30;
+  const posed: Mat4[][] = [];
+  for (let f = 0; f < frames; f++) {
+    posed.push(anim ? posedBones(pivots, anim, f) : boneMatrices(pivots));
+  }
+
+  // Which bones move. A bone whose matrix is the same at every frame is still,
+  // whatever the file keys for it: the flag's pole carries ninety-one
+  // identical rotation keys.
+  const moves = (bone: number): boolean => {
+    const first = posed[0]?.[bone];
+    if (!first) return false;
+    for (let f = 1; f < frames; f++) {
+      const m = posed[f]?.[bone] as Mat4;
+      for (let k = 0; k < 16; k++) if (Math.abs((m[k] as number) - (first[k] as number)) > 1e-5) return true;
+    }
+    return false;
+  };
+  /** A bone's on-off pattern over the loop, as a key; empty when always on. */
+  const blink = (bone: number): string => {
+    const motion = anim?.motion.get(bone);
+    let pattern = '';
+    for (let f = 0; f < frames; f++) pattern += visibleAt(motion, f) ? '1' : '0';
+    return pattern.includes('0') ? pattern : '';
+  };
+
+  // One group per moving bone; still bones grouped by their blink pattern, so
+  // four warning lights that flash together are one draw call and not four.
+  // Split by blend as well, since a light and the surface it sits on cannot
+  // share a material.
+  const groups = new Map<
+    string,
+    { bone: number; blinkOf: number; additive: boolean; meshes: W3DMesh[] }
+  >();
+  for (const mesh of meshes) {
+    const bone = boneOf.get(mesh.name) ?? 0;
+    const moving = moves(bone);
+    const key = `${moving ? `bone${bone}` : `still${blink(bone)}`}:${mesh.additive ? 'add' : 'solid'}`;
+    const group = groups.get(key) ?? {
+      bone: moving ? bone : -1,
+      blinkOf: bone,
+      additive: mesh.additive,
+      meshes: [],
+    };
+    group.meshes.push(mesh);
+    groups.set(key, group);
+  }
+
+  const textures = new Map<string, Image>();
+  for (const mesh of meshes) {
+    const name = (mesh.textures[0] ?? '').toLowerCase();
+    if (name && !textures.has(name)) {
+      const image = loadTexture(index, name);
+      if (image) textures.set(name, image);
+    }
+  }
+  const cutout = [...textures.values()].some((texture) => {
+    let clear = 0;
+    for (let i = 3; i < texture.data.length; i += 4) if ((texture.data[i] as number) < 128) clear++;
+    return clear * 4 > texture.data.length * CUTOUT_SHARE;
+  });
+
+  const rest = boneMatrices(pivots);
+  const placed = meshes.map((mesh) => ({ mesh, matrix: rest[boneOf.get(mesh.name) ?? 0] ?? identity() }));
+  const { image, remap } = atlas(textures, uvBoundsByTexture(placed));
+  const textureFile = `${id}.png`;
+  mkdirSync(join(ASSETS_DIR, 'models'), { recursive: true });
+  writeFileSync(join(ASSETS_DIR, 'models', textureFile), writePng(image));
+
+  const parts: AnimatedPart[] = [];
+  let n = 0;
+  for (const group of groups.values()) {
+    const still = group.bone < 0;
+    // A still part is baked into model space at the rest pose and given an
+    // identity matrix; a moving one stays in its bone's space.
+    const built = buildPart(
+      group.meshes.map((mesh) => ({
+        mesh,
+        matrix: still ? (rest[boneOf.get(mesh.name) ?? 0] ?? identity()) : identity(),
+      })),
+      { x: 0, y: 0, z: 0 },
+      remap,
+    );
+    const name = `${id}_part${n++}`;
+    writeGltf(join(ASSETS_DIR, 'models', name), built, textureFile);
+
+    const matrices: number[] = [];
+    const visible: number[] = [];
+    // A still group shares one blink pattern, taken from any of its bones.
+    const motion = anim?.motion.get(still ? group.blinkOf : group.bone);
+    for (let f = 0; f < frames; f++) {
+      matrices.push(...(still ? toRendererMatrix(identity()) : toRendererMatrix(posed[f]?.[group.bone] as Mat4)));
+      visible.push(visibleAt(motion, f) ? 1 : 0);
+    }
+    // A part that never moves needs only its first matrix, even if it blinks.
+    const constant = still || frames === 1;
+    parts.push({
+      gltf: `${name}.gltf`,
+      texture: textureFile,
+      additive: group.additive,
+      cutout: cutout && !group.additive,
+      matrices: constant ? matrices.slice(0, 16) : matrices,
+      ...(visible.every((v) => v === 1) ? {} : { visible }),
+    });
+  }
+
+  return { frames, frameRate, parts };
 }
 
 interface AssetManifest {

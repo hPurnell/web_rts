@@ -20,9 +20,37 @@
 import { indexArchives, readIndexed } from './big.ts';
 import type { AssetIndex } from './big.ts';
 
+/**
+ * One draw module's resting appearance: a model, and the animation it loops
+ * when nothing has happened to it yet.
+ */
+export interface DrawPart {
+  readonly model: string;
+  /**
+   * `Hierarchy.Animation`, as the INI names it: the animation `Animation`
+   * inside the file `Hierarchy.w3d`. Absent for a still model.
+   */
+  readonly animation?: string;
+}
+
 export interface ObjectModels {
   /** Object name, lower-cased, to the W3D file it draws. */
   readonly models: ReadonlyMap<string, string>;
+  /**
+   * Every draw module an object has beyond its first, in its default state.
+   *
+   * An object is several models, not one. The oil derrick is its tower, a
+   * flag that waves and a set of warning lights that blink, each a separate
+   * `W3DModelDraw` with its own looping animation — and reading only the
+   * first model imported the tower and nothing on it.
+   */
+  readonly extras: ReadonlyMap<string, readonly DrawPart[]>;
+  /**
+   * Objects whose *main* model moves at rest: a windmill's sails, a
+   * refinery's machinery, washing on a line. Drawn animated in place of the
+   * still hull rather than as well as it.
+   */
+  readonly animatedMain: ReadonlyMap<string, DrawPart>;
 }
 
 /**
@@ -59,9 +87,36 @@ function modelIn(block: string): string | null {
   return null;
 }
 
+/**
+ * The draw modules of one object block, each in its resting state.
+ *
+ * A module's resting state is its `DefaultConditionState`, or failing that its
+ * `ConditionState = NONE`: the appearance before anything has damaged,
+ * captured or powered it. The derrick's pump only runs once captured, so it
+ * rests still; its flag and lights loop in their resting state, so they move
+ * from the start.
+ */
+function drawPartsIn(block: string): DrawPart[] {
+  const parts: DrawPart[] = [];
+  const modules = block.split(/^\s*Draw\s*=\s*/im).slice(1);
+  for (const module of modules) {
+    if (!/^W3D(ModelDraw|TreeDraw|PropDraw)/i.test(module)) continue;
+    const resting =
+      /^\s*DefaultConditionState\b([\s\S]*?)^\s*End\b/im.exec(module) ??
+      /^\s*ConditionState\s*=\s*NONE\b([\s\S]*?)^\s*End\b/im.exec(module);
+    const body = resting ? (resting[1] as string) : module;
+    const model = modelIn(body);
+    if (!model) continue;
+    const animation = /^\s*Animation\s*=\s*([\w.]+)/im.exec(body)?.[1];
+    parts.push(animation && animation.toUpperCase() !== 'NONE' ? { model, animation } : { model });
+  }
+  return parts;
+}
+
 export function readObjectModels(index: AssetIndex): ObjectModels {
   const direct = new Map<string, string>();
   const parents = new Map<string, string>();
+  const drawn = new Map<string, DrawPart[]>();
 
   for (const entry of index.entries.values()) {
     if (!entry.key.startsWith('data/ini/') || !entry.key.endsWith('.ini')) continue;
@@ -83,9 +138,12 @@ export function readObjectModels(index: AssetIndex): ObjectModels {
       const name = (header[2] as string).toLowerCase();
       const parent = header[3]?.toLowerCase();
 
-      const model = modelIn(text.slice(start, end));
+      const block = text.slice(start, end);
+      const model = modelIn(block);
       if (model) direct.set(name, model);
       else if (parent) parents.set(name, parent);
+      const parts = drawPartsIn(block);
+      if (parts.length > 0) drawn.set(name, parts);
     }
   }
 
@@ -103,7 +161,23 @@ export function readObjectModels(index: AssetIndex): ObjectModels {
     }
   }
 
-  return { models };
+  // The modules after the first, for objects that have more than one. A
+  // reskin that draws nothing of its own inherits its parent's.
+  const extras = new Map<string, readonly DrawPart[]>();
+  const animatedMain = new Map<string, DrawPart>();
+  for (const name of new Set([...direct.keys(), ...parents.keys()])) {
+    let walk: string | undefined = name;
+    let parts: DrawPart[] | undefined;
+    for (let depth = 0; depth < 8 && walk && !parts; depth++) {
+      parts = drawn.get(walk);
+      walk = parents.get(walk);
+    }
+    if (parts && parts.length > 1) extras.set(name, parts.slice(1));
+    const main = parts?.[0];
+    if (main?.animation) animatedMain.set(name, main);
+  }
+
+  return { models, extras, animatedMain };
 }
 
 /** Convenience for tools that have an install but no index yet. */
