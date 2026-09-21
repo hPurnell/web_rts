@@ -28,6 +28,7 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { Scene } from '@babylonjs/core/scene';
 import { fourWay, threeWay } from './roadjunctions.ts';
 import { fogMaterial } from './sceneryfog.ts';
+import { receiveShadow } from './shadows.ts';
 import type { Arm, JunctionPatch, JunctionPieces, Vec } from './roadjunctions.ts';
 
 /**
@@ -571,6 +572,8 @@ export function createRoads(
     data.applyToMesh(mesh, false);
     mesh.material = material;
     mesh.isPickable = false;
+    // Painted on the ground, so it takes the shadows the ground does.
+    receiveShadow(mesh);
     meshes.push(mesh);
     count += list.length;
   }

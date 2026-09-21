@@ -27,6 +27,7 @@ import type { Match } from '../sim/match.ts';
 import type { World } from '../sim/world.ts';
 import { cellFromWorld } from '../sim/world.ts';
 import { isVisible } from '../sim/fog.ts';
+import { castShadow } from './shadows.ts';
 import { UNIT_TYPES } from '../sim/unittypes.ts';
 import { AirState, UnitState } from '../sim/units.ts';
 import { toFloat } from '../sim/fixed.ts';
@@ -227,6 +228,11 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
       count: 0,
     };
   });
+  for (const group of groups) {
+    castShadow(group.hull);
+    if (group.turret) castShadow(group.turret);
+    for (const rotor of group.rotors) castShadow(rotor.mesh);
+  }
 
   // Previous-tick positions, so a frame can interpolate rather than snap.
   let prevX = new Int32Array(0);

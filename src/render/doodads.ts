@@ -19,6 +19,8 @@
 // nothing throws and nothing appears.
 import '@babylonjs/core/Meshes/thinInstanceMesh';
 import { fogMaterial } from './sceneryfog.ts';
+import { castShadow } from './shadows.ts';
+import { Constants } from '@babylonjs/core/Engines/constants';
 import { buildPartMesh } from './models.ts';
 import type { LoadedModel, LoadedPart } from './models.ts';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
@@ -193,6 +195,11 @@ export function createDoodads(
 
   // Scenery stands on the map, so it is fogged with the ground under it.
   for (const mesh of meshes) fogMaterial(mesh.material);
+  // Everything solid casts a shadow. A glow does not: a warning light adds to
+  // what is behind it and has no surface to block the sun with.
+  for (const mesh of meshes) {
+    if (mesh.material?.alphaMode !== Constants.ALPHA_ADD) castShadow(mesh);
+  }
 
   const update = (seconds: number): void => {
     for (const piece of moving) {

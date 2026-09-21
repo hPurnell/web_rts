@@ -72,6 +72,8 @@ export interface ConsoleGame {
   setWireframe(enabled: boolean): void;
   /** Blur radius the fog edge is sampled with, in cells. */
   setFogSoftness(texels: number): void;
+  /** Sun shadows from units and scenery. */
+  setShadowsEnabled(enabled: boolean): void;
   /** How brightly a map's own lighting is applied. */
   setLightScale(scale: number): void;
   setStatsVisible(visible: boolean): void;
@@ -125,6 +127,14 @@ export function registerGameCommands(console: GameConsole, game: ConsoleGame): v
     max: 4,
     archive: true,
     onChange: (value) => game.setFogSoftness(Number(value)),
+  });
+
+  console.cvar({
+    name: 'r_shadows',
+    help: 'Sun shadows cast by units and scenery. 0 turns them off, and saves a render pass.',
+    value: true,
+    archive: true,
+    onChange: (value) => game.setShadowsEnabled(value === true),
   });
 
   console.cvar({

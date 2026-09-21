@@ -15,7 +15,7 @@
  * whole floor for one draw call.
  */
 import { Color3 } from '@babylonjs/core/Maths/math.color';
-import { Vector2, Vector3, Vector4 } from '@babylonjs/core/Maths/math.vector';
+import { Matrix, Vector2, Vector3, Vector4 } from '@babylonjs/core/Maths/math.vector';
 import type { BaseTexture } from '@babylonjs/core/Materials/Textures/baseTexture';
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { Effect } from '@babylonjs/core/Materials/effect';
@@ -30,17 +30,22 @@ attribute vec2 uv;
 attribute vec2 uv2;
 
 uniform mat4 worldViewProjection;
+uniform mat4 world;
+/** The sun's shadow projection; see shadows.ts. */
+uniform mat4 shadowMatrix;
 
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec2 vUv;
 varying vec2 vMapUv;
+varying vec4 vShadow;
 
 void main(void) {
   vNormal = normal;
   vPosition = position;
   vUv = uv;
   vMapUv = uv2;
+  vShadow = shadowMatrix * world * vec4(position, 1.0);
   gl_Position = worldViewProjection * vec4(position, 1.0);
 }
 `;
@@ -52,6 +57,14 @@ varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec2 vUv;
 varying vec2 vMapUv;
+varying vec4 vShadow;
+
+uniform sampler2D shadowSampler;
+/**
+ * Shadow mode (0 off, 1 float depth, 2 depth packed into RGBA), texels
+ * across the map, how much sun a shadow leaves, and the depth bias.
+ */
+uniform vec4 shadowInfo;
 
 uniform vec3 lightDirection;
 uniform vec3 sunColor;
@@ -83,6 +96,48 @@ uniform vec2 mapCells;
 /** Atlas columns, rows, slot side in pixels, and the padding around a slot. */
 uniform vec4 atlasInfo;
 uniform float terrainTextured;
+
+/**
+ * One depth from the shadow map. Babylon writes the caster's light-space
+ * depth, (z + 1) / 2, either as a float or packed into four bytes when the
+ * GPU cannot render to floats; both are read the same way.
+ */
+float shadowDepth(vec2 uv) {
+  vec4 texel = texture2D(shadowSampler, uv);
+  if (shadowInfo.x > 1.5) {
+    return dot(texel, vec4(1.0 / (255.0 * 255.0 * 255.0), 1.0 / (255.0 * 255.0), 1.0 / 255.0, 1.0));
+  }
+  return texel.r;
+}
+
+/**
+ * How much of the sun reaches this point: 1 in the open, 0 fully shadowed.
+ *
+ * The four nearest depth comparisons, blended by where the point sits among
+ * them — what hardware PCF does with a depth texture, which the standard
+ * materials' Poisson filter cannot read, so it is done by hand. The edge
+ * fades over one texel. A 4x4 kernel softened it further and cost a third of
+ * the frame in the software renderer the checks run on; at twenty-odd texels
+ * a cell, one texel of fade is already soft.
+ */
+float sunLit() {
+  if (shadowInfo.x < 0.5) return 1.0;
+  vec3 clip = vShadow.xyz / vShadow.w;
+  vec2 uv = clip.xy * 0.5 + 0.5;
+  if (uv.x <= 0.0 || uv.y <= 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return 1.0;
+  float depth = clamp(clip.z * 0.5 + 0.5, 0.0, 1.0) - shadowInfo.w;
+
+  float size = shadowInfo.y;
+  vec2 at = uv * size - 0.5;
+  vec2 f = fract(at);
+  vec2 base = (floor(at) + 0.5) / size;
+  vec2 step_ = vec2(1.0 / size, 0.0);
+  float s00 = step(depth, shadowDepth(base));
+  float s10 = step(depth, shadowDepth(base + step_.xy));
+  float s01 = step(depth, shadowDepth(base + step_.yx));
+  float s11 = step(depth, shadowDepth(base + step_.xx));
+  return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+}
 
 /** Cheap value noise, enough to break up flat colour until real textures land. */
 float hash(vec2 p) {
@@ -259,7 +314,10 @@ void main(void) {
   // primary plus two fills from other directions. Reading only the primary
   // leaves the unlit sides of hills far darker than the game shows them.
   vec3 received = ambientColor * (0.85 + 0.15 * up);
-  received += sunColor * clamp(dot(n, -normalize(lightDirection)), 0.0, 1.0);
+  // Only the sun is shadowed. The fills and the ambient come from elsewhere
+  // in the sky, which is why a shadow is darker ground rather than black.
+  float shade = mix(shadowInfo.z, 1.0, sunLit());
+  received += sunColor * clamp(dot(n, -normalize(lightDirection)), 0.0, 1.0) * shade;
   received += fillColor0 * clamp(dot(n, -normalize(fillDirection0)), 0.0, 1.0);
   received += fillColor1 * clamp(dot(n, -normalize(fillDirection1)), 0.0, 1.0);
 
@@ -456,6 +514,38 @@ export function setTerrainFog(
   if (texture) material.setTexture('fogSampler', texture);
 }
 
+/**
+ * How much sun a shadow leaves on the ground. Matched to what the standard
+ * materials are given, so a unit's shadow is the same shade on a road as on
+ * the grass beside it.
+ */
+export const SHADOW_DARKNESS = 0.35;
+
+/** Depth bias for the terrain's shadow test, in the map's 0..1 depth. */
+const SHADOW_BIAS = 0.0006;
+
+/**
+ * Point the terrain at the sun's shadow map, or pass null to stop sampling it.
+ * `mode` is 1 for a float map and 2 for one packed into bytes.
+ */
+export function setTerrainShadow(
+  material: ShaderMaterial,
+  texture: BaseTexture | null,
+  matrix: Matrix,
+  mode: number,
+): void {
+  material.setMatrix('shadowMatrix', matrix);
+  if (!texture) {
+    material.setVector4('shadowInfo', new Vector4(0, 1, 1, 0));
+    return;
+  }
+  material.setTexture('shadowSampler', texture);
+  material.setVector4(
+    'shadowInfo',
+    new Vector4(mode, texture.getSize().width, SHADOW_DARKNESS, SHADOW_BIAS),
+  );
+}
+
 export function createTerrainMaterial(
   scene: Scene,
   options: TerrainMaterialOptions,
@@ -467,6 +557,9 @@ export function createTerrainMaterial(
     attributes: ['position', 'normal', 'uv', 'uv2'],
     uniforms: [
       'worldViewProjection',
+      'world',
+      'shadowMatrix',
+      'shadowInfo',
       'lightDirection',
       'sunColor',
       'ambientColor',
@@ -489,6 +582,7 @@ export function createTerrainMaterial(
       'terrainTextured',
     ],
     samplers: [
+      'shadowSampler',
       'fogSampler',
       'terrainAtlas',
       'terrainIndex',
@@ -517,6 +611,8 @@ export function createTerrainMaterial(
   material.setFloat('fogSoftness', DEFAULT_FOG_SOFTNESS);
   material.setVector2('fogTexel', new Vector2(0, 0));
   material.setFloat('terrainTextured', 0);
+  material.setMatrix('shadowMatrix', Matrix.Identity());
+  material.setVector4('shadowInfo', new Vector4(0, 1, 1, 0));
   material.setVector2('mapCells', new Vector2(1, 1));
   material.setVector4('atlasInfo', new Vector4(1, 1, 1, 0));
   material.backFaceCulling = true;

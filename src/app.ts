@@ -39,6 +39,7 @@ import type { ContentPackEntry } from './render/models.ts';
 import { createDoodads } from './render/doodads.ts';
 import type { AnimatedAsset, DoodadPlacement, DoodadRenderer } from './render/doodads.ts';
 import { createRoads } from './render/roads.ts';
+import { createShadows } from './render/shadows.ts';
 import type { RoadPolyline, RoadRenderer, RoadType } from './render/roads.ts';
 import { createGhostRenderer } from './render/ghosts.ts';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
@@ -202,6 +203,11 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     lightDirection: renderer.sun.direction,
   });
   let terrain = createTerrain(renderer.scene, world, terrainMaterial);
+  const shadows = createShadows(renderer.sun, terrainMaterial);
+  // On, matching r_shadows' default: a cvar's default is not applied by
+  // registering it, only a saved or typed value is.
+  shadows.setEnabled(true);
+  shadows.setMapSize(world.width * toFloat(world.cellSize), world.height * toFloat(world.cellSize));
   let flagOverlay = createFlagOverlay(renderer.scene, world);
   flagOverlay.rebuild(null);
   const gizmos = createGizmos(renderer.scene, () => world);
@@ -483,6 +489,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       { minX: 0, maxX: world.width * cell, minZ: 0, maxZ: world.height * cell },
       true,
     );
+    shadows.setMapSize(world.width * cell, world.height * cell);
     overlay.set('map', `${world.width}x${world.height}`);
   }
 
@@ -764,6 +771,10 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     // CSS pixels into ground units.
     const view = viewportSize();
     camera.update(input, dt, view.width, view.height);
+    shadows.update(
+      camera.camera,
+      groundHeightAt(world, heightOverrides(), camera.focusX, camera.focusZ),
+    );
 
     if (playback) {
       const showing = playback;
@@ -1125,6 +1136,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
       terrainMaterial.wireframe = enabled;
     },
     setFogSoftness: (texels) => setTerrainFogSoftness(terrainMaterial, texels),
+    setShadowsEnabled: (enabled) => shadows.setEnabled(enabled),
     setLightScale: (scale) => {
       lightScale = scale;
       setTerrainLightScale(terrainMaterial, scale);

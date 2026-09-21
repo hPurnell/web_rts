@@ -99,6 +99,14 @@ nothing can turn the ground's fog off and leave the scenery's on. Pass a
 material through `fogMaterial` to opt it in. Units deliberately do not: they
 are hidden outright, not dimmed.
 
+Shadows follow the same pattern: `castShadow(mesh)` / `receiveShadow(mesh)`
+in `render/shadows.ts`, which owns the one `ShadowGenerator` and fits it to
+the camera's ground footprint every frame, snapped to its texels so shadows do
+not crawl as the view pans. The terrain samples the map itself in
+`terrainMaterial.ts`, and only the sun term is shadowed. `r_shadows 0` turns it
+all off. In the headless SwiftShader checks shadows cost about a third of the
+frame; most of that is filling a 2048² map in software.
+
 Enabling a plugin on a material that has already compiled does **not** dirty
 its defines. The define is set, nothing recompiles, and the fog silently never
 appears; `setEnabled` calls `markAllDefinesAsDirty()` for that reason.
