@@ -20,6 +20,7 @@ import type { BaseTexture } from '@babylonjs/core/Materials/Textures/baseTexture
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { Effect } from '@babylonjs/core/Materials/effect';
 import type { Scene } from '@babylonjs/core/scene';
+import { setSceneryFog, setSceneryFogSoftness } from './sceneryfog.ts';
 
 const VERTEX = `
 precision highp float;
@@ -436,6 +437,7 @@ export function setTerrainSun(
 /** Set the blur radius the fog is sampled with, in texels. */
 export function setTerrainFogSoftness(material: ShaderMaterial, texels: number): void {
   material.setFloat('fogSoftness', texels);
+  setSceneryFogSoftness(texels);
 }
 
 export function setTerrainFog(
@@ -447,6 +449,9 @@ export function setTerrainFog(
 ): void {
   material.setFloat('fogEnabled', texture ? 1 : 0);
   material.setFloat('exploredDim', exploredDim);
+  // Scenery and roads are fogged by the same texture in the same way, and set
+  // here so that nothing can turn the ground's fog off and leave theirs on.
+  setSceneryFog(texture, width, height, exploredDim);
   material.setVector2('fogTexel', new Vector2(1 / Math.max(1, width), 1 / Math.max(1, height)));
   if (texture) material.setTexture('fogSampler', texture);
 }

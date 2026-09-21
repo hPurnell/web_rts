@@ -33,29 +33,27 @@ import { decodeImage, writePng } from './image.ts';
 import type { Image } from './image.ts';
 
 /**
- * World units per Generals unit.
+ * World units per Generals unit: the map's own scale, for everything.
  *
- * Generals models are authored at roughly ten units to a cell; this engine's
- * cells are one world unit across. Measured from the Crusader, whose hull is
- * about 26 Generals units long and should read as a little under two cells.
+ * A Generals cell is ten units (`MAP_XY_FACTOR`) and an imported map keeps the
+ * game's cells one to one, so anything standing on it has to be converted at
+ * that rate or it stops meeting its neighbours. A chain-link fence panel is
+ * 30.1 units long and the map spaces them 26.5 apart, so at this scale they
+ * overlap slightly and join.
+ *
+ * Vehicles were once drawn at 0.055, chosen by eye so a Crusader "read as a
+ * little under two cells". The game's own `GeometryMajorRadius` of 15 makes it
+ * three cells long, and at 0.055 every unit stood at 55% of its size beside
+ * buildings drawn at the map's scale.
+ *
+ * The simulation's collision radii were set for the placeholder roster and
+ * are smaller than these models, so a packed group overlaps. That is a
+ * simulation change, deliberately not made here.
  */
-const MODEL_SCALE = 0.055;
+export const MODEL_SCALE = 0.1;
 
-/**
- * World units per Generals unit for **scenery**: the map's own scale.
- *
- * Not the vehicle scale above. A map places its objects in Generals units at
- * ten to a cell, so anything standing on it has to be converted at that same
- * rate or it stops meeting its neighbours: a chain-link fence panel is 30.1
- * units long and the map spaces them 26.5 apart, so at the map's scale they
- * overlap slightly and join, and at the vehicle scale they stood 1.7 cells
- * long in gaps 2.65 wide. Buildings were likewise barely half size beside the
- * roads and bibs laid out for them.
- *
- * Vehicles keep their own scale, which was tuned against the engine's unit
- * sizes rather than against a map.
- */
-export const SCENERY_SCALE = 0.1;
+/** Scenery is converted at the same scale; kept as a name for its callers. */
+export const SCENERY_SCALE = MODEL_SCALE;
 
 /**
  * Meshes that are effects rather than vehicle body.

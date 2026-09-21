@@ -90,6 +90,19 @@ bitten twice and fails silently — nothing throws, the thing just does nothing:
 
 If a renderer change makes nothing appear, check the side-effect import first.
 
+## Scenery is fogged by a material plugin
+
+Terrain fogs itself in `terrainMaterial.ts`; scenery and roads use Babylon's
+`StandardMaterial`, which `render/sceneryfog.ts` extends with a material plugin
+doing the same lookup by world position. `setTerrainFog` drives both, so
+nothing can turn the ground's fog off and leave the scenery's on. Pass a
+material through `fogMaterial` to opt it in. Units deliberately do not: they
+are hidden outright, not dimmed.
+
+Enabling a plugin on a material that has already compiled does **not** dirty
+its defines. The define is set, nothing recompiles, and the fog silently never
+appears; `setEnabled` calls `markAllDefinesAsDirty()` for that reason.
+
 ## Triangle winding
 
 Babylon's default is left-handed, so a front face is clockwise as seen from the

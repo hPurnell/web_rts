@@ -518,12 +518,21 @@ texture that decides, not any transparent pixel: vehicle art carries a little
 stray alpha from antialiasing (the HIMARS is 0.4% transparent) where foliage is
 24% to 62%.
 
-**Scenery and units are not drawn at the same scale.** A doodad sits in the
-map's own coordinates, where ten units make a cell, so its model is scaled by
-`SCENERY_SCALE` (0.1) and a house fills the plot the map left for it. Vehicles
-are scaled by `MODEL_SCALE` (0.055) to fit this engine's unit sizes. Drawing
-scenery at the vehicle scale shrank every building to about half its plot. A
-doodad also keeps its exact position rather than its cell, because rounding
+**Everything is drawn at the map's own scale.** A Generals cell is ten units
+(`MAP_XY_FACTOR`) and the import keeps cells one to one, so every model —
+scenery and vehicles alike — is scaled by 0.1. Vehicles were once drawn at
+0.055, picked by eye so a Crusader "read as a little under two cells"; its
+`GeometryMajorRadius` of 15 makes it three, and every unit stood at 55% of its
+size beside buildings drawn at the map's scale. Scenery at 0.055 had the same
+fault the other way round: houses at half the size of their plots.
+
+The simulation's collision radii were not changed with it. They were set for
+the placeholder roster (a tank is 0.375 cells) and the models now overhang
+them by about three times, so a packed group overlaps. Matching them to the
+game's `Geometry*Radius` is a simulation change with a golden hash to
+regenerate, and wants Generals unit data kept apart from `src/sim/data`.
+
+A doodad also keeps its exact position rather than its cell, because rounding
 put scenery up to half a cell off its road.
 
 **On the frame-time bound.** The CPU side is free, as intended: doodads never
@@ -565,9 +574,28 @@ about 27 degrees stays sharp. The arc is cut into the centreline before the
 ribbon is built, so lane markings follow the curve. Where two corners are too
 close for both arcs, the radius shrinks to fit; the source mitres instead.
 
-**Not done:** junctions. The source builds tees, Y-junctions, crossroads and
-alpha joins from their own regions of the road texture. Here crossing roads
-simply overlap.
+**Junctions use the texture's own pieces.** A road atlas holds a T, a Y, a
+slanted T and a crossroads beside the straight strip, painted with the kerbs,
+stop lines and crossings a junction needs. `render/roadjunctions.ts` ports
+`W3DRoadBuffer::insertTee`, `insertY` and `insert4Way`: where three or four
+runs of one type share a point, the angles pick the piece, the piece is laid
+at the source's size and offset in the atlas, and each arm is moved back to
+the piece's edge and squared to its axis so it meets flush. Before this every
+arm ran to the centre with a square end, and the markings of three or four
+ribbons crossed in the middle of the road.
+
+The importer had a bug that hid junctions as well. It chains segments into
+runs, stopping at a point where more than one unused segment continues, so
+the *second* run to reach a junction found exactly one and carried straight
+through it — and then its corner smoothing bent a crossroads into a curve.
+The renderer now splits runs wherever three or more segment ends meet,
+counting segment ends rather than run ends, so it no longer depends on how
+the importer chained them.
+
+**Not done:** alpha joins, where a road of one type ends on another
+(`insertCrossTypeJoins`); the end is drawn over the other road instead of
+fading into it. Five-way and larger junctions have no piece in the source
+either, and are left overlapping.
 
 ### G22. Moving scenery
 

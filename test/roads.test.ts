@@ -8,7 +8,9 @@
 import { describe, expect, it } from 'vitest';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
 import { Scene } from '@babylonjs/core/scene';
-import { createRoads, smoothCorners } from '../src/render/roads.ts';
+import { createRoads, joinRoads, smoothCorners, splitAtJunctions } from '../src/render/roads.ts';
+import { fourWay, threeWay } from '../src/render/roadjunctions.ts';
+import type { JunctionPieces } from '../src/render/roadjunctions.ts';
 import type { RoadPoint, RoadType } from '../src/render/roads.ts';
 
 const TWO_LANE: RoadType = {
@@ -246,5 +248,107 @@ describe('road corners', () => {
       expect(p.z).toBeLessThanOrEqual(4 + 1e-9);
     }
     expect(out[1]!.x).toBeCloseTo(2, 6); // the arc starts halfway along
+  });
+});
+
+describe('road junctions', () => {
+  const PIECES: JunctionPieces = {
+    tee: [0.83, 0.5],
+    fourWay: [0.83, 0.83],
+    y: [0.5, 0.44],
+    h: [0.39, 0.71],
+  };
+  const JOINED: RoadType = { ...TWO_LANE, width: 3.6, pieces: PIECES };
+  const centre = { x: 10, z: 10 };
+  const arm = (x: number, z: number) => ({ dir: { x, z } });
+  const S = Math.SQRT1_2;
+
+  it('picks the piece from the angles, as W3DRoadBuffer does', () => {
+    // Straight through with a square stem.
+    expect(threeWay(centre, [arm(-1, 0), arm(1, 0), arm(0, 1)], 4, 0.9, PIECES).kind).toBe('tee');
+    // Straight through with the stem 45 degrees off square.
+    expect(threeWay(centre, [arm(-1, 0), arm(1, 0), arm(S, S)], 4, 0.9, PIECES).kind).toBe('h');
+    // Nothing straight across: a stem and two legs behind it.
+    expect(threeWay(centre, [arm(0, 1), arm(-S, -S), arm(S, -S)], 4, 0.9, PIECES).kind).toBe('y');
+    expect(
+      fourWay(centre, [arm(-1, 0), arm(1, 0), arm(0, 1), arm(0, -1)], 4, 0.9, PIECES).kind,
+    ).toBe('fourWay');
+  });
+
+  it("trims a T's arms to half a road width and squares them to the piece", () => {
+    // The stem arrives slightly off square; its end is squared regardless.
+    const joined = joinRoads(
+      [
+        { type: 'TwoLane', points: [{ x: 0, z: 10 }, { x: 10, z: 10 }] },
+        { type: 'TwoLane', points: [{ x: 20, z: 10 }, { x: 10, z: 10 }] },
+        { type: 'TwoLane', points: [{ x: 11, z: 30 }, { x: 10, z: 10 }] },
+      ],
+      JOINED,
+    );
+    expect(joined.patches).toHaveLength(1);
+    const [west, east, stem] = joined.runs;
+    expect(west!.road.points[1]!.x).toBeCloseTo(8, 6);
+    expect(east!.road.points[1]!.x).toBeCloseTo(12, 6);
+    expect(stem!.road.points[1]!.z).toBeCloseTo(12, 6);
+
+    const edge = stem!.ends.end!;
+    expect(Math.abs(edge.z)).toBeLessThan(0.1);
+    expect(Math.abs(edge.x)).toBeCloseTo(JOINED.width / 2, 1);
+
+    // The piece's u runs up its stem, which is how the atlas paints it.
+    const piece = joined.patches[0]!;
+    expect(piece.uAxis.z).toBeGreaterThan(0.99);
+    expect(piece.u0).toBe(PIECES.tee[0]);
+  });
+
+  it('splits a run that was chained straight through a junction', () => {
+    const runs = splitAtJunctions([
+      { type: 'TwoLane', points: [{ x: 0, z: 10 }, { x: 10, z: 10 }, { x: 20, z: 10 }] },
+      { type: 'TwoLane', points: [{ x: 10, z: 30 }, { x: 10, z: 10 }] },
+    ]);
+    expect(runs).toHaveLength(3);
+    expect(joinRoads(runs, JOINED).patches).toHaveLength(1);
+  });
+
+  it('leaves five arms alone, having no piece for them', () => {
+    const runs = [0, 1, 2, 3, 4].map((i) => ({
+      type: 'TwoLane',
+      points: [
+        { x: 10 + 10 * Math.cos((i * 2 * Math.PI) / 5), z: 10 + 10 * Math.sin((i * 2 * Math.PI) / 5) },
+        { x: 10, z: 10 },
+      ],
+    }));
+    expect(joinRoads(runs, JOINED).patches).toHaveLength(0);
+  });
+
+  it('winds every junction triangle to face up, mirrored pieces included', () => {
+    const scene = new Scene(new NullEngine());
+    const stems = [
+      [10, 30],
+      [10, -10],
+      [25, 25],
+      [-5, 25],
+    ];
+    const roads = stems.flatMap(([x, z], i) => {
+      const ox = i * 100;
+      return [
+        { type: 'TwoLane', points: [{ x: ox, z: 10 }, { x: ox + 10, z: 10 }] },
+        { type: 'TwoLane', points: [{ x: ox + 20, z: 10 }, { x: ox + 10, z: 10 }] },
+        { type: 'TwoLane', points: [{ x: ox + x!, z: z! }, { x: ox + 10, z: 10 }] },
+      ];
+    });
+    createRoads(scene, '/pack', new Map([['TwoLane', JOINED]]), roads, () => 0);
+    const mesh = scene.meshes.find((m) => m.name.startsWith('road_'))!;
+    const p = mesh.getVerticesData('position')!;
+    const idx = mesh.getIndices()!;
+    for (let t = 0; t < idx.length; t += 3) {
+      const [a, b, c] = [idx[t]!, idx[t + 1]!, idx[t + 2]!];
+      const e1x = p[b * 3]! - p[a * 3]!;
+      const e1z = p[b * 3 + 2]! - p[a * 3 + 2]!;
+      const e2x = p[c * 3]! - p[a * 3]!;
+      const e2z = p[c * 3 + 2]! - p[a * 3 + 2]!;
+      // Babylon is left-handed: a visible ground triangle's right-hand normal points down.
+      expect(e1z * e2x - e1x * e2z).toBeLessThan(1e-9);
+    }
   });
 });

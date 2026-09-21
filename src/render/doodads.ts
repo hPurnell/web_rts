@@ -18,6 +18,7 @@
 // thinInstance* methods on Mesh when this module is pulled in. Without it
 // nothing throws and nothing appears.
 import '@babylonjs/core/Meshes/thinInstanceMesh';
+import { fogMaterial } from './sceneryfog.ts';
 import { buildPartMesh } from './models.ts';
 import type { LoadedModel, LoadedPart } from './models.ts';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
@@ -189,6 +190,9 @@ export function createDoodads(
       }
     }
   }
+
+  // Scenery stands on the map, so it is fogged with the ground under it.
+  for (const mesh of meshes) fogMaterial(mesh.material);
 
   const update = (seconds: number): void => {
     for (const piece of moving) {

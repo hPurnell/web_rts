@@ -7,9 +7,9 @@
  *
  * **The straight-road strip.** A road texture is an atlas: a full-width strip
  * of straight road across the top, and below it the corner, T-junction,
- * crossroads and end-cap pieces. Only the straight strip is used here; curves
- * bend it along an arc instead of using the corner pieces, which keeps lane
- * markings continuous through a turn.
+ * crossroads and end-cap pieces. Curves bend the strip along an arc instead of
+ * using the corner pieces, which keeps lane markings continuous through a
+ * turn. The junction pieces are used, at the positions in `PIECES`.
  *
  * All three numbers come from `W3DRoadBuffer::preloadRoadSegment` and
  * `loadFloat4PtSection` in the game's source, and replace ones that were
@@ -40,6 +40,18 @@ const STRIP_CENTRE_V = 85 / 512;
 /** World units per texture unit, along and across: `U / (uScale * 4)`. */
 const WIDTHS_PER_REPEAT = 4;
 
+/**
+ * Where the junction pieces are centred in every road texture, in texture
+ * units: the `uOffset`/`vOffset` pairs in `W3DRoadBuffer::loadTee`, `loadY`
+ * and `loadH`. They are fixed by the atlas layout, which every road shares.
+ */
+const PIECES = {
+  tee: [425 / 512, 255 / 512],
+  fourWay: [425 / 512, 425 / 512],
+  y: [255 / 512, 226 / 512],
+  h: [202 / 512, 364 / 512],
+} as const;
+
 export interface RoadType {
   readonly id: string;
   readonly texture: string;
@@ -56,6 +68,8 @@ export interface RoadType {
   readonly v0: number;
   /** Texture v at its left-hand edge. */
   readonly v1: number;
+  /** Where the T, crossroads, Y and slanted T sit in the texture. */
+  readonly pieces: typeof PIECES;
 }
 
 /** `Road <name>` blocks: a texture, a width, and how much of the tile is road. */
@@ -140,6 +154,7 @@ async function main(): Promise<void> {
       // right-hand edge takes the larger v.
       v0: STRIP_CENTRE_V + halfV,
       v1: STRIP_CENTRE_V - halfV,
+      pieces: PIECES,
     });
     console.log(
       `  ${type} -> ${definition.texture}, ${width.toFixed(2)} cells wide,` +

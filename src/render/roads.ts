@@ -26,6 +26,9 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { Scene } from '@babylonjs/core/scene';
+import { fourWay, threeWay } from './roadjunctions.ts';
+import { fogMaterial } from './sceneryfog.ts';
+import type { Arm, JunctionPatch, JunctionPieces, Vec } from './roadjunctions.ts';
 
 /**
  * How far above the ground the ribbon sits.
@@ -60,6 +63,11 @@ export interface RoadType {
   readonly v0: number;
   /** Texture v at the left-hand edge. */
   readonly v1: number;
+  /**
+   * Where the junction pieces sit in the texture. Absent, runs that meet are
+   * simply drawn over one another.
+   */
+  readonly pieces?: JunctionPieces;
 }
 
 /** A point on a road, and how the author asked it to turn there. */
@@ -207,6 +215,7 @@ function perpendicular(
 function offsets(
   points: readonly { x: number; z: number }[],
   half: number,
+  ends: RoadEnds = {},
 ): { x: number; z: number }[] {
   const out: { x: number; z: number }[] = [];
 
@@ -237,7 +246,26 @@ function offsets(
     out.push({ x: mx * half * stretch, z: mz * half * stretch });
   }
 
+  // An end that meets a junction piece is squared to the piece, not to the
+  // run. Turned to the run's left, which is the side the offset is added on.
+  const square = (index: number, edge: Vec | null | undefined, along: Vec | null): void => {
+    if (!edge || !along) return;
+    const flip = edge.x * along.x + edge.z * along.z < 0 ? -1 : 1;
+    out[index] = { x: edge.x * flip, z: edge.z * flip };
+  };
+  const last = points.length - 1;
+  if (last > 0) {
+    square(0, ends.start, perpendicular(points[0] as never, points[1] as never));
+    square(last, ends.end, perpendicular(points[last - 1] as never, points[last] as never));
+  }
+
   return out;
+}
+
+/** Edges forced at a run's ends, where it meets a junction piece. */
+interface RoadEnds {
+  readonly start?: Vec | null;
+  readonly end?: Vec | null;
 }
 
 /** Append one polyline's ribbon to the buffers. */
@@ -246,12 +274,13 @@ function addRibbon(
   road: RoadPolyline,
   type: RoadType,
   groundY: (x: number, z: number) => number,
+  ends: RoadEnds = {},
 ): void {
   const points = road.points;
   if (points.length < 2) return;
 
   const half = type.width / 2;
-  const mitres = offsets(points, half);
+  const mitres = offsets(points, half, ends);
 
   let distance = 0;
   let previous = -1;
@@ -304,6 +333,173 @@ function addRibbon(
   }
 }
 
+/** Positions closer than this are the same point; the importer uses the same. */
+const pointKey = (p: Vec): string => `${Math.round(p.x * 1000)},${Math.round(p.z * 1000)}`;
+
+/**
+ * Cut runs wherever a third run meets them.
+ *
+ * A junction is where three or more segments share a point, but a run can
+ * pass straight through one: whichever of the arms is chained last continues
+ * the run it meets. Counting segment ends rather than run ends finds those
+ * too, and splitting there makes every junction the end of all its arms.
+ */
+export function splitAtJunctions(runs: readonly RoadPolyline[]): RoadPolyline[] {
+  const degree = new Map<string, number>();
+  for (const run of runs) {
+    for (let i = 0; i < run.points.length; i++) {
+      const ends = (i > 0 ? 1 : 0) + (i + 1 < run.points.length ? 1 : 0);
+      const key = pointKey(run.points[i] as RoadPoint);
+      degree.set(key, (degree.get(key) ?? 0) + ends);
+    }
+  }
+
+  const out: RoadPolyline[] = [];
+  for (const run of runs) {
+    let start = 0;
+    for (let i = 1; i + 1 < run.points.length; i++) {
+      if ((degree.get(pointKey(run.points[i] as RoadPoint)) ?? 0) < 3) continue;
+      out.push({ type: run.type, points: run.points.slice(start, i + 1) });
+      start = i;
+    }
+    out.push(start === 0 ? run : { type: run.type, points: run.points.slice(start) });
+  }
+  return out;
+}
+
+export interface JoinedRoads {
+  /** The runs, their ends at a junction moved to meet its piece. */
+  readonly runs: readonly { road: RoadPolyline; ends: RoadEnds }[];
+  readonly patches: readonly JunctionPatch[];
+}
+
+/**
+ * Find where runs of one type meet, and lay a junction piece at each.
+ *
+ * Three arms make a T, a slanted T or a Y and four a crossroads, chosen from
+ * their angles in `roadjunctions.ts`. Five or more have no piece in the
+ * texture, and are left as they are, as the source leaves them.
+ */
+export function joinRoads(runs: readonly RoadPolyline[], type: RoadType): JoinedRoads {
+  const split = splitAtJunctions(runs);
+  const points = split.map((run) => [...run.points]);
+  const ends: { start?: Vec | null; end?: Vec | null }[] = split.map(() => ({}));
+  const patches: JunctionPatch[] = [];
+  const pieces = type.pieces;
+  if (!pieces) return { runs: split.map((road) => ({ road, ends: {} })), patches };
+
+  // Every run end, by where it is.
+  const at = new Map<string, { run: number; first: boolean }[]>();
+  points.forEach((run, index) => {
+    if (run.length < 2) return;
+    for (const first of [true, false]) {
+      const key = pointKey((first ? run[0] : run[run.length - 1]) as RoadPoint);
+      const list = at.get(key);
+      if (list) list.push({ run: index, first });
+      else at.set(key, [{ run: index, first }]);
+    }
+  });
+
+  const widthInTexture = type.width / type.scale;
+  for (const arms of at.values()) {
+    if (arms.length !== 3 && arms.length !== 4) continue;
+    const first = arms[0] as (typeof arms)[number];
+    const firstRun = points[first.run] as RoadPoint[];
+    const centre = (first.first ? firstRun[0] : firstRun[firstRun.length - 1]) as RoadPoint;
+
+    const directions: Arm[] = arms.map(({ run, first: isFirst }) => {
+      const list = points[run] as RoadPoint[];
+      const next = (isFirst ? list[1] : list[list.length - 2]) as RoadPoint;
+      return { dir: { x: next.x - centre.x, z: next.z - centre.z } };
+    });
+    const junction =
+      arms.length === 3
+        ? threeWay(centre, directions as [Arm, Arm, Arm], type.scale, widthInTexture, pieces)
+        : fourWay(centre, directions as [Arm, Arm, Arm, Arm], type.scale, widthInTexture, pieces);
+
+    arms.forEach(({ run, first: isFirst }, i) => {
+      const end = junction.ends[i];
+      if (!end) return;
+      const list = points[run] as RoadPoint[];
+      const index = isFirst ? 0 : list.length - 1;
+      list[index] = { x: end.at.x, z: end.at.z };
+      const record = ends[run] as { start?: Vec | null; end?: Vec | null };
+      if (isFirst) record.start = end.edge;
+      else record.end = end.edge;
+    });
+    patches.push(junction.patch);
+  }
+
+  return {
+    runs: split.map((run, i) => ({
+      road: { type: run.type, points: points[i] as RoadPoint[] },
+      ends: ends[i] as RoadEnds,
+    })),
+    patches,
+  };
+}
+
+/**
+ * Append a junction piece, cut to about a cell so it follows the ground like
+ * the ribbon does.
+ */
+function addPatch(
+  buffers: Buffers,
+  piece: JunctionPatch,
+  groundY: (x: number, z: number) => number,
+): void {
+  const [bottomLeft, bottomRight, topRight, topLeft] = piece.corners;
+  const columns = Math.max(
+    1,
+    Math.ceil(Math.hypot(bottomRight.x - bottomLeft.x, bottomRight.z - bottomLeft.z) / STEP),
+  );
+  const rows = Math.max(
+    1,
+    Math.ceil(Math.hypot(topLeft.x - bottomLeft.x, topLeft.z - bottomLeft.z) / STEP),
+  );
+  const base = buffers.positions.length / 3;
+
+  for (let row = 0; row <= rows; row++) {
+    const t = row / rows;
+    for (let column = 0; column <= columns; column++) {
+      const s = column / columns;
+      const x =
+        bottomLeft.x * (1 - s) * (1 - t) + bottomRight.x * s * (1 - t) +
+        topRight.x * s * t + topLeft.x * (1 - s) * t;
+      const z =
+        bottomLeft.z * (1 - s) * (1 - t) + bottomRight.z * s * (1 - t) +
+        topRight.z * s * t + topLeft.z * (1 - s) * t;
+      const dx = x - piece.origin.x;
+      const dz = z - piece.origin.z;
+      buffers.positions.push(x, groundY(x, z) + LIFT, z);
+      buffers.normals.push(0, 1, 0);
+      buffers.uvs.push(
+        piece.u0 + (dx * piece.uAxis.x + dz * piece.uAxis.z) / piece.span,
+        piece.v0 - (dx * piece.vAxis.x + dz * piece.vAxis.z) / piece.span,
+      );
+    }
+  }
+
+  // Wound so the right-hand-rule normal points down, as the ribbon is: a
+  // piece can arrive mirrored, so the order is decided from its corners.
+  const e1x = bottomRight.x - bottomLeft.x;
+  const e1z = bottomRight.z - bottomLeft.z;
+  const e2x = topLeft.x - bottomLeft.x;
+  const e2z = topLeft.z - bottomLeft.z;
+  const upward = e1z * e2x - e1x * e2z > 0;
+  const stride = columns + 1;
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      const a = base + row * stride + column;
+      const b = a + 1;
+      const c = a + stride;
+      const d = c + 1;
+      if (upward) buffers.indices.push(a, c, b, b, c, d);
+      else buffers.indices.push(a, b, c, b, d, c);
+    }
+  }
+}
+
 /**
  * Build the roads for a map.
  *
@@ -331,9 +527,19 @@ export function createRoads(
   for (const [id, list] of byType) {
     const type = types.get(id) as RoadType;
     const buffers: Buffers = { positions: [], normals: [], uvs: [], indices: [] };
-    for (const road of list) {
-      addRibbon(buffers, { type: road.type, points: smoothCorners(road.points, type.scale) }, type, groundY);
+    const joined = joinRoads(list, type);
+    for (const { road, ends } of joined.runs) {
+      addRibbon(
+        buffers,
+        { type: road.type, points: smoothCorners(road.points, type.scale) },
+        type,
+        groundY,
+        ends,
+      );
     }
+    // After the ribbons, so the pieces draw over the arms they overlap: the
+    // source draws its junctions last for the same reason.
+    for (const piece of joined.patches) addPatch(buffers, piece, groundY);
     if (buffers.indices.length === 0) continue;
 
     const material = new StandardMaterial(`road_${id}`, scene);
@@ -353,6 +559,8 @@ export function createRoads(
     // The ribbon is a lid on the terrain and never has anything between it and
     // the camera, so it can skip depth writes and avoid fighting the ground.
     material.disableDepthWrite = true;
+    // A road is painted on the ground, so it is fogged exactly as the ground is.
+    fogMaterial(material);
 
     const mesh = new Mesh(`road_${id}`, scene);
     const data = new VertexData();
