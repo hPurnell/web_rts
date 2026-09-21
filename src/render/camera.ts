@@ -10,7 +10,7 @@
  * Everything else is derived, which is what keeps zoom from fighting pan — the
  * ground point under the screen centre does not move when you zoom.
  */
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { FreeCamera } from '@babylonjs/core/Cameras/freeCamera';
 import type { Scene } from '@babylonjs/core/scene';
 import type { InputState } from './input.ts';
@@ -188,12 +188,72 @@ export class RtsCamera {
     this.apply();
   }
 
+  /**
+   * The view this camera would show, without showing it. The chase camera
+   * glides back to this when it lets go.
+   */
+  overheadPose(): { eye: { x: number; y: number; z: number }; look: { x: number; y: number; z: number } } {
+    const back = this.height * this.backPerHeight;
+    return {
+      eye: { x: this.focusX, y: this.height, z: this.focusZ - back },
+      look: { x: this.focusX, y: 0, z: this.focusZ },
+    };
+  }
+
+  /**
+   * Show an arbitrary view: the chase camera, while it has control.
+   *
+   * `lens` shifts the picture up by that fraction of half the screen's
+   * height, with an off-centre projection: the ordinary perspective with a
+   * constant added to y after the divide. Everything that projects or picks
+   * asks the camera for its projection, so they all see the same shift.
+   */
+  show(
+    eye: { x: number; y: number; z: number },
+    look: { x: number; y: number; z: number },
+    lens = 0,
+  ): void {
+    this.camera.position.set(eye.x, eye.y, eye.z);
+    this.camera.setTarget(new Vector3(look.x, look.y, look.z));
+    this.setLens(lens);
+  }
+
+  private setLens(lens: number): void {
+    if (Math.abs(lens) < 1e-4) {
+      if (this.lensed) {
+        this.camera.unfreezeProjectionMatrix();
+        // Unfreezing does not recompute: the camera goes on returning the
+        // shifted matrix it cached until one of its own settings changes, and
+        // the overhead view stayed shifted after following ended.
+        this.camera.getProjectionMatrix(true);
+        this.lensed = false;
+      }
+      return;
+    }
+    const engine = this.camera.getEngine();
+    const projection = Matrix.PerspectiveFovLH(
+      this.camera.fov,
+      engine.getAspectRatio(this.camera),
+      this.camera.minZ,
+      this.camera.maxZ,
+      engine.isNDCHalfZRange,
+    );
+    // Row-major, row vectors: y_clip gains z_view * m[9], and w is z_view, so
+    // after the divide every point moves up by exactly `lens`.
+    const m = projection.asArray() as unknown as number[];
+    m[9] = lens;
+    this.camera.freezeProjectionMatrix(Matrix.FromArray(m));
+    this.lensed = true;
+  }
+  private lensed = false;
+
   private clampFocus(): void {
     this.focusX = clamp(this.focusX, this.bounds.minX, this.bounds.maxX);
     this.focusZ = clamp(this.focusZ, this.bounds.minZ, this.bounds.maxZ);
   }
 
   private apply(): void {
+    this.setLens(0);
     const back = this.height * this.backPerHeight;
     this.camera.position.set(this.focusX, this.height, this.focusZ - back);
     this.camera.setTarget(new Vector3(this.focusX, 0, this.focusZ));

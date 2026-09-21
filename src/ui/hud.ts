@@ -29,6 +29,7 @@ export type CommandAction =
   | { readonly kind: 'gather' }
   | { readonly kind: 'takeoff' }
   | { readonly kind: 'land' }
+  | { readonly kind: 'follow' }
   | { readonly kind: 'produce'; readonly typeId: number }
   | { readonly kind: 'build'; readonly typeId: number };
 
@@ -38,6 +39,8 @@ export interface CommandButton {
   readonly hotkey: string;
   readonly action: CommandAction;
   readonly enabled: boolean;
+  /** A toggle that is currently on: drawn pressed. */
+  readonly active?: boolean;
   readonly cost?: { minerals: number; gas: number };
 }
 
@@ -47,6 +50,8 @@ export interface HudContext {
   onCommand(action: CommandAction): void;
   /** Move the camera, from a minimap click. */
   onMinimapJump(x: number, z: number): void;
+  /** The unit the chase camera is following, if any, so Follow shows pressed. */
+  following?(): UnitHandle | null;
 }
 
 export interface Hud {
@@ -57,6 +62,12 @@ export interface Hud {
   /** Fire the button bound to a key, if any. Returns true if handled. */
   handleKey(key: string): boolean;
   buttons(): readonly CommandButton[];
+  /**
+   * How many CSS pixels of the bottom of the screen the panel covers, or 0
+   * when it is not shown. The chase camera shifts its framing up by this, so
+   * the unit it follows is not behind the panel.
+   */
+  coveredBelow(): number;
   dispose(): void;
 }
 
@@ -72,6 +83,7 @@ export function commandsFor(
   match: Match,
   selection: readonly UnitHandle[],
   localPlayer: number,
+  following: UnitHandle | null = null,
 ): CommandButton[] {
   const store = match.units;
   const indices = selection
@@ -116,6 +128,17 @@ export function commandsFor(
       hotkey: 'a',
       action: { kind: 'attack-move' },
       enabled: true,
+    },
+    {
+      // Every mobile unit can be followed; a structure has nowhere to go.
+      // Pressed while the camera is following one of the selection, so the
+      // same key turns it off again.
+      id: 'follow',
+      label: 'Follow cam',
+      hotkey: 'f',
+      action: { kind: 'follow' },
+      enabled: true,
+      active: following !== null && selection.includes(following),
     },
   ];
 
@@ -194,7 +217,7 @@ export function createHud(context: HudContext): Hud {
   const buttonElements = new Map<string, HTMLButtonElement>();
 
   const renderCard = (buttons: CommandButton[]): void => {
-    const signature = buttons.map((b) => `${b.id}:${b.enabled ? 1 : 0}`).join('|');
+    const signature = buttons.map((b) => `${b.id}:${b.enabled ? 1 : 0}${b.active ? 1 : 0}`).join('|');
     if (signature === cardPanel.dataset['signature']) return;
     cardPanel.dataset['signature'] = signature;
     cardPanel.innerHTML = '';
@@ -205,6 +228,12 @@ export function createHud(context: HudContext): Hud {
       element.type = 'button';
       element.className = 'hud-button';
       element.disabled = !button.enabled;
+      // Only a toggle says whether it is pressed; a plain command saying
+      // "not pressed" would be read out as a toggle that is off.
+      if (button.active !== undefined) {
+        element.setAttribute('aria-pressed', button.active ? 'true' : 'false');
+        if (button.active) element.classList.add('is-active');
+      }
       element.innerHTML =
         `<span class="hud-key">${button.hotkey.toUpperCase()}</span>` +
         `<span class="hud-label">${button.label}</span>` +
@@ -243,8 +272,15 @@ export function createHud(context: HudContext): Hud {
       supplyValue.textContent = String(owned);
 
       renderSelection(match, selection, context.localPlayer, selectionPanel);
-      current = commandsFor(match, selection, context.localPlayer);
+      current = commandsFor(match, selection, context.localPlayer, context.following?.() ?? null);
       renderCard(current);
+    },
+
+    coveredBelow() {
+      if (root.classList.contains('is-idle')) return 0;
+      const panel = bar.getBoundingClientRect();
+      if (panel.height === 0) return 0;
+      return Math.max(0, root.getBoundingClientRect().bottom - panel.top);
     },
 
     handleKey(key) {

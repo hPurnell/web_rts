@@ -111,6 +111,22 @@ Enabling a plugin on a material that has already compiled does **not** dirty
 its defines. The define is set, nothing recompiles, and the fog silently never
 appears; `setEnabled` calls `markAllDefinesAsDirty()` for that reason.
 
+## The follow camera
+
+**F** (or the Follow cam button) on a selected mobile unit hands the camera
+to `render/chasecamera.ts`; **F** again, **Esc** or a minimap click hands it
+back. It follows the unit *as drawn* (`UnitRenderer.poseOf`, interpolated
+between ticks), so it must run after the unit renderer each frame and before
+shadows are fitted — the frame loop calls `updateChase` there, not beside
+`camera.update`. The smoothing is critically damped springs, and the tests in
+`test/chasecamera.test.ts` pin what "smooth" means: no cut, no jolt, no snap.
+
+While following, the view is framed above the HUD panel with a lens shift: an
+off-centre projection frozen onto the camera. Picking and selection read the
+camera's projection, so they agree with it. Babylon does **not** recompute a
+projection when you unfreeze it — it keeps returning the frozen one — so
+`setLens(0)` forces `getProjectionMatrix(true)`.
+
 ## Triangle winding
 
 Babylon's default is left-handed, so a front face is clockwise as seen from the

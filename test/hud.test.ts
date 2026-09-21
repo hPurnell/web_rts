@@ -171,6 +171,23 @@ describe('the HUD element', () => {
   });
 });
 
+describe('the follow camera button', () => {
+  it('is offered for a mobile unit and pressed while that unit is followed', () => {
+    const { match } = setup();
+    const tank = spawn(match, 'soldier');
+    const off = commandsFor(match, [tank], 0).find((b) => b.id === 'follow');
+    expect(off).toMatchObject({ hotkey: 'f', active: false, action: { kind: 'follow' } });
+    const on = commandsFor(match, [tank], 0, tank).find((b) => b.id === 'follow');
+    expect(on?.active).toBe(true);
+  });
+
+  it('is not offered for a structure, which has nowhere to go', () => {
+    const { match } = setup();
+    const depot = spawn(match, 'depot');
+    expect(commandsFor(match, [depot], 0).some((b) => b.id === 'follow')).toBe(false);
+  });
+});
+
 describe('the minimap', () => {
   beforeEach(() => {
     document.body.innerHTML = '';

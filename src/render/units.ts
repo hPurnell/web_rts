@@ -124,12 +124,29 @@ export interface UnitRenderer {
   captureTick(match: Match): void;
   /** Live instances written by the last update, for the dev overlay. */
   instanceCount(): number;
+  /**
+   * Where a unit was drawn by the last update — interpolated between ticks,
+   * standing on the ground or at its altitude — and the way it faced, as the
+   * simulation's heading (it travels along `(cos, sin)`). Null for a unit the
+   * last update did not draw: dead, or hidden in the fog. The chase camera
+   * follows this rather than the simulation's position, which only moves at
+   * tick boundaries and would drag the camera along in steps.
+   */
+  poseOf(index: number): UnitPose | null;
   /** Hide everything, e.g. when a match ends. */
   clear(): void;
   dispose(): void;
 }
 
 const FLOATS_PER_MATRIX = 16;
+
+/** A unit as drawn: position in world units, and heading in radians. */
+export interface UnitPose {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly heading: number;
+}
 
 /**
  * How much of the player colour a textured model takes.
@@ -245,6 +262,15 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
   let prevVelX = new Int32Array(0);
   let prevVelZ = new Int32Array(0);
   let prevTick = -1;
+  // What the last update drew, per unit slot, for `poseOf`. A slot counts only
+  // if its stamp is the current frame's, so a unit that has since died or
+  // gone into the fog reads as not drawn rather than as where it last was.
+  let drawnX = new Float32Array(0);
+  let drawnY = new Float32Array(0);
+  let drawnZ = new Float32Array(0);
+  let drawnHeading = new Float32Array(0);
+  let drawnStamp = new Uint32Array(0);
+  let frameStamp = 0;
   let written = 0;
 
   // Smoothed flight attitude, one per unit slot, and the rotor's phase.
@@ -470,6 +496,16 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
 
     instanceCount: () => written,
 
+    poseOf(index) {
+      if (index < 0 || index >= drawnStamp.length || drawnStamp[index] !== frameStamp) return null;
+      return {
+        x: drawnX[index] as number,
+        y: drawnY[index] as number,
+        z: drawnZ[index] as number,
+        heading: drawnHeading[index] as number,
+      };
+    },
+
     update(match, world, overrides, alpha, localPlayer = -1) {
       const units = match.units;
       // Before the first captured tick there is nothing to interpolate from.
@@ -485,6 +521,19 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
       lastFrame = now;
 
       for (const group of groups) group.count = 0;
+      frameStamp++;
+      if (drawnStamp.length < units.count) {
+        const size = Math.max(units.count, drawnStamp.length * 2, 64);
+        const grow = <T extends Float32Array | Uint32Array>(old: T, next: T): T => {
+          next.set(old);
+          return next;
+        };
+        drawnX = grow(drawnX, new Float32Array(size));
+        drawnY = grow(drawnY, new Float32Array(size));
+        drawnZ = grow(drawnZ, new Float32Array(size));
+        drawnHeading = grow(drawnHeading, new Float32Array(size));
+        drawnStamp = grow(drawnStamp, new Uint32Array(size));
+      }
 
       const hidden = (index: number): boolean => {
         if (localPlayer < 0) return false;
@@ -612,6 +661,12 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
           normalY[i] = upY;
           normalZ[i] = upZ;
         }
+
+        drawnX[i] = x;
+        drawnY[i] = y;
+        drawnZ[i] = z;
+        drawnHeading[i] = facing;
+        drawnStamp[i] = frameStamp;
 
         const offset = group.count * FLOATS_PER_MATRIX;
         writeMatrix(group.hullData, offset, x, y + group.hullLift, z, sin, cos, upX, upY, upZ);

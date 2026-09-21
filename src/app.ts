@@ -14,7 +14,8 @@ import { createMatchFromWorld } from './sim/matchinit.ts';
 import { stepMatch } from './sim/tick.ts';
 import { hashMatch } from './sim/statehash.ts';
 import { setAiPlayer } from './sim/ai.ts';
-import { spawnUnit } from './sim/units.ts';
+import { spawnUnit, resolve } from './sim/units.ts';
+import type { UnitHandle } from './sim/units.ts';
 import { unitTypeById } from './sim/unittypes.ts';
 import { fromInt } from './sim/fixed.ts';
 import type { Driver } from './driver.ts';
@@ -40,6 +41,7 @@ import { createDoodads } from './render/doodads.ts';
 import type { AnimatedAsset, DoodadPlacement, DoodadRenderer } from './render/doodads.ts';
 import { createRoads } from './render/roads.ts';
 import { createShadows } from './render/shadows.ts';
+import { ChaseCamera } from './render/chasecamera.ts';
 import { createWater } from './render/water.ts';
 import type { WaterRenderer, WaterStyle, WaterSurface } from './render/water.ts';
 import type { RoadPolyline, RoadRenderer, RoadType } from './render/roads.ts';
@@ -342,11 +344,33 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
   /** Type the player is about to place, or -1. Set by a build button. */
   let pendingBuild = -1;
 
+  /**
+   * The third-person camera, and the unit it is following.
+   *
+   * It takes the camera over from the overhead one while following and hands
+   * it back on a glide when let go; `render/chasecamera.ts` has the why of the
+   * smoothing. The overhead camera's focus is kept under the unit meanwhile, so
+   * letting go lands looking down at where the unit is, not where the camera
+   * was when it started following.
+   */
+  const chase = new ChaseCamera();
+  let followed: UnitHandle | null = null;
+
+  function stopFollowing(): void {
+    followed = null;
+    chase.release();
+  }
+
   const hud = createHud({
     overlay: overlayRoot,
     localPlayer: LOCAL_PLAYER,
     onCommand: (action) => applyHudCommand(action),
-    onMinimapJump: (x, z) => camera.moveTo(x, z),
+    onMinimapJump: (x, z) => {
+      // Asking to look somewhere else is asking to stop following.
+      stopFollowing();
+      camera.moveTo(x, z);
+    },
+    following: () => (chase.chasing ? followed : null),
   });
   const minimap = createMinimap();
   hud.minimapSlot.appendChild(minimap.element);
@@ -391,6 +415,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     const handles = selection.selection.list();
 
     switch (action.kind) {
+      case 'follow':
+        toggleFollow(handles);
+        return;
       case 'stop':
         pendingBuild = -1;
         pendingCommands.push({ kind: CommandKind.StopUnits, player: LOCAL_PLAYER, handles: [...handles] });
@@ -473,6 +500,9 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
 
   /** Swap in a different map: rebuild the scene and re-bound the camera. */
   function loadWorld(next: World): void {
+    // A different map: nothing to follow, and nothing to glide back from.
+    followed = null;
+    chase.reset();
     const layer = flagOverlay.current();
     flagOverlay.dispose();
     terrain.dispose();
@@ -739,7 +769,75 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     overlay.set('match', 'multiplayer');
   }
 
+  /**
+   * Follow the first of the selection that is ours and can move, or stop if
+   * the camera is already following one of them. Selecting something else and
+   * pressing Follow switches to it, gliding across rather than cutting.
+   */
+  function toggleFollow(handles: readonly UnitHandle[]): void {
+    const match = driver?.match;
+    if (!match) return;
+    if (chase.chasing && followed !== null && handles.includes(followed)) {
+      stopFollowing();
+      return;
+    }
+    const units = match.units;
+    for (const handle of handles) {
+      const index = resolve(units, handle);
+      if (index < 0 || units.ownerId[index] !== LOCAL_PLAYER) continue;
+      if (unitType(units.typeId[index] as number).isStructure) continue;
+      const pose = unitRenderer.poseOf(index);
+      if (!pose) continue;
+      followed = handle;
+      chase.start(
+        {
+          eye: {
+            x: camera.camera.position.x,
+            y: camera.camera.position.y,
+            z: camera.camera.position.z,
+          },
+          look: camera.overheadPose().look,
+        },
+        pose,
+      );
+      return;
+    }
+  }
+
+  /**
+   * Drive the camera while the chase has it: following, or handing back.
+   * Runs after the units have been placed for this frame, so the camera
+   * follows where the unit is drawn now, not where it was a frame ago.
+   */
+  function updateChase(dt: number): void {
+    if (chase.chasing) {
+      const match = driver?.match ?? null;
+      const index = match && followed !== null ? resolve(match.units, followed) : -1;
+      const pose = index >= 0 ? unitRenderer.poseOf(index) : null;
+      if (!pose) {
+        // Dead, or no match any more: let go rather than stare at nothing.
+        stopFollowing();
+      } else {
+        camera.moveTo(pose.x, pose.z);
+        const covered = hud.coveredBelow() / Math.max(1, viewportSize().height);
+        const view = chase.follow(
+          pose,
+          dt,
+          (x, z) => groundHeightAt(world, heightOverrides(), x, z),
+          covered,
+        );
+        camera.show(view.eye, view.look, view.lens);
+        return;
+      }
+    }
+    if (chase.active) {
+      const view = chase.handBack(camera.overheadPose(), dt);
+      if (view) camera.show(view.eye, view.look, view.lens);
+    }
+  }
+
   function stopMatch(): void {
+    stopFollowing();
     if (driver && recorder) {
       lastReplay = recorder.finish(driver.match);
       overlay.set('replay', describeReplay(lastReplay));
@@ -806,11 +904,14 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     // which is a CSS coordinate, and divides by them to turn a middle-drag in
     // CSS pixels into ground units.
     const view = viewportSize();
-    camera.update(input, dt, view.width, view.height);
-    shadows.update(
-      camera.camera,
-      groundHeightAt(world, heightOverrides(), camera.focusX, camera.focusZ),
-    );
+    if (chase.chasing) {
+      // The wheel moves the chase camera in and out, and nothing pans: the
+      // overhead camera is kept under the unit instead.
+      if (!input.suppressed) chase.zoomBy(input.takeWheel());
+      input.takeDrag();
+    } else {
+      camera.update(input, dt, view.width, view.height);
+    }
 
     if (playback) {
       const showing = playback;
@@ -930,6 +1031,13 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
         overlay.set('minimap', `${minimap.lastDrawMs().toFixed(2)} ms`);
       }
     }
+
+    // After the units are placed, and before shadows are fitted to the view.
+    updateChase(dt);
+    shadows.update(
+      camera.camera,
+      groundHeightAt(world, heightOverrides(), camera.focusX, camera.focusZ),
+    );
 
     // getFps() is NaN on the very first frames; without this guard the
     // exponential average is poisoned permanently.
@@ -1648,6 +1756,12 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     // it, or typing `stop` would also stop the army behind it.
     if (consoleView.handleKey(e)) return;
     if (menu.handleKey(e)) return;
+    if (e.code === 'Escape' && chase.chasing) {
+      // The first Escape lets go of the camera; the next opens the menu.
+      e.preventDefault();
+      stopFollowing();
+      return;
+    }
     if (e.code === 'Escape' && mode.current() === 'game' && pendingBuild < 0 && !playback) {
       e.preventDefault();
       menu.open();
