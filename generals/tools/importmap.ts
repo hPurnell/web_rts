@@ -466,6 +466,14 @@ export interface BlendTiles {
   readonly records: readonly { name: string; first: number; count: number; side: number }[];
   /** The blend table. Entry 0 is "no blend" and is never read from the file. */
   readonly blends: readonly (BlendTile | null)[];
+  /** Per cell, an index into `cliffs`, or 0 for an ordinary cell. */
+  readonly cliff: Uint16Array;
+  /**
+   * Hand-fitted texture coordinates for cliff cells, entry 0 unused. Four
+   * corners, in texture-width units from the class's lower-left corner; see
+   * `WorldHeightMap::getUVForTileIndex`.
+   */
+  readonly cliffs: readonly ({ tile: number; u: number[]; v: number[]; flip: boolean } | null)[];
 }
 
 /** Written after every blend table entry, and checked, by the source game. */
@@ -515,7 +523,7 @@ export function readBlendTiles(data: Buffer, rowStride: number, version = 8): Bl
     const tiles = shorts();
     const blend = shorts();
     const extraBlend = version >= 6 ? shorts() : new Uint16Array(cells);
-    if (version >= 5) r.at += cells * 2; // cliff info indices
+    const cliff = version >= 5 ? shorts() : new Uint16Array(cells);
     if (version >= 7) {
       // Version 7 was written with a byte width one short; the parser keeps
       // reading it the way it was written.
@@ -525,7 +533,7 @@ export function readBlendTiles(data: Buffer, rowStride: number, version = 8): Bl
 
     r.int32(); // bitmap tiles
     const blendedTiles = r.int32();
-    if (version >= 5) r.int32(); // cliff infos
+    const cliffCount = version >= 5 ? r.int32() : 1;
     const classCount = r.int32();
     const records: BlendTiles['records'][number][] = [];
     for (let i = 0; i < classCount; i++) {
@@ -574,7 +582,24 @@ export function readBlendTiles(data: Buffer, rowStride: number, version = 8): Bl
       });
     }
 
-    return { stride, tiles, blend, extraBlend, records, blends };
+    const cliffs: BlendTiles['cliffs'][number][] = [null];
+    if (version >= 5) {
+      for (let i = 1; i < cliffCount; i++) {
+        const tile = r.int32();
+        const corners: number[] = [];
+        for (let k = 0; k < 8; k++) corners.push(r.float());
+        const flip = r.uint8() !== 0;
+        r.uint8(); // mutant
+        cliffs.push({
+          tile,
+          u: [corners[0], corners[2], corners[4], corners[6]] as number[],
+          v: [corners[1], corners[3], corners[5], corners[7]] as number[],
+          flip,
+        });
+      }
+    }
+
+    return { stride, tiles, blend, extraBlend, records, blends, cliff, cliffs };
   } catch {
     return null;
   }
@@ -682,6 +707,8 @@ export interface TerrainTextures {
   readonly blend: Image;
   /** A second blend over the first, where three ground types meet. */
   readonly extraBlend: Image;
+  /** How far each steep cell stretches its texture, to stop it smearing. */
+  readonly stretch: Image;
   readonly columns: number;
   readonly rows: number;
   /** Side of one atlas slot's usable area, in pixels. */
@@ -689,6 +716,50 @@ export interface TerrainTextures {
   /** Padding around each slot, in pixels. */
   readonly pad: number;
   readonly names: readonly string[];
+}
+
+/** Which texture a cell shows, and which cell-sized square of it. */
+export interface TileSquare {
+  /** Index into the map's texture classes. */
+  readonly record: number;
+  /** Column of the square, left to right. */
+  readonly subX: number;
+  /** Row of the square, top to bottom as the decoder presents the texture. */
+  readonly subY: number;
+  /** Squares across the texture: two per source tile. */
+  readonly span: number;
+}
+
+/**
+ * Turn a map tile index into a texture and a square of it.
+ *
+ * The low two bits of a tile index are a quadrant, not part of the index:
+ * `WorldHeightMap::getUVForNdx` takes `tileNdx >> 2` as the 64x64 source
+ * tile, bit 0 picking the left or right half and bit 1 the top or bottom,
+ * because a tile covers two cells each way. Matching the raw index against
+ * the class ranges puts three quarters of the map on the wrong texture.
+ *
+ * Their tile rows run bottom-up — the loader walks the TGA in file order and
+ * a TGA starts at the bottom — so the row is flipped into the top-down space
+ * the decoder hands us. That makes `subY` *fall* as a map's z rises, which is
+ * why the shader's position within a cell has to fall with z too.
+ */
+export function squareOf(
+  tile: number,
+  records: readonly { first: number; count: number; side: number }[],
+): TileSquare | null {
+  const base = tile >> 2;
+  const record = records.findIndex(
+    (candidate) => base >= candidate.first && base < candidate.first + candidate.count,
+  );
+  if (record < 0) return null;
+  const entry = records[record] as (typeof records)[number];
+  const side = Math.max(1, entry.side);
+  const local = base - entry.first;
+  const quadrant = tile & 3;
+  const subX = (local % side) * 2 + (quadrant & 1);
+  const theirRow = Math.floor(local / side) * 2 + ((quadrant >> 1) & 1);
+  return { record, subX, subY: side * 2 - 1 - theirRow, span: side * 2 };
 }
 
 /**
@@ -726,40 +797,14 @@ function readTerrainTextures(
   height: number,
   rowStride: number,
   version: number,
+  cornerHeight: (cx: number, cz: number) => number,
 ): TerrainTextures | null {
   const blend = readBlendTiles(data, rowStride, version);
   if (!blend) return null;
   const types = terrainTypes(index);
 
-  /**
-   * The texture class a cell is painted with, and where in it to look.
-   *
-   * The low two bits of a tile index are a **quadrant**, not part of the
-   * index: `WorldHeightMap::getUVForNdx` takes `tileNdx >> 2` as the 64x64
-   * source tile and uses bit 0 to pick the left or right half and bit 1 the
-   * top or bottom, because a tile covers two cells each way. Matching the raw
-   * index against the class ranges puts three quarters of the map on the
-   * wrong texture and leaves the rest unmatched; matching the shifted one
-   * places all 91,800 cells of Tournament Desert.
-   *
-   * Their tile rows run bottom-up — the loader walks the TGA in file order and
-   * a TGA starts at the bottom — so the row is flipped into the top-down space
-   * the decoder hands us.
-   */
-  const lookup = (tile: number): { record: number; subX: number; subY: number; span: number } | null => {
-    const base = tile >> 2;
-    const record = blend.records.findIndex(
-      (candidate) => base >= candidate.first && base < candidate.first + candidate.count,
-    );
-    if (record < 0) return null;
-    const entry = blend.records[record] as (typeof blend.records)[number];
-    const side = Math.max(1, entry.side);
-    const local = base - entry.first;
-    const quadrant = tile & 3;
-    const subX = (local % side) * 2 + (quadrant & 1);
-    const theirRow = Math.floor(local / side) * 2 + ((quadrant >> 1) & 1);
-    return { record, subX, subY: side * 2 - 1 - theirRow, span: side * 2 };
-  };
+  /** The texture class a cell is painted with, and where in it to look. */
+  const lookup = (tile: number): TileSquare | null => squareOf(tile, blend.records);
 
   // Only the textures this map actually paints with, commonest first, so a
   // map using more than the atlas holds loses the ones nobody will notice.
@@ -912,11 +957,56 @@ function readTerrainTextures(
     return image;
   };
 
+  /**
+   * The source game's cliff correction, per cell.
+   *
+   * A cell's texture square is laid on it as if the ground were flat, so on a
+   * cliff face one cell of texture is smeared down several cells of rock, and
+   * every row of cells restarts it — which draws a cliff as a stack of
+   * horizontal streaks. `WorldHeightMap::getUVForTileIndex` fixes that at run
+   * time for any map without hand-fitted cliff UVs, which is most of them: it
+   * widens the cell's slice of texture by the surface's true length along the
+   * slope, sqrt(1 + rise^2), so the rock stays rock-sized.
+   *
+   * Its thresholds are kept: nothing happens on a cell rising less than 1.5
+   * cells in total (STRETCH_LIMIT), an axis is only stretched past 1.5 either,
+   * and never past four tiles (TILE_LIMIT). Below those the seam a stretch
+   * introduces costs more than the smear it removes. The game fiddles one
+   * corner at a time for cells with one high or one low corner; this takes
+   * the average rise along each axis instead, which is what those cases
+   * approximate.
+   *
+   * Encoded 1..4 as 0..255, red along x and green along z.
+   */
+  const STRETCH_LIMIT = 1.5;
+  const TILE_LIMIT = 4;
+  const stretch: Image = { width, height, data: Buffer.alloc(width * height * 4) };
+  for (let cz = 0; cz < height; cz++) {
+    for (let cx = 0; cx < width; cx++) {
+      const h0 = cornerHeight(cx, cz);
+      const h1 = cornerHeight(cx + 1, cz);
+      const h2 = cornerHeight(cx + 1, cz + 1);
+      const h3 = cornerHeight(cx, cz + 1);
+      const at = (cz * width + cx) * 4;
+      stretch.data[at + 3] = 255;
+      if (Math.max(h0, h1, h2, h3) - Math.min(h0, h1, h2, h3) < STRETCH_LIMIT) continue;
+      const along = (rise: number): number => {
+        const length = Math.sqrt(1 + rise * rise);
+        return length < STRETCH_LIMIT ? 1 : Math.min(TILE_LIMIT, length);
+      };
+      const sx = along((h1 - h0 + (h2 - h3)) / 2);
+      const sz = along((h3 - h0 + (h2 - h1)) / 2);
+      stretch.data[at] = Math.round(((sx - 1) / (TILE_LIMIT - 1)) * 255);
+      stretch.data[at + 1] = Math.round(((sz - 1) / (TILE_LIMIT - 1)) * 255);
+    }
+  }
+
   return {
     atlas,
     index: indexMap,
     blend: encodeBlends(blend.blend),
     extraBlend: encodeBlends(blend.extraBlend),
+    stretch,
     columns,
     rows,
     slot: TERRAIN_SLOT,
@@ -1023,7 +1113,12 @@ export function importMap(buffer: Buffer, name: string, index: AssetIndex): Impo
 
     // Waypoints are navigation markers, not scenery.
     if (object.type.startsWith('*Waypoints')) continue;
-    doodads.push({ ...object, x: cx, z: cz });
+    // The exact position, not the cell it falls in. Rounding put every piece
+    // of scenery up to half a cell off, which is invisible on a lone tree and
+    // obvious anywhere things are meant to line up: fence panels stopped
+    // meeting and rows of houses stopped being parallel to their road. The
+    // cell is still what the simulation's vision flags are set on, below.
+    doodads.push(object);
     if (BLOCKS_SIGHT.test(object.type)) {
       const cell = cz * world.width + cx;
       setFlags(world, cell, ((world.flags[cell] as number) & ~BUILDABLE) | VISION_BLOCKER);
@@ -1057,6 +1152,7 @@ export function importMap(buffer: Buffer, name: string, index: AssetIndex): Impo
         world.height,
         heights.width,
         blend.version,
+        (cx, cz) => (world.heights[cz * cornerStride(world) + cx] ?? 0) / 65536,
       )
     : null;
 
@@ -1162,6 +1258,7 @@ async function main(): Promise<void> {
       writeFileSync(join(ASSETS_DIR, 'maps', `${slug}.tiles.png`), writePng(result.terrain.index));
       writeFileSync(join(ASSETS_DIR, 'maps', `${slug}.blend.png`), writePng(result.terrain.blend));
       writeFileSync(join(ASSETS_DIR, 'maps', `${slug}.blend2.png`), writePng(result.terrain.extraBlend));
+      writeFileSync(join(ASSETS_DIR, 'maps', `${slug}.stretch.png`), writePng(result.terrain.stretch));
     }
     writeFileSync(
       join(ASSETS_DIR, 'maps', `${slug}.json`),
@@ -1179,6 +1276,7 @@ async function main(): Promise<void> {
                   index: `maps/${slug}.tiles.png`,
                   blend: `maps/${slug}.blend.png`,
                   extraBlend: `maps/${slug}.blend2.png`,
+                  stretch: `maps/${slug}.stretch.png`,
                   columns: result.terrain.columns,
                   rows: result.terrain.rows,
                   slot: result.terrain.slot,

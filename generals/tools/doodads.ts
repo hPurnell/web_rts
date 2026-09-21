@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { ASSETS_DIR, findInstall, runTool } from './config.ts';
 import { findByBasename, indexArchives } from './big.ts';
 import { readObjectModels, resolveModel } from './objectini.ts';
-import { convertAnimated, convertModel } from './convert.ts';
+import { SCENERY_SCALE, convertAnimated, convertModel } from './convert.ts';
 import type { ConvertedAnimation, ConvertedModel } from './convert.ts';
 
 /**
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
 
     const key = model.toLowerCase();
     if (!built.has(key)) {
-      const converted = convertModel(index, `doodad_${key}`, `${model}.w3d`);
+      const converted = convertModel(index, `doodad_${key}`, `${model}.w3d`, SCENERY_SCALE);
       built.set(key, converted);
       if (converted) {
         console.log(`  ${type} -> ${model}, radius ${converted.radius.toFixed(2)}`);
@@ -119,7 +119,13 @@ async function main(): Promise<void> {
       if (!exists(`${part.model}.w3d`)) continue;
       const key = `${part.model}|${part.animation ?? ''}`.toLowerCase();
       if (!(key in animations)) {
-        const baked = convertAnimated(index, `anim_${part.model.toLowerCase()}`, part.model, part.animation);
+        const baked = convertAnimated(
+          index,
+          `anim_${part.model.toLowerCase()}`,
+          part.model,
+          part.animation,
+          SCENERY_SCALE,
+        );
         if (!baked) continue;
         animations[key] = {
           ...baked,

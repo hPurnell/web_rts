@@ -7,11 +7,12 @@
  * and a per-cell index map** saying which one each cell is painted with, and
  * the shader lays them down at the scale the artist drew them.
  *
- * The textured path blends the four cells around each fragment rather than
- * picking one. The source data is one texture per cell and nothing finer, so
- * a hard lookup gives a visible square lattice; the cross-fade is what turns
- * it back into ground. It costs four index lookups and four atlas lookups,
- * which buys the whole floor for one draw call.
+ * The textured path follows the source game's terrain renderer closely. Each
+ * cell shows the square of its texture the map names; up to two blend layers
+ * fade other textures over it at the corners the map names; and on steep cells
+ * the texture is stretched to the slope's true length so cliffs do not smear.
+ * All of it is per-cell lookups in a handful of small images, which buys the
+ * whole floor for one draw call.
  */
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector2, Vector3, Vector4 } from '@babylonjs/core/Maths/math.vector';
@@ -75,6 +76,7 @@ uniform sampler2D terrainAtlas;
 uniform sampler2D terrainIndex;
 uniform sampler2D terrainBlend;
 uniform sampler2D terrainExtraBlend;
+uniform sampler2D terrainStretch;
 /** Cells across the map, so a map UV becomes a cell coordinate. */
 uniform vec2 mapCells;
 /** Atlas columns, rows, slot side in pixels, and the padding around a slot. */
@@ -121,9 +123,41 @@ vec3 squareAt(float slot, vec2 square, float squares, vec2 inCell) {
   // Where in the texture, then where in the slot. The padding around a slot
   // continues the texture, so a bilinear tap at the edge of an edge square
   // finds more of the same rather than the neighbouring slot.
-  vec2 inTexture = (square + inCell) / squares;
+  // Wrapped within the texture: a stretched cliff cell runs past its own
+  // square, and the texture tiles, so it carries on into the same rock.
+  //
+  // Half a texel in from the edge of the square, unless the cell is stretched
+  // and meant to run past it. A cell's square borders the next tile of the
+  // texture, and neighbouring tiles need not be continuous — blend textures
+  // especially are sets of separate variations — so a bilinear tap exactly
+  // on the edge borrows half a texel of something else. At normal zoom a
+  // texel is about a pixel, and it drew a one-pixel line along the edge of
+  // every blended cell.
+  vec2 half_ = vec2(0.5 * squares / atlasInfo.z);
+  vec2 kept = mix(clamp(inCell, half_, 1.0 - half_), inCell, step(1.0001, inCell));
+  vec2 inTexture = fract((square + kept) / squares);
   vec2 inside = inTexture * atlasInfo.z + pad;
   return texture2D(terrainAtlas, (slotXY * span + inside) / atlasSize).rgb;
+}
+
+/**
+ * Where within a cell to sample, allowing for the cliff correction: a steep
+ * cell runs its texture up to four times further along each axis, so the rock
+ * on a cliff face stays rock-sized instead of smearing down it. See
+ * readTerrainTextures in the importer; this is WorldHeightMap's run-time
+ * cliff adjustment.
+ */
+vec2 inCellAt(vec2 cell) {
+  vec2 icell = clamp(floor(cell), vec2(0.0), mapCells - 1.0);
+  vec2 stretch = texture2D(terrainStretch, (icell + 0.5) / mapCells).rg * 3.0 + 1.0;
+  vec2 f = fract(cell);
+  // Up the picture as z increases, within the cell as well as between cells.
+  // The squares a map assigns climb the texture as z grows — the source's
+  // tile rows run bottom-up — so the position inside a cell has to run the
+  // same way or every row boundary jumps two squares. It did: on Tournament
+  // Tundra all 61,484 vertically adjacent cells of one texture had a seam,
+  // which on cliff rock reads as stacked horizontal bands.
+  return vec2(f.x, 1.0 - f.y) * stretch;
 }
 
 vec3 groundAt(vec2 cell) {
@@ -133,7 +167,7 @@ vec3 groundAt(vec2 cell) {
     floor(entry.r * 255.0 + 0.5),
     floor(entry.gb * 255.0 + 0.5),
     max(1.0, floor(entry.a * 255.0 + 0.5)),
-    fract(cell));
+    inCellAt(cell));
 }
 
 /**
@@ -163,9 +197,11 @@ vec4 blendAt(sampler2D layer, vec2 cell) {
   float c2 = mod(floor(mask / 4.0), 2.0);
   float c3 = mod(floor(mask / 8.0), 2.0);
 
+  // The fade runs across the cell as it is; the texture under it takes the
+  // same cliff stretch as the base, as the source game's blends do.
   vec2 f = fract(cell);
   float alpha = mix(mix(c0, c1, f.x), mix(c3, c2, f.x), f.y);
-  vec3 colour = squareAt(slot, floor(entry.gb * 255.0 + 0.5), max(1.0, side * 2.0), f);
+  vec3 colour = squareAt(slot, floor(entry.gb * 255.0 + 0.5), max(1.0, side * 2.0), inCellAt(cell));
   return vec4(colour, alpha);
 }
 
@@ -334,6 +370,7 @@ export interface TerrainTextureSet {
   readonly index: BaseTexture;
   readonly blend: BaseTexture;
   readonly extraBlend: BaseTexture;
+  readonly stretch: BaseTexture;
   readonly columns: number;
   readonly rows: number;
   readonly slot: number;
@@ -355,6 +392,7 @@ export function setTerrainTextures(
   material.setTexture('terrainIndex', set.index);
   material.setTexture('terrainBlend', set.blend);
   material.setTexture('terrainExtraBlend', set.extraBlend);
+  material.setTexture('terrainStretch', set.stretch);
   material.setVector2('mapCells', new Vector2(set.cells.width, set.cells.height));
   material.setVector4('atlasInfo', new Vector4(set.columns, set.rows, set.slot, set.pad));
 }
@@ -445,7 +483,14 @@ export function createTerrainMaterial(
       'atlasInfo',
       'terrainTextured',
     ],
-    samplers: ['fogSampler', 'terrainAtlas', 'terrainIndex', 'terrainBlend', 'terrainExtraBlend'],
+    samplers: [
+      'fogSampler',
+      'terrainAtlas',
+      'terrainIndex',
+      'terrainBlend',
+      'terrainExtraBlend',
+      'terrainStretch',
+    ],
   });
 
   const light = options.lightDirection;

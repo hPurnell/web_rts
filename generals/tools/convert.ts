@@ -42,6 +42,22 @@ import type { Image } from './image.ts';
 const MODEL_SCALE = 0.055;
 
 /**
+ * World units per Generals unit for **scenery**: the map's own scale.
+ *
+ * Not the vehicle scale above. A map places its objects in Generals units at
+ * ten to a cell, so anything standing on it has to be converted at that same
+ * rate or it stops meeting its neighbours: a chain-link fence panel is 30.1
+ * units long and the map spaces them 26.5 apart, so at the map's scale they
+ * overlap slightly and join, and at the vehicle scale they stood 1.7 cells
+ * long in gaps 2.65 wide. Buildings were likewise barely half size beside the
+ * roads and bibs laid out for them.
+ *
+ * Vehicles keep their own scale, which was tuned against the engine's unit
+ * sizes rather than against a map.
+ */
+export const SCENERY_SCALE = 0.1;
+
+/**
  * Meshes that are effects rather than vehicle body.
  *
  * Generals models carry their own muzzle flashes, smoke emitters and headlight
@@ -197,6 +213,7 @@ function buildPart(
   meshes: readonly { mesh: W3DMesh; matrix: Mat4 }[],
   origin: Vec3,
   remapUv: (name: string, u: number, v: number) => { u: number; v: number },
+  scale = MODEL_SCALE,
 ): BuiltPart {
   const positions: number[] = [];
   const normals: number[] = [];
@@ -217,7 +234,7 @@ function buildPart(
       const world = transform(matrix, mesh.vertices[i] as Vec3);
       const local = { x: world.x - origin.x, y: world.y - origin.y, z: world.z - origin.z };
       const p = toRendererAxes(local);
-      positions.push(p.x * MODEL_SCALE, p.y * MODEL_SCALE, p.z * MODEL_SCALE);
+      positions.push(p.x * scale, p.y * scale, p.z * scale);
 
       // A reflection is its own inverse transpose, so a normal transforms by
       // the same matrix as a position and needs no separate sign correction.
@@ -555,7 +572,12 @@ function writeGltf(outPath: string, part: BuiltPart, textureFile: string): void 
 }
 
 /** Convert one model into hull and turret parts. */
-export function convertModel(index: AssetIndex, id: string, file: string): ConvertedModel | null {
+export function convertModel(
+  index: AssetIndex,
+  id: string,
+  file: string,
+  scale = MODEL_SCALE,
+): ConvertedModel | null {
   const found = findByBasename(index, file);
   if (found.length === 0) {
     console.error(`  ${id}: ${file} not found in any archive`);
@@ -637,19 +659,19 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
   // puts it; the turret is rebased onto its own pivot so rotating it spins it
   // about the right axis rather than swinging it around the hull.
   const origin: Vec3 = { x: 0, y: 0, z: 0 };
-  const hullPart = buildPart(hull, origin, remap);
+  const hullPart = buildPart(hull, origin, remap, scale);
   writeGltf(join(ASSETS_DIR, 'models', `${id}_hull`), hullPart, textureFile);
 
   let turretOut: ConvertedPart | undefined;
   if (turret.length > 0 && turretBone >= 0) {
     const pivot = matrices[turretBone] as Mat4;
     const turretOrigin: Vec3 = { x: pivot[12] as number, y: pivot[13] as number, z: pivot[14] as number };
-    const turretPart = buildPart(turret, turretOrigin, remap);
+    const turretPart = buildPart(turret, turretOrigin, remap, scale);
     writeGltf(join(ASSETS_DIR, 'models', `${id}_turret`), turretPart, textureFile);
     turretOut = {
       gltf: `${id}_turret.gltf`,
       texture: textureFile,
-      offsetY: toRendererAxes(turretOrigin).y * MODEL_SCALE,
+      offsetY: toRendererAxes(turretOrigin).y * scale,
     };
   }
 
@@ -659,7 +681,7 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
   for (let r = 0; r < rotors.length; r++) {
     const { matrix } = rotors[r] as { mesh: W3DMesh; matrix: Mat4 };
     const hub: Vec3 = { x: matrix[12] as number, y: matrix[13] as number, z: matrix[14] as number };
-    const part = buildPart([rotors[r] as { mesh: W3DMesh; matrix: Mat4 }], hub, remap);
+    const part = buildPart([rotors[r] as { mesh: W3DMesh; matrix: Mat4 }], hub, remap, scale);
     const name = `${id}_rotor${r}`;
     writeGltf(join(ASSETS_DIR, 'models', name), part, textureFile);
     const rendered = toRendererAxes(hub);
@@ -667,9 +689,9 @@ export function convertModel(index: AssetIndex, id: string, file: string): Conve
       gltf: `${name}.gltf`,
       texture: textureFile,
       offset: {
-        x: rendered.x * MODEL_SCALE,
-        y: rendered.y * MODEL_SCALE,
-        z: rendered.z * MODEL_SCALE,
+        x: rendered.x * scale,
+        y: rendered.y * scale,
+        z: rendered.z * scale,
       },
     });
   }
@@ -731,15 +753,15 @@ export interface ConvertedAnimation {
  * whole matrix rather than to each vertex, which is what guarantees an
  * animated part and a still one end up in exactly the same place.
  */
-function toRendererMatrix(w: Mat4): number[] {
+function toRendererMatrix(w: Mat4, scale: number): number[] {
   const swap = [0, 2, 1, 3];
   const out = new Array<number>(16);
   for (let c = 0; c < 4; c++) {
     for (let r = 0; r < 4; r++) out[c * 4 + r] = w[(swap[c] as number) * 4 + (swap[r] as number)] as number;
   }
-  out[12] = (out[12] as number) * MODEL_SCALE;
-  out[13] = (out[13] as number) * MODEL_SCALE;
-  out[14] = (out[14] as number) * MODEL_SCALE;
+  out[12] = (out[12] as number) * scale;
+  out[13] = (out[13] as number) * scale;
+  out[14] = (out[14] as number) * scale;
   return out;
 }
 
@@ -795,6 +817,7 @@ export function convertAnimated(
   id: string,
   model: string,
   animation?: string,
+  scale = SCENERY_SCALE,
 ): ConvertedAnimation | null {
   const load = (file: string) => {
     const found = findByBasename(index, file);
@@ -905,6 +928,7 @@ export function convertAnimated(
       })),
       { x: 0, y: 0, z: 0 },
       remap,
+      scale,
     );
     const name = `${id}_part${n++}`;
     writeGltf(join(ASSETS_DIR, 'models', name), built, textureFile);
@@ -914,7 +938,11 @@ export function convertAnimated(
     // A still group shares one blink pattern, taken from any of its bones.
     const motion = anim?.motion.get(still ? group.blinkOf : group.bone);
     for (let f = 0; f < frames; f++) {
-      matrices.push(...(still ? toRendererMatrix(identity()) : toRendererMatrix(posed[f]?.[group.bone] as Mat4)));
+      matrices.push(
+        ...(still
+          ? toRendererMatrix(identity(), scale)
+          : toRendererMatrix(posed[f]?.[group.bone] as Mat4, scale)),
+      );
       visible.push(visibleAt(motion, f) ? 1 : 0);
     }
     // A part that never moves needs only its first matrix, even if it blinks.

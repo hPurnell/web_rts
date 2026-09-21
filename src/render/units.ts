@@ -528,8 +528,19 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
         while (delta > Math.PI) delta -= Math.PI * 2;
         while (delta < -Math.PI) delta += Math.PI * 2;
         const facing = fromFacing + delta * blend;
-        const sin = Math.sin(facing);
-        const cos = Math.cos(facing);
+
+        // The simulation's heading is `atan2(vz, vx)`: a unit travels along
+        // (cos, sin). Every model points its nose along its own +X — the
+        // Abrams's barrel runs to +1.36 there and -0.42 behind — and
+        // `writeMatrix` sends model +X to (cos a, -sin a) for the angle a it
+        // is given. So it is given the heading negated. Passing the heading
+        // straight through mirrored every vehicle across its direction of
+        // travel, which on anything not driving along the x axis reads as
+        // skating sideways.
+        const noseX = Math.cos(facing);
+        const noseZ = Math.sin(facing);
+        const sin = -noseZ;
+        const cos = noseX;
 
         let y = groundHeightAt(world, overrides, x, z);
 
@@ -552,22 +563,26 @@ export function createUnitRenderer(scene: Scene, models?: ReadonlyMap<string, Lo
           // real quantity rather than a guess.
           const ax = toFloat((units.velX[i] as number) - (prevVelX[i] as number));
           const az = toFloat((units.velZ[i] as number) - (prevVelZ[i] as number));
-          const along = ax * sin + az * cos;
-          const across = ax * cos - az * sin;
+          // Along the nose, and across it toward the left: in this left-handed
+          // world, facing +x with y up, +z is on your left.
+          const along = ax * noseX + az * noseZ;
+          const across = -ax * noseZ + az * noseX;
 
           const wantBank = clamp(across * BANK_PER_ACCEL, -MAX_BANK, MAX_BANK);
           const wantPitch = clamp(along * PITCH_PER_ACCEL, -MAX_PITCH, MAX_PITCH);
           bank[i] = (bank[i] as number) + (wantBank - (bank[i] as number)) * ATTITUDE_BLEND;
           pitch[i] = (pitch[i] as number) + (wantPitch - (pitch[i] as number)) * ATTITUDE_BLEND;
 
-          // Tip the up vector: toward the right wing to bank, and backward to
-          // put the nose down. `writeMatrix` re-orthogonalises the heading
-          // against it, so this is enough to describe the whole attitude.
+          // Tip the up vector. Accelerating forward puts the nose down, which
+          // leans the rotor disc — and so the up vector — toward the nose;
+          // accelerating to the left rolls it that way, leaning up toward the
+          // left. `writeMatrix` re-orthogonalises the heading against it, so
+          // this is enough to describe the whole attitude.
           const sinBank = Math.sin(bank[i] as number);
           const sinPitch = Math.sin(pitch[i] as number);
-          upX = cos * sinBank + sin * -sinPitch;
+          upX = noseX * sinPitch - noseZ * sinBank;
           upY = Math.cos(bank[i] as number) * Math.cos(pitch[i] as number);
-          upZ = -sin * sinBank + cos * -sinPitch;
+          upZ = noseZ * sinPitch + noseX * sinBank;
           const len = Math.hypot(upX, upY, upZ) || 1;
           upX /= len;
           upY /= len;

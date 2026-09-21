@@ -311,4 +311,37 @@ describe('terrain-normal tilt', () => {
     expect(afterOne).toBeGreaterThan(settled);
     expect(afterOne).toBeLessThan(1);
   });
+
+  it('points the nose where the unit is heading', () => {
+    // The simulation's heading is atan2(vz, vx) and every model faces its own
+    // +X. Mirroring one onto the other is invisible on a box and on a unit
+    // driving along x, and on anything else reads as skating sideways — which
+    // is how it was found, once the boxes became tanks.
+    const renderer = createUnitRenderer(scene);
+    const match = createMatch({ seed: 1, playerCount: 2 });
+    const world: World = createTestMap();
+    for (const [i, degrees] of [0, 45, 90, 135, 180, -90].entries()) {
+      const heading = (degrees * Math.PI) / 180;
+      spawnUnit(match.units, {
+        type: unitTypeById('soldier'),
+        ownerId: 0,
+        x: fromInt(10 + i * 3),
+        z: fromInt(10),
+        facing: Math.round(heading * 65536),
+      });
+    }
+    renderer.update(match, world, null, 1);
+    const mesh = scene.meshes.find((m) => m.name === 'hull_t1') as Mesh | undefined;
+    const data = (mesh as unknown as { _thinInstanceDataStorage: { matrixData: Float32Array } })
+      ._thinInstanceDataStorage.matrixData;
+
+    for (const [i, degrees] of [0, 45, 90, 135, 180, -90].entries()) {
+      const heading = (degrees * Math.PI) / 180;
+      // Model +X is the matrix's first row in this layout.
+      expect(data[i * 16] as number, `${degrees} deg x`).toBeCloseTo(Math.cos(heading), 4);
+      expect(data[i * 16 + 2] as number, `${degrees} deg z`).toBeCloseTo(Math.sin(heading), 4);
+    }
+    renderer.dispose();
+  });
 });
+

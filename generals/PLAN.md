@@ -518,6 +518,14 @@ texture that decides, not any transparent pixel: vehicle art carries a little
 stray alpha from antialiasing (the HIMARS is 0.4% transparent) where foliage is
 24% to 62%.
 
+**Scenery and units are not drawn at the same scale.** A doodad sits in the
+map's own coordinates, where ten units make a cell, so its model is scaled by
+`SCENERY_SCALE` (0.1) and a house fills the plot the map left for it. Vehicles
+are scaled by `MODEL_SCALE` (0.055) to fit this engine's unit sizes. Drawing
+scenery at the vehicle scale shrank every building to about half its plot. A
+doodad also keeps its exact position rather than its cell, because rounding
+put scenery up to half a cell off its road.
+
 **On the frame-time bound.** The CPU side is free, as intended: doodads never
 move, so the instance buffers are filled once when the map loads and there is
 no per-frame update at all — the simulation tick is unchanged at 0.15ms. The
@@ -622,6 +630,14 @@ across it, and tips the aircraft against them — nose down to accelerate, roll
 into a turn. They are a function of state the simulation already stores, so
 they are not stored themselves; putting them in the unit store would mean
 hashing two more arrays for a purely visual effect.
+
+**A model's nose is +X, and the heading has to be negated to point it
+there.** The simulation's heading is `atan2(vz, vx)`, while a Y rotation by
+θ in Babylon's left-handed space turns +X toward −Z. Using the heading as the
+rotation mirrors every unit across its direction of travel, so a vehicle going
+north-east faces south-east and seems to skate sideways. The bank and pitch
+axes are then derived from the same nose vector, so they follow.
+`test/render-units.test.ts` checks the nose against six headings.
 
 The rotor is a separate part, found in the art rather than named: a helicopter
 model has several `PROPELLER`-named meshes and most are hubs and shafts that
@@ -738,6 +754,27 @@ job; 11.9% of cells carry a blend and 0.2% a second one.
 
 The corners are interpolated bilinearly. The game splits each cell into two
 triangles, which gives a diagonal blend a slightly straighter edge.
+
+**Tournament Tundra's cliffs were striped**, horizontal bands a cell apart.
+Three causes, each measured on its own before the next was touched:
+
+- **Within a cell, `v` runs the other way.** The half-tile row is flipped into
+  top-down space, so the texture's `v` must fall as the cell's `z` rises —
+  `1 - fract(z)` — or each cell draws its square upside down and every
+  north-south join is a seam. Across 61,484 neighbouring pairs on Tundra that
+  was every one of them; with the flip, none. `test/generals-terrain.test.ts`
+  pins continuity in both directions.
+- **Cliffs are stretched at run time**, not in the data. `HeightMap.cpp`
+  lengthens a steep cell's texture coordinates by `sqrt(1 + rise²)` along each
+  axis, capped, so a cliff face does not smear one row of texels down its
+  whole height. The importer exports that factor per cell as
+  `<map>.stretch.png` and the shader scales the in-cell coordinate by it. The
+  cliff info table in `BlendTileData` (version 5 and up) is parsed but not yet
+  used; its hand-placed UVs are what the stretch approximates.
+- **Anisotropic filtering drew a line at every blended cell edge.** The
+  derivative jumps where a cell switches squares, and aniso turns the jump
+  into a one-pixel smear across the join. The atlas is set to level 1. What
+  remains is a faint tone step, about 7/255, where a blend layer ends.
 
 **Scenery was missing because of one keyword.** Object definitions come in
 three forms and the scanner knew two. `ObjectReskin` is the third, 235 blocks

@@ -1280,6 +1280,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
           index: string;
           blend?: string;
           extraBlend?: string;
+          stretch?: string;
           columns: number;
           rows: number;
           slot: number;
@@ -1314,6 +1315,7 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     index: string;
     blend?: string;
     extraBlend?: string;
+    stretch?: string;
     columns: number;
     rows: number;
     slot: number;
@@ -1330,6 +1332,14 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     const atlas = new Texture(`${CONTENT_PACK_URL}/${meta.atlas}`, renderer.scene, true, false);
     atlas.wrapU = Texture.CLAMP_ADDRESSMODE;
     atlas.wrapV = Texture.CLAMP_ADDRESSMODE;
+    // No anisotropic filtering either, which Babylon turns on by default and
+    // which does not need mipmaps to do harm. It reads the screen-space
+    // derivative of the texture coordinate to decide how far to spread its
+    // taps, and a 2x2 pixel quad straddling a cell edge has a coordinate that
+    // jumps from one texture square to another — so on that one row of
+    // pixels it averaged a stretch of the atlas running into other textures,
+    // and drew a thin off-colour line along the edge of every blended cell.
+    atlas.anisotropicFilteringLevel = 1;
 
     /**
      * A lookup table, not a picture. Nearest filtering always: interpolating
@@ -1354,13 +1364,15 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
     // shader reads the layer's own slot, and a missing one is skipped.
     const blend = meta.blend ? table(meta.blend) : null;
     const extraBlend = meta.extraBlend ? table(meta.extraBlend) : null;
+    const stretch = meta.stretch ? table(meta.stretch) : null;
 
-    terrainTextures = [atlas, index, ...(blend ? [blend] : []), ...(extraBlend ? [extraBlend] : [])];
+    terrainTextures = [atlas, index, ...[blend, extraBlend, stretch].filter((t): t is Texture => t !== null)];
     setTerrainTextures(terrainMaterial, {
       atlas,
       index,
       blend: blend ?? noBlend(),
       extraBlend: extraBlend ?? noBlend(),
+      stretch: stretch ?? noStretch(),
       columns: meta.columns,
       rows: meta.rows,
       slot: meta.slot,
@@ -1374,6 +1386,23 @@ export function startApp(canvas: HTMLCanvasElement, overlayRoot: HTMLElement): A
    * layers existed. Red 255 is "no blend" to the shader.
    */
   let emptyBlend: RawTexture | null = null;
+  /**
+   * No cliff correction, for maps imported before it existed. Not the empty
+   * blend: that one's red is 255, which the stretch reads as the maximum.
+   */
+  let emptyStretch: RawTexture | null = null;
+  function noStretch(): RawTexture {
+    emptyStretch ??= RawTexture.CreateRGBATexture(
+      new Uint8Array([0, 0, 0, 255]),
+      1,
+      1,
+      renderer.scene,
+      false,
+      false,
+      Texture.NEAREST_SAMPLINGMODE,
+    );
+    return emptyStretch;
+  }
   function noBlend(): RawTexture {
     emptyBlend ??= RawTexture.CreateRGBATexture(
       new Uint8Array([255, 0, 0, 0]),
