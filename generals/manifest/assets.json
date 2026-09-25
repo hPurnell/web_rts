@@ -103,10 +103,31 @@
     {
       "id": "nato_comanche",
       "name": "RAH-66 Comanche",
-      "faction": "NATO",
+      "faction": "nato",
       "role": "Attack helicopter",
       "model": "AVComanche.w3d",
       "unitType": "gunship"
+    },
+    {
+      "id": "nato_command_center",
+      "name": "Command Center",
+      "faction": "nato",
+      "role": "headquarters",
+      "model": "ABBtCmdHQ.W3D",
+      "unitType": "depot"
+    },
+    {
+      "id": "ea_command_center",
+      "name": "Command Center",
+      "faction": "ea",
+      "role": "headquarters",
+      "model": "NBConYard.W3D",
+      "unitType": "depot"
     }
-  ]
+  ],
+  "playerFactions": [
+    "nato",
+    "ea"
+  ],
+  "playerFactionsNote": "Which faction each player slot plays, cycling: player 0 NATO, player 1 Eastern Axis, player 2 NATO again."
 }

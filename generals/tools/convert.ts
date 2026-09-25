@@ -959,7 +959,9 @@ export function convertAnimated(
 }
 
 interface AssetManifest {
-  readonly vehicles: { id: string; model: string; unitType?: string }[];
+  readonly vehicles: { id: string; model: string; unitType?: string; faction?: string }[];
+  /** Which faction each player slot plays, cycling. */
+  readonly playerFactions?: readonly string[];
 }
 
 async function main(): Promise<void> {
@@ -973,6 +975,17 @@ async function main(): Promise<void> {
   const converted: ConvertedModel[] = [];
   const entries: Record<string, unknown>[] = [];
 
+  // A unit type bound by more than one faction gets a model per faction: the
+  // depot is the USA Command Center for NATO and the China construction yard
+  // for the Eastern Axis. A type bound once keeps a single model every player
+  // shares, which is every vehicle for now.
+  const bindings = new Map<string, number>();
+  for (const vehicle of manifest.vehicles) {
+    if (vehicle.unitType) bindings.set(vehicle.unitType, (bindings.get(vehicle.unitType) ?? 0) + 1);
+  }
+  /** How far the start units must stand from a player's depot: its largest model. */
+  let baseClearance = 0;
+
   for (const vehicle of manifest.vehicles) {
     const model = convertModel(index, vehicle.id, vehicle.model);
     if (!model) continue;
@@ -984,8 +997,14 @@ async function main(): Promise<void> {
     // Only models bound to an engine unit type go in the pack; the rest are
     // converted and sitting there for when the roster grows.
     if (vehicle.unitType) {
+      const variant =
+        (bindings.get(vehicle.unitType) ?? 0) > 1 && vehicle.faction
+          ? vehicle.faction.toLowerCase()
+          : undefined;
+      if (vehicle.unitType === 'depot') baseClearance = Math.max(baseClearance, model.radius);
       entries.push({
         id: vehicle.unitType,
+        ...(variant ? { variant } : {}),
         ...(model.cutout ? { alphaTest: true } : {}),
         hull: `models/${model.hull.gltf}`,
         ...(model.turret ? { turret: `models/${model.turret.gltf}` } : {}),
@@ -1008,7 +1027,18 @@ async function main(): Promise<void> {
     join(ASSETS_DIR, 'models.json'),
     `${JSON.stringify({ models: converted }, null, 1)}\n`,
   );
-  writeFileSync(join(ASSETS_DIR, 'pack.json'), `${JSON.stringify({ entries }, null, 1)}\n`);
+  writeFileSync(
+    join(ASSETS_DIR, 'pack.json'),
+    `${JSON.stringify(
+      {
+        entries,
+        playerVariants: (manifest.playerFactions ?? []).map((f) => f.toLowerCase()),
+        ...(baseClearance > 0 ? { baseClearance } : {}),
+      },
+      null,
+      1,
+    )}\n`,
+  );
   console.log(
     `\nconverted ${converted.length} of ${manifest.vehicles.length} models,` +
       ` ${entries.length} bound to unit types`,
